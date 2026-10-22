@@ -306,6 +306,22 @@ def test_export_txt_has_bom_table_and_copy(client):
     assert "板块" in summary_text
 
 
+def test_sina_list_page_keeps_going_after_beijing_rows():
+    from backend.app.providers.sina import list_page
+
+    beijing = [{"symbol": "bj920000", "code": "920000", "name": "安徽凤凰"} for _ in range(100)]
+    items, more = list_page(beijing)
+    assert items == []
+    assert more is True
+    tail = [
+        {"symbol": "bj920000", "code": "920000", "name": "安徽凤凰"},
+        {"symbol": "sh600000", "code": "600000", "name": "浦发银行"},
+    ]
+    items, more = list_page(tail)
+    assert items == [("600000", "浦发银行")]
+    assert more is False
+
+
 def _calendar(start: date, end: date) -> list[date]:
     days = []
     cursor = start

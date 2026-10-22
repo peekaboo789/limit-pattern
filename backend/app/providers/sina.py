@@ -130,6 +130,22 @@ def _client() -> httpx.Client:
     return httpx.Client(timeout=12.0, headers=HEADERS, follow_redirects=True)
 
 
+def list_page(payload, page_size: int = 100) -> tuple[list[tuple[str, str]], bool]:
+    """解析一页列表。北交所整页被滤掉时仍要继续翻页。"""
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text or text[0] not in "[{":
+            return [], False
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return [], False
+    if not isinstance(payload, list) or not payload:
+        return [], False
+    items = [(item["code"], item["name"]) for item in parse_list(payload) if item.get("name")]
+    return items, len(payload) >= page_size
+
+
 def fetch_stock_list() -> list[tuple[str, str]]:
     found: dict[str, str] = {}
     page = 1
@@ -141,13 +157,10 @@ def fetch_stock_list() -> list[tuple[str, str]]:
             )
             if response.status_code != 200:
                 raise ProviderError(f"新浪股票列表请求失败（HTTP {response.status_code}）")
-            batch = parse_list(response.json() if response.text[:1] in "[{" else response.text)
-            if not batch:
-                break
-            for item in batch:
-                if item["name"]:
-                    found[item["code"]] = item["name"]
-            if len(batch) < 100:
+            items, more = list_page(response.text)
+            for code, name in items:
+                found[code] = name
+            if not more:
                 break
             page += 1
     if not found:

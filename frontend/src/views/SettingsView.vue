@@ -114,9 +114,20 @@ onMounted(() => {
       </label>
       <label class="field" style="margin-top: 12px">
         <span>数据源</span>
-        <select v-model="form.data_source">
-          <option v-for="item in sourceOptions" :key="item" :value="item">{{ sourceLabel(item) }}</option>
-        </select>
+        <div class="chips" role="radiogroup" aria-label="数据源">
+          <button
+            v-for="item in sourceOptions"
+            :key="item"
+            class="chip"
+            :class="{ active: form.data_source === item }"
+            type="button"
+            role="radio"
+            :aria-checked="form.data_source === item"
+            @click="form.data_source = item"
+          >
+            {{ sourceLabel(item) }}
+          </button>
+        </div>
         <span class="hint">当前选择「{{ sourceLabel(form.data_source) }}」。实际连上的源是「{{ sourceLabel(meta?.active_source || '') || '还没有' }}」。</span>
       </label>
       <div class="readonly">

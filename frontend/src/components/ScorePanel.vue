@@ -18,7 +18,7 @@ const metrics = computed(() => {
   const rows = [
     { key: 'shape', label: 'K线形态', value: props.shape },
     { key: 'volume', label: '成交量', value: props.volume },
-    { key: 'volume_pct', label: '成交量百分比', value: props.volumePct },
+    { key: 'volume_pct', label: '量比', value: props.volumePct },
   ]
   for (const [key, value] of Object.entries(props.other)) {
     if (typeof value === 'number' && Number.isFinite(value)) {
