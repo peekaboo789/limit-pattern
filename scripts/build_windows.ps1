@@ -147,7 +147,27 @@ $zip = Join-Path $Root "desktop\dist\LimitPattern-win64.zip"
 if (Test-Path $zip) {
     Remove-Item -Force $zip
 }
-tar.exe -a -c -f $zip -C $stage .
+# Windows 自带的 tar.exe 在这台 runner 上会随机 0xC0000005，改用标准库打包。
+$env:LP_STAGE = $stage
+$env:LP_ZIP = $zip
+python -c @"
+import os
+import zipfile
+from pathlib import Path
+
+stage = Path(os.environ['LP_STAGE'])
+dest = Path(os.environ['LP_ZIP'])
+with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+    for path in stage.rglob('*'):
+        if path.is_file():
+            archive.write(path, path.relative_to(stage).as_posix())
+with zipfile.ZipFile(dest) as archive:
+    names = archive.namelist()
+print('\n'.join(names[:30]))
+if not any(name.endswith('LimitPattern.exe') for name in names):
+    raise SystemExit('zip does not contain LimitPattern.exe')
+print('entries', len(names), 'bytes', dest.stat().st_size)
+"@
 if (-not (Test-Path $zip)) {
     throw "zip was not created"
 }
@@ -156,9 +176,4 @@ if ($zipSize -lt 1MB) {
     throw "zip is unexpectedly small: $zipSize"
 }
 Write-Host "created $zip ($zipSize bytes)"
-$listing = tar.exe -tf $zip
-$listing | Select-Object -First 30
-if (-not ($listing -match "LimitPattern.exe")) {
-    throw "zip does not contain LimitPattern.exe"
-}
 Set-Content -Encoding utf8 (Join-Path $Root "desktop\dist\onefile_status.txt") ($(if ($onefileOk) { "ok" } else { "failed" }))
