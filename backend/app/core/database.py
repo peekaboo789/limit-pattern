@@ -1,0 +1,145 @@
+"""数据库。SQLite 为默认，PostgreSQL 只换连接串。"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+from backend.app.core.config import get_settings
+
+logger = logging.getLogger("limit_pattern.database")
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def _make_engine():
+    url = get_settings().resolved_database_url()
+    connect_args = {}
+    if url.startswith("sqlite"):
+        connect_args["check_same_thread"] = False
+    engine = create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
+    if url.startswith("sqlite"):
+
+        @event.listens_for(engine, "connect")
+        def _sqlite_pragmas(dbapi_connection, _connection_record):  # type: ignore[no-untyped-def]
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+    return engine
+
+
+ENGINE = None
+SessionLocal = None
+
+
+def get_engine():
+    global ENGINE, SessionLocal
+    if ENGINE is None:
+        ENGINE = _make_engine()
+        SessionLocal = sessionmaker(bind=ENGINE, autoflush=False, expire_on_commit=False, future=True)
+    return ENGINE
+
+
+def reset_engine() -> None:
+    """测试换库时用。"""
+    global ENGINE, SessionLocal
+    if ENGINE is not None:
+        ENGINE.dispose()
+    ENGINE = None
+    SessionLocal = None
+
+
+def init_db() -> None:
+    from backend.app import models  # noqa: F401
+
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    upgrade_existing_tables(engine)
+
+
+def upgrade_existing_tables(engine=None) -> list[str]:
+    """没有迁移框架。缺的列就地补上，旧行保持 NULL。"""
+    engine = engine or get_engine()
+    added: list[str] = []
+    expected = {
+        "ai_pick_results": {
+            "at_composite_score": "FLOAT",
+            "at_level": "VARCHAR(16)",
+            "at_model_gap": "FLOAT",
+        }
+    }
+    with engine.begin() as conn:
+        for table, columns in expected.items():
+            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall() if str(engine.url).startswith("sqlite") else []
+            if not rows and not str(engine.url).startswith("sqlite"):
+                continue
+            existing = {row[1] for row in rows}
+            if not existing:
+                continue
+            for name, ddl in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                    added.append(f"{table}.{name}")
+    if added:
+        logger.info("数据库结构已就地补齐 %s 列：%s", len(added), "、".join(added))
+    return added
+
+
+@contextmanager
+def session_scope() -> Iterator[Session]:
+    get_engine()
+    assert SessionLocal is not None
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def get_db() -> Iterator[Session]:
+    """HTTP 依赖只关闭、不提交。写接口要自己 commit。"""
+    get_engine()
+    assert SessionLocal is not None
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def wal_checkpoint(label: str = "") -> None:
+    """收尾把 WAL 边文件截断。即使没有页可搬，也要留下能对账的那一句。"""
+    engine = get_engine()
+    if not str(engine.url).startswith("sqlite"):
+        return
+    with engine.connect() as conn:
+        row = conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)")).fetchone()
+    busy, log_pages, checkpointed = (row or (0, 0, 0))
+    if label:
+        if checkpointed or log_pages:
+            logger.info(
+                "WAL checkpoint（%s）：搬进主库 %s 页，边文件页 %s",
+                label,
+                checkpointed,
+                log_pages,
+            )
+        else:
+            logger.info(
+                "WAL checkpoint（%s）：页已由自动 checkpoint 搬进主库，边文件已截断成 0 字节",
+                label,
+            )
+    else:
+        logger.debug("WAL checkpoint 轮询：busy=%s log=%s moved=%s", busy, log_pages, checkpointed)
