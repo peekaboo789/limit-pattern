@@ -7,8 +7,9 @@ const SCORE_LABELS: Record<string, string> = {
   shape_score: 'K线形态',
   volume: '成交量',
   volume_score: '成交量',
-  volume_pct: '成交量百分比',
-  volume_pct_score: '成交量百分比',
+  volume_pct: '量比',
+  volume_pct_score: '量比',
+  amount: '成交额',
 }
 
 export function scoreLabel(key: string): string {
@@ -24,9 +25,10 @@ export function limitTypeClass(type: string): string {
 }
 
 const SOURCE_LABELS: Record<string, string> = {
+  auto: '自动（东财 → 腾讯 → 新浪）',
+  eastmoney: '东方财富',
   tencent: '腾讯行情',
   sina: '新浪行情',
-  eastmoney: '东方财富',
 }
 
 export function sourceLabel(source: string): string {

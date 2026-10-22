@@ -3,18 +3,22 @@ import { api, ApiError } from '@/api/client'
 import type { Settings } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { sourceLabel } from '@/utils/labels'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+
+const FALLBACK_SOURCES = ['auto', 'eastmoney', 'tencent', 'sina']
 
 const meta = ref<Settings | null>(null)
 const form = reactive({
   retention_trading_days: 5,
   compare_window_trading_days: 3,
-  ai_enabled: false,
   ai_base_url: '',
   ai_model: '',
-  data_source: 'tencent',
+  data_source: 'auto',
   ai_api_key: '',
 })
+const sourceOptions = computed(() =>
+  meta.value?.data_source_options?.length ? meta.value.data_source_options : FALLBACK_SOURCES,
+)
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -24,10 +28,9 @@ function apply(settings: Settings) {
   meta.value = settings
   form.retention_trading_days = settings.retention_trading_days
   form.compare_window_trading_days = settings.compare_window_trading_days
-  form.ai_enabled = settings.ai_enabled
   form.ai_base_url = settings.ai_base_url
   form.ai_model = settings.ai_model
-  form.data_source = settings.data_source
+  form.data_source = settings.data_source || 'auto'
   form.ai_api_key = ''
 }
 
@@ -46,35 +49,27 @@ async function load() {
 async function save() {
   saved.value = false
   error.value = ''
-  if (!Number.isInteger(form.retention_trading_days) || form.retention_trading_days < 1) {
-    error.value = '保留天数须为正整数'
+  if (!Number.isInteger(form.retention_trading_days) || form.retention_trading_days < 3 || form.retention_trading_days > 30) {
+    error.value = '保留天数要在 3 到 30 之间'
     return
   }
-  if (!Number.isInteger(form.compare_window_trading_days) || form.compare_window_trading_days < 1) {
-    error.value = '对比窗口须为正整数'
-    return
-  }
-  if (!form.data_source.trim()) {
-    error.value = '数据源不能为空'
+  if (!sourceOptions.value.includes(form.data_source)) {
+    error.value = '数据源只能是 auto、eastmoney、tencent、sina'
     return
   }
   saving.value = true
   try {
     const body: {
       retention_trading_days: number
-      compare_window_trading_days: number
-      ai_enabled: boolean
       ai_base_url: string
       ai_model: string
       data_source: string
       ai_api_key?: string
     } = {
       retention_trading_days: form.retention_trading_days,
-      compare_window_trading_days: form.compare_window_trading_days,
-      ai_enabled: form.ai_enabled,
       ai_base_url: form.ai_base_url.trim(),
       ai_model: form.ai_model.trim(),
-      data_source: form.data_source.trim(),
+      data_source: form.data_source,
     }
     if (form.ai_api_key.trim()) body.ai_api_key = form.ai_api_key.trim()
     apply(await api.saveSettings(body))
@@ -109,23 +104,20 @@ onMounted(() => {
       <div class="card-head"><h2>数据</h2></div>
       <label class="field">
         <span>涨停明细保留交易日</span>
-        <input v-model.number="form.retention_trading_days" type="number" min="1" step="1" />
-        <span class="hint">默认 5。到期明细会清理，每日总结 JSON 会留下。</span>
+        <input v-model.number="form.retention_trading_days" type="number" min="3" max="30" step="1" />
+        <span class="hint">默认 5，可改 3 到 30。到期明细会清理，每日总结 JSON 会留下。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>对比窗口（交易日）</span>
-        <input v-model.number="form.compare_window_trading_days" type="number" min="1" step="1" />
-        <span class="hint">默认 3。相似度只和最近涨停样本比。</span>
+        <input :value="form.compare_window_trading_days" type="number" readonly />
+        <span class="hint">固定为 3 个交易日，不能修改。相似度只和最近涨停样本比。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>数据源</span>
-        <input v-model="form.data_source" list="sources" />
-        <datalist id="sources">
-          <option value="tencent" />
-          <option value="sina" />
-          <option value="eastmoney" />
-        </datalist>
-        <span class="hint">当前按「{{ sourceLabel(form.data_source) }}」理解。常用值 tencent / sina / eastmoney。</span>
+        <select v-model="form.data_source">
+          <option v-for="item in sourceOptions" :key="item" :value="item">{{ sourceLabel(item) }}</option>
+        </select>
+        <span class="hint">当前选择「{{ sourceLabel(form.data_source) }}」。实际连上的源是「{{ sourceLabel(meta?.active_source || '') || '还没有' }}」。</span>
       </label>
       <div class="readonly">
         <span class="muted">上次同步</span>
@@ -144,10 +136,11 @@ onMounted(() => {
           {{ meta?.ai_api_key_set ? '密钥已设置' : '未设置密钥' }}
         </span>
       </div>
-      <label class="check">
-        <input v-model="form.ai_enabled" type="checkbox" />
-        <span>启用每日总结</span>
-      </label>
+      <div class="readonly">
+        <span class="muted">模型解读</span>
+        <b>{{ meta?.ai_enabled ? '已启用' : '未启用' }}</b>
+      </div>
+      <p class="hint">地址、模型和密钥都填上之后才会启用。没配齐时重新生成仍会写出统计总结，不会报错。</p>
       <label class="field" style="margin-top: 12px">
         <span>接口地址</span>
         <input v-model="form.ai_base_url" placeholder="https://api.example.com/v1" />
@@ -159,7 +152,7 @@ onMounted(() => {
       <label class="field" style="margin-top: 12px">
         <span>API Key</span>
         <input v-model="form.ai_api_key" type="password" autocomplete="new-password" placeholder="留空则不修改" />
-        <span class="hint">只写入，接口不会把密钥返回来。未配置时重新生成总结会返回「未配置AI接口」。</span>
+        <span class="hint">只写入，接口不会把密钥返回来。留空表示保持原密钥。</span>
       </label>
     </section>
   </form>

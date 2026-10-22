@@ -4,7 +4,7 @@ import json
 from datetime import date, timedelta
 
 from backend.app.core.database import session_scope
-from backend.app.models.tables import AiDailySummary, DailyQuote, Stock, TradingDay
+from backend.app.models.tables import AiDailySummary, CalcBar, DailyQuote, Stock, TradingDay
 from backend.app.providers.markets import keep_code
 from backend.app.services.limit_up_service import annotate_history, ratio_for
 from backend.app.services.limit_up_service import limit_up_price
@@ -292,7 +292,48 @@ def test_kline_does_not_return_future_bars(client):
                 source="test",
             )
         )
+    anchor_day = ""
+    anchor_close = None
+    with session_scope() as session:
+        official = (
+            session.query(DailyQuote)
+            .filter(DailyQuote.stock_code == "000001")
+            .order_by(DailyQuote.trade_date)
+            .first()
+        )
+        assert official is not None
+        anchor_day = official.trade_date.isoformat()
+        anchor_close = official.close
+        session.add(
+            CalcBar(
+                stock_code="000001",
+                trade_date=date(2026, 5, 20),
+                open=7.5,
+                high=7.8,
+                low=7.4,
+                close=7.7,
+                pre_close=7.5,
+                volume=800,
+                amount=6000,
+            )
+        )
+        session.add(
+            CalcBar(
+                stock_code="000001",
+                trade_date=official.trade_date,
+                open=1,
+                high=1,
+                low=1,
+                close=1,
+                pre_close=1,
+                volume=1,
+            )
+        )
     bars = client.get("/api/kline", params={"code": "000001", "days": 30}).json()["bars"]
     assert bars
     assert all(bar["date"] <= "2026-10-22" for bar in bars)
     assert all(bar["date"] != "2099-01-04" for bar in bars)
+    assert bars[0]["date"] == "2026-05-20"
+    assert bars[0]["pct_chg"] == 2.6667
+    same_day = next(bar for bar in bars if bar["date"] == anchor_day)
+    assert same_day["close"] == anchor_close

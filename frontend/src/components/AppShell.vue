@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { initSession, session } from '@/stores/session'
+import { sourceLabel } from '@/utils/labels'
 import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -15,9 +16,21 @@ const items = [
 ]
 
 const syncText = computed(() => {
-  if (session.sync?.running) return `同步中 ${Math.round(session.sync.progress)}%`
-  if (session.sync?.message) return session.sync.message
+  const sync = session.sync
+  if (sync?.running) {
+    const count = sync.total ? ` ${sync.done ?? 0}/${sync.total}` : ''
+    return `同步中 ${Math.round(sync.progress)}%${count}`
+  }
+  if (sync?.message) return sync.message
   return '行情待命'
+})
+
+const sourceText = computed(() => {
+  const active = session.health?.active_source || session.sync?.active_source
+  const configured = session.health?.data_source
+  if (active) return sourceLabel(active)
+  if (configured) return sourceLabel(configured)
+  return ''
 })
 
 onMounted(() => {
@@ -57,6 +70,7 @@ onMounted(() => {
             <i class="dot" />
             <span>{{ syncText }}</span>
           </div>
+          <span v-if="sourceText" class="muted">{{ sourceText }}</span>
           <span v-if="mockMode" class="mock-badge">模拟数据</span>
           <span class="top-spacer" />
           <span class="version">{{ session.health?.version ?? '' }}</span>

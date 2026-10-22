@@ -23,6 +23,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import threading
@@ -153,11 +154,12 @@ def _import_backend_app():
         logger.exception("后端依赖缺失（%s），使用 stub", missing)
         return None
     except Exception:
-        logger.exception("导入 backend.app.main:app 失败，使用 stub")
+        logger.exception("导入 backend.app.main 失败，使用 stub")
         return None
-    app = getattr(module, "app", None)
+    factory = getattr(module, "create_app", None)
+    app = factory() if callable(factory) else getattr(module, "app", None)
     if app is None:
-        logger.error("backend.app.main 没有名为 app 的对象，使用 stub")
+        logger.error("backend.app.main 没有可用的应用，使用 stub")
         return None
     return app
 
@@ -280,6 +282,39 @@ class ServerHandle:
             self.sock.close()
         except OSError:
             pass
+
+
+def _open_local(url: str, timeout: float) -> tuple[int, str]:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(url, headers={"Accept": "*/*"})
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+            return int(response.status), text
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return int(exc.code), body
+
+
+def check_homepage(host: str, port: int, static_kind: str) -> None:
+    """确认首页能打开。前端包还要能把脚本拉下来。"""
+    page_url = f"http://{host}:{port}/"
+    status, html = _open_local(page_url, 5.0)
+    if status != 200:
+        raise RuntimeError(f"首页 HTTP {status}")
+    if "<html" not in html.lower():
+        raise RuntimeError("首页不是 HTML")
+    if static_kind == "frontend" and 'id="app"' not in html:
+        raise RuntimeError("首页不是前端页面")
+    for match in re.finditer(r"""<script[^>]+src=["']([^"']+)["']""", html, flags=re.IGNORECASE):
+        src = match.group(1)
+        if not src.startswith("/") or src.startswith("//"):
+            continue
+        asset_status, asset_body = _open_local(f"http://{host}:{port}{src}", 5.0)
+        if asset_status != 200 or not asset_body.strip():
+            raise RuntimeError(f"首页脚本没有加载到：{src}")
+        break
+    logger.info("首页检查通过 %s", page_url)
 
 
 def wait_until_healthy(host: str, port: int, thread: threading.Thread | None, timeout: float = 30.0) -> dict:
@@ -881,6 +916,7 @@ def _serve_and_open(args: argparse.Namespace, data_dir: Path, state: AppState) -
     timeout = 120.0 if is_frozen() else 20.0
     payload = wait_until_healthy(DEFAULT_HOST, port, server.thread, timeout=timeout)
     logger.info("健康检查通过 %s", json.dumps(payload, ensure_ascii=False))
+    check_homepage(DEFAULT_HOST, port, static_kind)
     logger.info("服务已就绪 %s", state.url)
     control = ControlServer(data_dir, lambda: show_ui(state))
     state.control = control
@@ -924,7 +960,7 @@ def _run(args: argparse.Namespace, data_dir: Path) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="LimitPattern", description="三日涨停形态统计桌面启动器")
-    parser.add_argument("--smoke", action="store_true", help="启动服务并检查 /api/health 后退出")
+    parser.add_argument("--smoke", action="store_true", help="启动服务，检查 /api/health 和首页后退出")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="首选端口，被占用时自动 +1")
     parser.add_argument("--open-browser", action="store_true", help="不使用内嵌窗口，直接打开系统浏览器")
     parser.add_argument("--check-gui", action="store_true", help="额外导入 WebView2 / pythonnet（Windows 打包自检）")

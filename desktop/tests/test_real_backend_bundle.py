@@ -20,6 +20,7 @@ def test_smoke_uses_the_real_backend(monkeypatch, tmp_path):
     assert "应用来源=backend" in text
     assert "-stub" not in text
     assert "健康检查通过" in text
+    assert "首页检查通过" in text
 
 
 @pytest.mark.skipif(importlib.util.find_spec("PyInstaller") is None, reason="未安装 PyInstaller")

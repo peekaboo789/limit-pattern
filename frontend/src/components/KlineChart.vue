@@ -32,7 +32,8 @@ function option(): EChartsCoreOption {
   const start = bars.length <= 48 ? 0 : Math.round((1 - 48 / bars.length) * 100)
   const marks = bars
     .filter((bar) => {
-      const nearLimit = Math.abs(bar.pct_chg - 10) < 0.4 || Math.abs(bar.pct_chg - 20) < 0.5
+      const pct = bar.pct_chg ?? Number.NaN
+      const nearLimit = Math.abs(pct - 10) < 0.4 || Math.abs(pct - 20) < 0.5
       return nearLimit && bar.high <= bar.close + 0.03
     })
     .map((bar) => ({
@@ -53,7 +54,7 @@ function option(): EChartsCoreOption {
       formatter: (params: unknown) => {
         const bar = bars[indexOf(params)]
         if (!bar) return ''
-        const color = bar.pct_chg >= 0 ? '#ff5d73' : '#2fdb9a'
+        const color = (bar.pct_chg ?? 0) > 0 ? '#ff5d73' : (bar.pct_chg ?? 0) < 0 ? '#2fdb9a' : '#8ea0bb'
         return [
           `<div style="color:#f3d7a1;margin-bottom:4px">${bar.date}</div>`,
           `开盘 ${formatPrice(bar.open)}`,

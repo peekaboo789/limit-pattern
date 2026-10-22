@@ -116,6 +116,12 @@ $smokeLog = Get-Content $logPath -Raw
 if ($smokeLog -notmatch "应用来源=backend") {
     throw "smoke did not start the real backend"
 }
+if ($smokeLog -notmatch "首页检查通过") {
+    throw "smoke did not open the homepage"
+}
+if ($smokeLog -notmatch "静态目录（frontend）") {
+    throw "smoke did not serve the built frontend"
+}
 
 Write-Host "== pyinstaller onefile (best effort) =="
 $onefileDir = Join-Path $Root "desktop\dist-onefile"

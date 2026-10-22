@@ -1,4 +1,4 @@
-import { formatAmount } from './format'
+import { formatAmount, formatVolume } from './format'
 
 export interface SectorCard {
   name: string
@@ -43,7 +43,10 @@ const VOLUME_LABELS: Record<string, string> = {
   avg_amount: '平均成交额',
   total_amount: '总成交额',
   median_turnover: '换手率中位数',
+  median_turnover_rate: '换手率中位数',
   avg_turnover: '平均换手率',
+  median_volume: '成交量中位数',
+  sample_count: '样本数',
   early_limit_ratio: '早盘封板占比',
   sealed_ratio: '封板占比',
 }
@@ -124,7 +127,7 @@ function normalizeLadder(raw: unknown): LadderCard[] {
         ? '首板'
         : `${boards} 连板`
       : String(record.name ?? record.label ?? record.level ?? '梯队')
-    const examples = stringList(record.examples ?? record.stocks ?? record.names ?? record.samples)
+    const examples = stringList(record.examples ?? record.stocks ?? record.names ?? record.samples ?? record.codes)
     return {
       label,
       count: asNumber(record.count ?? record.n) ?? examples.length,
@@ -141,10 +144,12 @@ function normalizePatterns(raw: unknown): PatternCard[] {
     if (typeof item === 'string') return { name: item, count: null, note: '' }
     const record = asRecord(item)
     if (!record) return { name: String(item), count: null, note: '' }
+    const example = record.example_code == null ? '' : String(record.example_code)
+    const note = String(record.note ?? record.description ?? record.desc ?? '')
     return {
       name: String(record.name ?? record.pattern ?? record.title ?? `形态${index + 1}`),
       count: asNumber(record.count ?? record.n),
-      note: String(record.note ?? record.description ?? record.desc ?? ''),
+      note: note || (example ? `例如 ${example}` : ''),
     }
   })
 }
@@ -182,6 +187,7 @@ function formatFeature(key: string, value: unknown): string {
     return `${pct.toFixed(1)}%`
   }
   if (/amount|money|turnover_amount/i.test(key)) return formatAmount(number)
+  if (/volume/i.test(key) && !/turnover/i.test(key)) return formatVolume(number)
   if (/turnover/i.test(key)) return `${number.toFixed(2)}%`
   if (Number.isInteger(number)) return String(number)
   return number.toFixed(2)

@@ -11,7 +11,7 @@
 | GET | `/api/sync/status` | `running`、`progress`（0–100）、`message`、`last_sync_at` |
 | GET | `/api/limitups?date=` | 某一天的涨停列表。不传日期用最近一个有行情的交易日 |
 | GET | `/api/pool` | 最近 3 个交易日的涨停池 |
-| GET | `/api/kline?code=&days=30` | 日 K。不会返回今天之后的 K 线 |
+| GET | `/api/kline?code=&days=30` | 日 K。正式行情优先，缺的日期用补拉的计算 K 线补上。不会返回今天之后的 K 线 |
 | GET | `/api/similarity?code=&date=&top=20` | 这一只和涨停池的对比 |
 | GET | `/api/scan?date=&top=50&min_score=0` | 全市场和涨停池对比后的排行 |
 | GET | `/api/summaries` | 已保存的每日总结目录 |

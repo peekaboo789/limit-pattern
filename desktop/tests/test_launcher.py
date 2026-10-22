@@ -207,6 +207,7 @@ def test_smoke_uses_stub_and_ignores_proxy(monkeypatch, tmp_path):
     text = (tmp_path / "logs" / "launcher.log").read_text(encoding="utf-8")
     assert "应用来源=stub" in text
     assert "健康检查通过" in text
+    assert "首页检查通过" in text
     assert '"status": "ok"' in text
 
 

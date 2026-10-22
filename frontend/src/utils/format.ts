@@ -1,29 +1,30 @@
 const SHANGHAI = 'Asia/Shanghai'
 
-export function formatPrice(value: number): string {
-  if (!Number.isFinite(value)) return '—'
+export function formatPrice(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—'
   return value.toFixed(2)
 }
 
-export function formatPct(value: number, digits = 2): string {
-  if (!Number.isFinite(value)) return '—'
+export function formatPct(value: number | null | undefined, digits = 2): string {
+  if (value == null || !Number.isFinite(value)) return '—'
   const sign = value > 0 ? '+' : ''
   return `${sign}${value.toFixed(digits)}%`
 }
 
-export function pctClass(value: number): 'up' | 'down' | 'flat' {
+export function pctClass(value: number | null | undefined): 'up' | 'down' | 'flat' {
+  if (value == null || !Number.isFinite(value)) return 'flat'
   if (value > 0.0001) return 'up'
   if (value < -0.0001) return 'down'
   return 'flat'
 }
 
-export function formatScore(value: number): string {
-  if (!Number.isFinite(value)) return '—'
+export function formatScore(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—'
   return value.toFixed(1)
 }
 
-export function formatAmount(value: number): string {
-  if (!Number.isFinite(value)) return '—'
+export function formatAmount(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—'
   const abs = Math.abs(value)
   if (abs >= 1e8) return `${(value / 1e8).toFixed(2)}亿`
   if (abs >= 1e4) return `${(value / 1e4).toFixed(2)}万`
@@ -31,15 +32,15 @@ export function formatAmount(value: number): string {
 }
 
 /** 契约未写单位。界面按 volume = 股（1 手 = 100 股）、amount = 元 展示。 */
-export function formatVolume(shares: number): string {
-  if (!Number.isFinite(shares)) return '—'
+export function formatVolume(shares: number | null | undefined): string {
+  if (shares == null || !Number.isFinite(shares)) return '—'
   const lots = shares / 100
   if (Math.abs(lots) >= 1e4) return `${(lots / 1e4).toFixed(2)}万手`
   return `${Math.round(lots)}手`
 }
 
-export function formatTurnover(value: number): string {
-  if (!Number.isFinite(value)) return '—'
+export function formatTurnover(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—'
   return `${value.toFixed(2)}%`
 }
 

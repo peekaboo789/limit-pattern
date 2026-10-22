@@ -12,7 +12,7 @@ from backend.app.core.clock import today
 from backend.app.core.config import exports_dir, public_settings, update_settings
 from backend.app.services.export_service import content_disposition, render_export, save_copy
 from backend.app.core.database import session_scope
-from backend.app.models.tables import DailyQuote, Stock
+from backend.app.models.tables import CalcBar, DailyQuote, Stock
 from backend.app.providers.markets import classify, normalize_code
 from backend.app.services.retention import quote_dates
 from backend.app.services.similarity_service import pool_dates, scan_market, similar_to
@@ -208,30 +208,47 @@ def pool() -> dict:
     return {"dates": [day.isoformat() for day in dates], "items": items}
 
 
+def _pct_chg(close: float | None, pre_close: float | None) -> float | None:
+    if close is None or not pre_close:
+        return None
+    return round((close - pre_close) / pre_close * 100, 4)
+
+
+def _kline_bar(day: date, row, pct: float | None) -> dict:
+    return {
+        "date": day.isoformat(),
+        "open": row.open,
+        "high": row.high,
+        "low": row.low,
+        "close": row.close,
+        "volume": row.volume,
+        "amount": row.amount,
+        "pct_chg": pct,
+    }
+
+
 @router.get("/kline")
 def kline(code: str, days: int = Query(30, ge=1, le=120)) -> dict:
     normalized = _code(code)
     with session_scope() as session:
         stock = session.get(Stock, normalized)
+        merged: dict[date, dict] = {}
+        calc_rows = (
+            session.query(CalcBar)
+            .filter(CalcBar.stock_code == normalized, CalcBar.trade_date <= today())
+            .all()
+        )
+        for row in calc_rows:
+            merged[row.trade_date] = _kline_bar(row.trade_date, row, _pct_chg(row.close, row.pre_close))
         rows = (
             session.query(DailyQuote)
             .filter(DailyQuote.stock_code == normalized, DailyQuote.trade_date <= today())
-            .order_by(DailyQuote.trade_date)
             .all()
         )
-        bars = [
-            {
-                "date": row.trade_date.isoformat(),
-                "open": row.open,
-                "high": row.high,
-                "low": row.low,
-                "close": row.close,
-                "volume": row.volume,
-                "amount": row.amount,
-                "pct_chg": row.change_percent,
-            }
-            for row in rows[-days:]
-        ]
+        for row in rows:
+            merged[row.trade_date] = _kline_bar(row.trade_date, row, row.change_percent)
+        ordered = [merged[day] for day in sorted(merged)]
+        bars = ordered[-days:]
     return {"code": normalized, "name": stock.name if stock else "", "bars": bars}
 
 

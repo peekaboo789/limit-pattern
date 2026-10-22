@@ -4,6 +4,9 @@ export interface Health {
   status: string
   version: string
   data_date: string | null
+  data_source?: string
+  active_source?: string
+  exports_dir?: string
 }
 
 export interface Settings {
@@ -14,6 +17,8 @@ export interface Settings {
   ai_model: string
   ai_api_key_set: boolean
   data_source: string
+  data_source_options?: string[]
+  active_source?: string
   last_sync_at: string | null
   last_cleanup_at: string | null
 }
@@ -37,6 +42,13 @@ export interface SyncStatus {
   progress: number
   message: string
   last_sync_at: string | null
+  phase?: string
+  done?: number
+  total?: number
+  saved?: number
+  failed?: number
+  data_source?: string
+  active_source?: string
 }
 
 export interface LimitUpItem {

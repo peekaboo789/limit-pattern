@@ -6,6 +6,7 @@ import type { ExportParams } from '@/api/types'
 import type { PoolResponse, ScanResponse } from '@/api/types'
 import { loadHealth, session, startSync } from '@/stores/session'
 import { boardLabel, clampPercent, formatDateTime, formatScore, scoreColor, shortDate } from '@/utils/format'
+import { sourceLabel } from '@/utils/labels'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -33,6 +34,12 @@ const exportParams = computed<ExportParams | null>(() => {
 })
 const progress = computed(() => Math.max(0, Math.min(100, session.sync?.progress ?? 0)))
 const busy = computed(() => session.startingSync || Boolean(session.sync?.running))
+const syncDetail = computed(() => {
+  const sync = session.sync
+  if (!sync?.total) return ''
+  return `${sync.done ?? 0}/${sync.total} · 已写入 ${sync.saved ?? 0} · 失败 ${sync.failed ?? 0}`
+})
+const sourceText = computed(() => sourceLabel(session.sync?.active_source || session.health?.active_source || session.health?.data_source || ''))
 
 async function reload() {
   if (!date.value) return
@@ -72,9 +79,21 @@ onMounted(async () => {
 })
 
 watch(
+  () => session.health?.data_date,
+  (value) => {
+    if (value && !date.value) {
+      date.value = value
+      void reload()
+    }
+  },
+)
+
+watch(
   () => session.sync?.running,
   (running, previous) => {
-    if (previous && !running) void reload()
+    if (previous && !running) {
+      void loadHealth().then(() => reload())
+    }
   },
 )
 </script>
@@ -97,6 +116,8 @@ watch(
         {{ busy ? '同步中…' : '同步行情' }}
       </button>
       <span class="muted">{{ session.sync?.message || '等待同步' }}</span>
+      <span v-if="syncDetail" class="muted">{{ syncDetail }}</span>
+      <span v-if="sourceText" class="muted">数据源 {{ sourceText }}</span>
     </div>
     <div class="progress" :class="{ running: session.sync?.running }" style="margin-top: 12px" role="progressbar" :aria-valuenow="progress">
       <i :style="{ '--w': `${progress}%` }" />
@@ -159,7 +180,7 @@ watch(
             <th>最相似涨停</th>
             <th class="right">形态</th>
             <th class="right">成交量</th>
-            <th class="right">量能占比</th>
+            <th class="right">量比</th>
           </tr>
         </thead>
         <tbody>
