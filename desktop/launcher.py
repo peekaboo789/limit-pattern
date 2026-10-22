@@ -878,7 +878,7 @@ def _serve_and_open(args: argparse.Namespace, data_dir: Path, state: AppState) -
     server = ServerHandle(app, DEFAULT_HOST, port, sock)
     state.server = server
     server.start()
-    timeout = 45.0 if is_frozen() else 15.0
+    timeout = 120.0 if is_frozen() else 20.0
     payload = wait_until_healthy(DEFAULT_HOST, port, server.thread, timeout=timeout)
     logger.info("健康检查通过 %s", json.dumps(payload, ensure_ascii=False))
     logger.info("服务已就绪 %s", state.url)

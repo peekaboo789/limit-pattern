@@ -12,5 +12,6 @@
   未安装 Microsoft Edge WebView2 时，会弹出中文提示，并改用系统默认浏览器打开。
 
 页面与接口：
-  后端入口是 backend.app.main:app，页面来自 frontend/dist（环境变量 LP_STATIC_DIR）。
-  两者都还没有打进这个包时，使用内置占位页，只保证 /api/health 可用。
+  程序内置真实后端 backend.app.main:app，不是占位接口。
+  有 frontend/dist 时用那个页面；没有就用内置占位页，接口仍然是真实后端。
+  只有设置 LP_USE_STUB=1 时才改用占位接口。

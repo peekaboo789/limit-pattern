@@ -51,7 +51,7 @@ function Install-Requirements([string]$RelativePath) {
 Install-Requirements "desktop/requirements-dev.txt"
 Install-Requirements "requirements.txt"
 Install-Requirements "backend/requirements.txt"
-Install-Requirements "backend/requirements-ml.txt"
+# 聚类才需要 sklearn。打进 EXE 会把包变得很大，这一版不装。
 Install-Requirements "desktop/requirements-build.txt"
 
 Write-Host "== icon =="
@@ -89,6 +89,7 @@ if (-not $env:RUNNER_TEMP) {
 New-Item -ItemType Directory -Force -Path $smokeData | Out-Null
 $env:LP_DATA_DIR = $smokeData
 $env:LP_AUTO_SYNC = "0"
+$env:LP_SCHEDULER = "0"
 Remove-Item Env:LP_USE_STUB -ErrorAction SilentlyContinue
 $exe = Join-Path $onedir "LimitPattern.exe"
 $process = Start-Process -FilePath $exe -ArgumentList "--smoke","--check-gui" -WorkingDirectory $onedir -PassThru -WindowStyle Hidden
@@ -107,6 +108,13 @@ if (Test-Path $logPath) {
 }
 if ($process.ExitCode -ne 0) {
     throw "smoke failed with exit code $($process.ExitCode)"
+}
+if (-not (Test-Path $logPath)) {
+    throw "smoke log was not written"
+}
+$smokeLog = Get-Content $logPath -Raw
+if ($smokeLog -notmatch "应用来源=backend") {
+    throw "smoke did not start the real backend"
 }
 
 Write-Host "== pyinstaller onefile (best effort) =="

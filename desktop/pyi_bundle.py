@@ -176,9 +176,29 @@ OPTIONAL_HIDDEN = (
     "pydantic_settings",
     "tzdata",
     "tzlocal",
-    "sklearn.cluster",
-    "sklearn.decomposition",
-    "sklearn.metrics",
+    "numpy",
+    "httpx",
+    "httpcore",
+)
+
+# 启动器用 importlib 按字符串加载后端，PyInstaller 扫不到。这些必须写死。
+REQUIRED_BACKEND = (
+    "backend",
+    "backend.app",
+    "backend.app.main",
+    "backend.app.providers",
+    "backend.app.providers.eastmoney",
+    "backend.app.providers.tencent",
+    "backend.app.providers.sina",
+    "backend.app.providers.router",
+    "backend.app.providers.markets",
+    "backend.app.tasks",
+    "backend.app.tasks.scheduler",
+    "backend.app.services.sync_service",
+    "backend.app.services.summary_service",
+    "backend.app.services.similarity_service",
+    "backend.app.services.export_service",
+    "backend.app.services.history_backfill",
 )
 
 
@@ -201,7 +221,7 @@ def analysis_kwargs() -> dict:
     binaries: list[tuple[str, str]] = []
     hiddenimports = list(UVICORN_HIDDEN)
 
-    for package in ("uvicorn", "fastapi", "starlette", "pydantic", "anyio", "opentelemetry", "websockets"):
+    for package in ("uvicorn", "fastapi", "starlette", "pydantic", "anyio", "opentelemetry", "websockets", "numpy", "httpx"):
         hiddenimports.extend(_try_submodules(package))
 
     stub_static = SPEC_DIR / "stub_static"
@@ -215,11 +235,14 @@ def analysis_kwargs() -> dict:
         _log("frontend/dist 不存在，窗口使用 stub 页面")
 
     hiddenimports.extend(_backend_modules())
+    if (ROOT / "backend").is_dir():
+        hiddenimports.extend(REQUIRED_BACKEND)
+        _log("已写入后端关键 hidden imports")
     hiddenimports.extend(_optional_hiddenimports())
     backend = ROOT / "backend"
     if backend.is_dir() and importlib.util.find_spec("backend") is not None:
         _try_package_files("backend", datas, binaries)
-    for package in ("sqlalchemy", "apscheduler", "tzdata"):
+    for package in ("sqlalchemy", "apscheduler", "tzdata", "numpy", "httpx"):
         if importlib.util.find_spec(package) is not None:
             hiddenimports.extend(_try_submodules(package))
             _try_package_files(package, datas, binaries)
@@ -275,6 +298,8 @@ def analysis_kwargs() -> dict:
             "pydantic.mypy",
             "pydantic.v1.mypy",
             "anyio.pytest_plugin",
+            "sklearn",
+            "scipy",
         ],
         "noarchive": False,
         "optimize": 0,
