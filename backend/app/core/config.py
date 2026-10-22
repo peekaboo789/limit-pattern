@@ -41,6 +41,12 @@ def summaries_dir() -> Path:
     return path
 
 
+def exports_dir() -> Path:
+    path = data_dir() / "exports"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def static_dir() -> Path | None:
     raw = os.environ.get("LP_STATIC_DIR", "").strip()
     if raw:
@@ -99,7 +105,8 @@ def default_settings() -> dict:
         "ai_base_url": os.environ.get("AI_BASE_URL", "").strip(),
         "ai_model": os.environ.get("AI_MODEL", "").strip(),
         "ai_api_key": os.environ.get("AI_API_KEY", "").strip(),
-        "data_source": os.environ.get("DATA_PROVIDER", "eastmoney").strip() or "eastmoney",
+        "data_source": os.environ.get("DATA_PROVIDER", "auto").strip() or "auto",
+        "active_source": "",
         "last_sync_at": None,
         "last_cleanup_at": None,
     }
@@ -143,7 +150,9 @@ def public_settings() -> dict:
         "ai_base_url": url,
         "ai_model": model,
         "ai_api_key_set": bool(key),
-        "data_source": str(raw.get("data_source") or "eastmoney"),
+        "data_source": str(raw.get("data_source") or "auto"),
+        "data_source_options": ["auto", "eastmoney", "tencent", "sina"],
+        "active_source": str(raw.get("active_source") or ""),
         "last_sync_at": raw.get("last_sync_at"),
         "last_cleanup_at": raw.get("last_cleanup_at"),
     }
@@ -170,10 +179,9 @@ def update_settings(changes: dict) -> dict:
     if changes.get("ai_api_key"):
         current["ai_api_key"] = str(changes["ai_api_key"]).strip()
     if "data_source" in changes and changes["data_source"] is not None:
-        source = str(changes["data_source"]).strip()
-        if not source:
-            raise ValueError("数据源不能是空的")
-        current["data_source"] = source
+        from backend.app.providers.router import normalize_source
+
+        current["data_source"] = normalize_source(str(changes["data_source"]))
     write_settings_file(current)
     return public_settings()
 

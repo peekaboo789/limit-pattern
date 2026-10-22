@@ -256,8 +256,12 @@ def test_sync_filters_non_ashares(client):
     assert "600519" in codes
     turned = client.put("/api/settings", json={"data_source": "sina"})
     assert turned.status_code == 200
-    failed = run_sync_now()
-    assert "eastmoney" in failed["message"]
+    again = run_sync_now()
+    assert again["progress"] == 100
+    assert again["active_source"] == "sina"
+    assert client.get("/api/health").json()["active_source"] == "sina"
+    rejected = client.put("/api/settings", json={"data_source": "foo"})
+    assert rejected.status_code == 422
 
 
 def test_market_prefixes():

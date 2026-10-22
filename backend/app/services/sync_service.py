@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 from backend.app.core.clock import SHANGHAI, today
 from backend.app.core.config import read_settings_file, retention_days, stamp
 from backend.app.core.database import session_scope
+from backend.app.core.logging import get_logger
 from backend.app.models.tables import DailyQuote, Stock, TradingDay
 from backend.app.providers.eastmoney import fetch_kline, fetch_stock_list
 from backend.app.providers.markets import classify
@@ -28,6 +29,7 @@ _STATE = {
     "total": 0,
     "saved": 0,
     "failed": 0,
+    "active_source": "",
 }
 _PACE_LOCK = threading.Lock()
 _NEXT_FETCH = 0.0
@@ -44,6 +46,9 @@ def status() -> dict:
     snapshot["total"] = int(snapshot.get("total") or 0)
     snapshot["saved"] = int(snapshot.get("saved") or 0)
     snapshot["failed"] = int(snapshot.get("failed") or 0)
+    settings = read_settings_file()
+    snapshot["data_source"] = settings.get("data_source") or "auto"
+    snapshot["active_source"] = snapshot.get("active_source") or settings.get("active_source") or ""
     return snapshot
 
 
@@ -59,18 +64,29 @@ def reset_state() -> None:
             total=0,
             saved=0,
             failed=0,
+            active_source="",
         )
 
 
 _FETCH_LIST = fetch_stock_list
 _FETCH_KLINE = fetch_kline
+_OVERRIDE = False
+logger = get_logger("sync")
 
 
 def set_fetcher(list_fn=None, kline_fn=None) -> None:
     """测试注入。不传就恢复真实行情源。"""
-    global _FETCH_LIST, _FETCH_KLINE
-    _FETCH_LIST = list_fn or fetch_stock_list
-    _FETCH_KLINE = kline_fn or fetch_kline
+    global _FETCH_LIST, _FETCH_KLINE, _OVERRIDE
+    if list_fn is None and kline_fn is None:
+        _OVERRIDE = False
+        _FETCH_LIST = fetch_stock_list
+        _FETCH_KLINE = fetch_kline
+    else:
+        _OVERRIDE = True
+        if list_fn is not None:
+            _FETCH_LIST = list_fn
+        if kline_fn is not None:
+            _FETCH_KLINE = kline_fn
     from backend.app.services.history_backfill import clear_calc_memory
 
     clear_calc_memory()
@@ -124,6 +140,29 @@ def start_sync() -> str:
     return task_id
 
 
+def _kline_of(name: str):
+    from backend.app.providers.router import _module
+
+    return _module(name).fetch_kline
+
+
+def _cross_check_sample(active: str) -> None:
+    from backend.app.providers.router import cross_check
+
+    with session_scope() as session:
+        rows = session.query(DailyQuote).order_by(DailyQuote.trade_date.desc()).limit(40).all()
+    picked: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        if row.stock_code in seen:
+            continue
+        seen.add(row.stock_code)
+        picked.append({"code": row.stock_code, "close": row.close, "pre_close": row.pre_close})
+        if len(picked) >= 5:
+            break
+    cross_check(active, picked)
+
+
 def _set(**values) -> None:
     with _LOCK:
         _STATE.update(values)
@@ -131,11 +170,32 @@ def _set(**values) -> None:
 
 def _run(task_id: str) -> None:
     try:
-        source = str(read_settings_file().get("data_source") or "eastmoney")
-        if source not in {"eastmoney", "东方财富"}:
-            raise RuntimeError(f"这一版只支持 eastmoney 行情，当前数据源是 {source}")
-        _set(progress=2, phase="list", message="正在下载股票列表")
-        stocks = _FETCH_LIST()
+        from backend.app.providers.router import cross_check, normalize_source, order_for, probe
+
+        configured = normalize_source(str(read_settings_file().get("data_source") or "auto"))
+        _set(progress=2, phase="list", message="正在选择数据源")
+        if _OVERRIDE:
+            active = configured if configured in {"eastmoney", "tencent", "sina"} else "eastmoney"
+            stocks = _FETCH_LIST()
+        else:
+            stocks = None
+            active = ""
+            errors: list[str] = []
+            for name in order_for(configured):
+                try:
+                    _set(message=f"正在尝试数据源 {name}")
+                    stocks = probe(name)
+                    active = name
+                    global _FETCH_KLINE
+                    _FETCH_KLINE = _kline_of(name)
+                    break
+                except Exception as exc:
+                    logger.warning("数据源 %s 不可用：%s", name, exc)
+                    errors.append(f"{name}：{exc}")
+            if not active or stocks is None:
+                raise RuntimeError("行情源都不可用：" + "；".join(errors))
+        stamp("active_source", active)
+        _set(active_source=active, message=f"使用数据源 {active}，正在下载股票列表")
         end = today()
         start = end - timedelta(days=max(20, retention_days() * 3))
         total = len(stocks)
@@ -184,6 +244,11 @@ def _run(task_id: str) -> None:
         _set(progress=92, phase="cleanup", message="正在清理过期明细")
         purge_expired()
         _refresh_limit_counts()
+        if not _OVERRIDE:
+            try:
+                _cross_check_sample(active)
+            except Exception:
+                logger.info("交叉校验没有做成")
         summary_note = "，当日总结没有写成"
         try:
             _set(progress=96, phase="summary", message="正在写当日总结")

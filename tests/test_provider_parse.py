@@ -32,6 +32,6 @@ def test_kline_parser_uses_unadjusted_fields():
     assert bars[0]["high"] == 11
     assert bars[0]["low"] == 9.8
     assert bars[0]["pre_close"] == 10
-    assert bars[0]["volume"] == 1200
+    assert bars[0]["volume"] == 120000
     assert bars[0]["amount"] == 340000
     assert bars[0]["turnover_rate"] == 1.5

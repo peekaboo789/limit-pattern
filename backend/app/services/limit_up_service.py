@@ -15,6 +15,10 @@ BSE_RATIO = Decimal("0.30")
 ST_TIGHT_RATIO = Decimal("0.05")
 
 REGISTRATION_BOARDS = {"chinext", "star", "bse"}
+# 创业板注册制从这一天起，上市前 5 个交易日不设涨跌幅。
+CHINEXT_NO_LIMIT_FROM = date(2020, 8, 24)
+# 沪深主板全面注册制后的新股，同样是前 5 个交易日不设涨跌幅。
+MAIN_BOARD_NO_LIMIT_FROM = date(2023, 4, 10)
 
 
 def ratio_for(board: str, is_st: bool, trade_date: date) -> Decimal:
@@ -99,10 +103,22 @@ def ipo_without_limit(
     trade_date: date,
     trading_days: list[date],
 ) -> bool:
-    """注册制板块上市前 5 个交易日不设涨跌幅。没有上市日期就无法判定，不当成新股。"""
-    if board not in REGISTRATION_BOARDS or list_date is None:
+    """上市前 5 个交易日不设涨跌幅。没有上市日期就无法判定，不当成新股。
+
+    科创板自始如此。创业板从 2020-08-24 起，沪深主板从 2023-04-10 起。
+    更早上市的股票，上市头几天仍按普通涨跌幅。
+    """
+    if list_date is None or trade_date < list_date:
         return False
-    if trade_date < list_date:
+    if board == "star":
+        pass
+    elif board == "chinext":
+        if list_date < CHINEXT_NO_LIMIT_FROM:
+            return False
+    elif board == "main_board":
+        if list_date < MAIN_BOARD_NO_LIMIT_FROM:
+            return False
+    else:
         return False
     lived = trading_days_between(trading_days, list_date, trade_date)
     return 1 <= lived <= 5

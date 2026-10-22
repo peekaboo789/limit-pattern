@@ -52,7 +52,7 @@ python -m backend.app.main
 | `LP_SCHEDULER` | 开启 | 设为 `0` 关闭 17:10 同步和 17:40 清理 |
 | 保留交易日 | 5（可改 3–30） | 设置页 |
 | 对比交易日 | 3 | 固定，不能改 |
-| 数据源 | `eastmoney` | 这一版只会拉东方财富 |
+| 数据源 | `auto` | 也可指定 `eastmoney`、`tencent`、`sina`。实际用到的源在接口的 `active_source` |
 | AI 地址 / 模型 / 密钥 | 空 | 设置页填写。空着则总结功能未启用 |
 
 复制 `.env.example` 不是必须的。上面几项用环境变量或设置页即可。

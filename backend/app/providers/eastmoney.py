@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 
@@ -51,7 +51,8 @@ def parse_kline(payload: dict) -> list[dict]:
                 "close": close,
                 "high": float(parts[3]),
                 "low": float(parts[4]),
-                "volume": float(parts[5]) if parts[5] not in {"", "-"} else None,
+                # 东方财富日线的成交量单位是手，统一换成股。
+                "volume": float(parts[5]) * 100 if parts[5] not in {"", "-"} else None,
                 "amount": float(parts[6]) if len(parts) > 6 and parts[6] not in {"", "-"} else None,
                 "pct_chg": float(parts[8]) if len(parts) > 8 and parts[8] not in {"", "-"} else None,
                 "pre_close": pre_close,
@@ -107,6 +108,24 @@ def fetch_stock_list() -> list[tuple[str, str]]:
     if not unique:
         raise ProviderError("股票列表是空的")
     return list(unique.items())
+
+
+def fetch_spot(codes: list[str] | None = None) -> list[dict]:
+    """当日行情走日线最后一根。单独快照不是这条链路的必需项。"""
+    if not codes:
+        return []
+    end = date.today()
+    start = end - timedelta(days=10)
+    rows: list[dict] = []
+    for code in codes:
+        bars = fetch_kline(code, start, end)
+        if not bars:
+            continue
+        last = bars[-1]
+        last["code"] = normalize_code(code)
+        last["source"] = "eastmoney"
+        rows.append(last)
+    return rows
 
 
 def fetch_kline(code: str, start: date, end: date) -> list[dict]:

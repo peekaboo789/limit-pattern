@@ -5,10 +5,12 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from backend.app import __version__
 from backend.app.core.clock import today
-from backend.app.core.config import public_settings, update_settings
+from backend.app.core.config import exports_dir, public_settings, update_settings
+from backend.app.services.export_service import content_disposition, render_export, save_copy
 from backend.app.core.database import session_scope
 from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import classify, normalize_code
@@ -94,10 +96,14 @@ def _streaks(session, day: date) -> dict[str, int]:
 def health() -> dict:
     with session_scope() as session:
         days = quote_dates(session)
+    settings = public_settings()
     return {
         "status": "ok",
         "version": __version__,
         "data_date": days[-1].isoformat() if days else None,
+        "data_source": settings["data_source"],
+        "active_source": settings.get("active_source") or "",
+        "exports_dir": str(exports_dir()),
     }
 
 
@@ -122,6 +128,41 @@ def post_sync() -> dict:
 @router.get("/sync/status")
 def get_sync_status() -> dict:
     return status()
+
+
+@router.get("/export")
+def export_file(
+    type: str = Query(..., alias="type"),
+    date: str | None = None,
+    code: str | None = None,
+    top: int = Query(50, ge=1, le=500),
+):
+    kind = (type or "").strip().lower()
+    if kind not in {"scan", "similarity", "pool", "summary"}:
+        raise HTTPException(status_code=422, detail="导出类型只能是 scan、similarity、pool、summary")
+    day = _parse_day(date, default_latest=True)
+    normalized = _code(code) if code else None
+    if kind == "similarity" and not normalized:
+        raise HTTPException(status_code=422, detail="导出相似度需要股票代码")
+    with session_scope() as session:
+        if kind != "summary" and day not in quote_dates(session):
+            raise HTTPException(status_code=404, detail="这一天没有行情")
+        try:
+            text, filename = render_export(session, kind, day, normalized, top)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    body = text.encode("utf-8-sig")
+    try:
+        save_copy(filename, body)
+    except OSError:
+        pass
+    return Response(
+        content=body,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": content_disposition(filename)},
+    )
 
 
 @router.get("/limitups")
