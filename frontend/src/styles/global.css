@@ -237,6 +237,7 @@ button { cursor: pointer; }
 .stat-value { margin-top: 6px; font-size: 28px; font-weight: 700; letter-spacing: 0.02em; }
 .stat-foot { margin-top: 2px; color: var(--faint); font-size: 12px; }
 .toolbar, .filters, .form-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.export-action { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field span, .field-label { color: var(--muted); font-size: 12px; }
 .field input, .field select, .input {

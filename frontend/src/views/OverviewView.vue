@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { api, ApiError, isAbort } from '@/api/client'
 import Disclaimer from '@/components/Disclaimer.vue'
+import ExportButton from '@/components/ExportButton.vue'
+import type { ExportParams } from '@/api/types'
 import type { PoolResponse, ScanResponse } from '@/api/types'
 import { loadHealth, session, startSync } from '@/stores/session'
 import { boardLabel, clampPercent, formatDateTime, formatScore, scoreColor, shortDate } from '@/utils/format'
@@ -25,6 +27,10 @@ const counts = computed(() => {
 })
 
 const total = computed(() => pool.value?.items.length ?? 0)
+const exportParams = computed<ExportParams | null>(() => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date.value)) return null
+  return { type: 'scan', date: date.value, top: topN.value }
+})
 const progress = computed(() => Math.max(0, Math.min(100, session.sync?.progress ?? 0)))
 const busy = computed(() => session.startingSync || Boolean(session.sync?.running))
 
@@ -114,7 +120,10 @@ watch(
   <section class="card">
     <div class="card-head">
       <h2>形态扫描排行</h2>
-      <span class="muted" v-if="scan">样本池 {{ scan.pool_size }} 条 · {{ scan.date }}</span>
+      <div class="toolbar">
+        <span class="muted" v-if="scan">样本池 {{ scan.pool_size }} 条 · {{ scan.date }}</span>
+        <ExportButton :params="exportParams" />
+      </div>
     </div>
     <Disclaimer :text="scan?.disclaimer" />
     <div class="toolbar" style="margin-bottom: 12px">

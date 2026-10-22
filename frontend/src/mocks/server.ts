@@ -252,6 +252,17 @@ function handle(method: string, pathname: string, params: URLSearchParams, init?
   throw new ApiError(404, '接口不存在')
 }
 
+export function mockRuntime(): { compareWindow: number; model: string } {
+  return {
+    compareWindow: settings.compare_window_trading_days,
+    model: settings.ai_model,
+  }
+}
+
+export function currentSummary(date: string): SummaryDocument {
+  return summaryFor(date)
+}
+
 export async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
   await wait(140, init?.signal)

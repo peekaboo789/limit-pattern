@@ -145,6 +145,15 @@ export interface SummaryListResponse {
  * 每日总结至少包含契约列出的字段。
  * 嵌套结构在 docs/summary_schema.md 落地前按宽松形态解析，见 utils/summary.ts。
  */
+export type ExportType = 'scan' | 'similarity' | 'pool' | 'summary'
+
+export interface ExportParams {
+  type: ExportType
+  date: string
+  code?: string
+  top?: number
+}
+
 export interface SummaryDocument {
   date: string
   limitup_count: number

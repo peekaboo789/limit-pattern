@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { api, ApiError, isAbort } from '@/api/client'
-import type { PoolItem } from '@/api/types'
+import ExportButton from '@/components/ExportButton.vue'
+import type { ExportParams, PoolItem } from '@/api/types'
 import { boardLabel, formatAmount, formatPct, formatPrice, formatTime, formatTurnover, pctClass, shortDate } from '@/utils/format'
 import { limitTypeClass } from '@/utils/labels'
 import { computed, onMounted, ref } from 'vue'
@@ -18,6 +19,11 @@ const loading = ref(false)
 const error = ref('')
 
 const kinds = computed(() => [...new Set(items.value.map((item) => item.limit_type))])
+const exportParams = computed<ExportParams | null>(() => {
+  const date = day.value !== 'all' ? day.value : dates.value[dates.value.length - 1]
+  if (!date) return null
+  return { type: 'pool', date }
+})
 
 const filtered = computed(() => {
   const text = keyword.value.trim().toLowerCase()
@@ -114,7 +120,10 @@ onMounted(() => {
   <section v-else class="card">
     <div class="card-head">
       <h2>涨停明细</h2>
-      <span class="muted">显示 {{ filtered.length }} / {{ items.length }}</span>
+      <div class="toolbar">
+        <span class="muted">显示 {{ filtered.length }} / {{ items.length }}</span>
+        <ExportButton :params="exportParams" />
+      </div>
     </div>
     <div v-if="!filtered.length" class="empty">这个筛选条件下没有涨停</div>
     <div v-else class="table-wrap" style="max-height: calc(100vh - 280px)">

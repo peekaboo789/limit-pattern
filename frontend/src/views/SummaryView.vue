@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { api, ApiError, isAbort } from '@/api/client'
 import type { SummaryListItem } from '@/api/types'
+import ExportButton from '@/components/ExportButton.vue'
 import SectorChart from '@/components/SectorChart.vue'
+import type { ExportParams } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { normalizeSummary, type NormalizedSummary } from '@/utils/summary'
 import { computed, onMounted, ref } from 'vue'
@@ -18,6 +20,7 @@ const error = ref('')
 const view = computed<NormalizedSummary | null>(() => (raw.value ? normalizeSummary(raw.value) : null))
 const ladderMax = computed(() => Math.max(1, ...(view.value?.ladder.map((row) => row.count) ?? [1])))
 const headline = computed(() => view.value?.headline || list.value.find((item) => item.date === selected.value)?.headline || '')
+const exportParams = computed<ExportParams | null>(() => (selected.value ? { type: 'summary', date: selected.value } : null))
 
 async function loadList(prefer?: string) {
   loadingList.value = true
@@ -118,6 +121,7 @@ onMounted(() => {
               </p>
             </div>
             <div class="toolbar">
+              <ExportButton :params="exportParams" />
               <button class="btn btn-ghost" type="button" @click="showRaw = !showRaw">{{ showRaw ? '隐藏原始 JSON' : '查看原始 JSON' }}</button>
               <button class="btn" type="button" :disabled="generating" @click="generate">{{ generating ? '生成中…' : '重新生成' }}</button>
             </div>

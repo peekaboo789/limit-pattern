@@ -1,5 +1,6 @@
-import { request } from './http'
+import { ApiError, formatDetail, request } from './http'
 import type {
+  ExportParams,
   Health,
   KlineResponse,
   LimitUpsResponse,
@@ -13,6 +14,7 @@ import type {
   SyncStatus,
   SyncTask,
 } from './types'
+import { defaultExportFilename, filenameFromDisposition } from '@/utils/saveFile'
 
 export { ApiError, isAbort } from './http'
 
@@ -68,4 +70,42 @@ export const api = {
 
   generateSummary: (date: string) =>
     request<SummaryDocument>(`/api/summaries/${date}/generate`, { method: 'POST' }),
+
+  exportText: async (params: ExportParams) => {
+    if (import.meta.env.VITE_USE_MOCK === '1') {
+      const { mockExportText } = await import('@/mocks/exportText')
+      const file = mockExportText(params)
+      return {
+        filename: file.filename,
+        text: file.text,
+        blob: new Blob([file.text], { type: 'text/plain;charset=utf-8' }),
+      }
+    }
+
+    const response = await fetch(
+      `/api/export${query({
+        type: params.type,
+        date: params.date,
+        code: params.code,
+        top: params.top,
+      })}`,
+    )
+    const blob = await response.blob()
+    if (!response.ok) {
+      const raw = await blob.text()
+      let detail = raw.trim() || `导出失败（${response.status}）`
+      try {
+        const parsed = JSON.parse(raw) as { detail?: unknown }
+        if (parsed && typeof parsed === 'object' && 'detail' in parsed) detail = formatDetail(parsed.detail)
+      } catch {
+        // 失败响应有时是纯文本，而不是 {"detail": "..."}。
+      }
+      throw new ApiError(response.status, detail)
+    }
+    const text = await blob.text()
+    const filename =
+      filenameFromDisposition(response.headers.get('Content-Disposition')) ??
+      defaultExportFilename(params.type, params.date, params.code, params.top)
+    return { filename, text, blob }
+  },
 }

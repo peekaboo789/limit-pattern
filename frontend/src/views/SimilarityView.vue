@@ -2,6 +2,8 @@
 import { api, ApiError, isAbort } from '@/api/client'
 import type { KBar, PoolItem, SimilarityMatch, SimilarityResponse } from '@/api/types'
 import Disclaimer from '@/components/Disclaimer.vue'
+import ExportButton from '@/components/ExportButton.vue'
+import type { ExportParams } from '@/api/types'
 import KlineChart from '@/components/KlineChart.vue'
 import OverlayChart from '@/components/OverlayChart.vue'
 import ScorePanel from '@/components/ScorePanel.vue'
@@ -33,6 +35,10 @@ function barsIn(bars: KBar[], dates: string[]): KBar[] {
 }
 
 const covered = computed(() => (result.value ? barsIn(targetBars.value, result.value.target.window).length : 0))
+const exportParams = computed<ExportParams | null>(() => {
+  if (!result.value || !/^\d{4}-\d{2}-\d{2}$/.test(dateInput.value)) return null
+  return { type: 'similarity', date: dateInput.value, code: result.value.target.code, top: topN.value }
+})
 
 async function ensureDate() {
   if (!session.health) await loadHealth()
@@ -209,7 +215,10 @@ watch(
     <section class="card">
       <div class="card-head">
         <h2>相似涨停</h2>
-        <span class="muted">{{ result.matches.length }} / {{ result.pool_size }}</span>
+        <div class="toolbar">
+          <span class="muted">{{ result.matches.length }} / {{ result.pool_size }}</span>
+          <ExportButton :params="exportParams" />
+        </div>
       </div>
       <Disclaimer :text="result.disclaimer" />
       <p class="muted" style="margin-top: 0">
