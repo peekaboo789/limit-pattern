@@ -8,6 +8,7 @@ def test_frontend_dist_is_served_from_lp_static_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("LP_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LP_STATIC_DIR", str(page))
     monkeypatch.setenv("LP_SCHEDULER", "0")
+    monkeypatch.setenv("LP_AUTO_SYNC", "0")
     from backend.app.core.database import init_db, reset_engine
     from backend.app.main import create_app
 

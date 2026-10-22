@@ -16,8 +16,10 @@
 | GET | `/api/scan?date=&top=50&min_score=0` | 全市场和涨停池对比后的排行 |
 | GET | `/api/summaries` | 已保存的每日总结目录 |
 | GET | `/api/summaries/{date}` | 某一天的总结 JSON |
-| POST | `/api/summaries/{date}/generate` | 重新生成。没配 AI 时 409，`detail` 为「未配置AI接口」 |
+| POST | `/api/summaries/{date}/generate` | 重新生成。没配 AI 时写统计版；配了则加上解读。模型失败时仍返回统计版，并带 `ai_error` |
 
-相似度相关接口都带 `disclaimer`，原文是「相似度不是涨停概率」。
+相似度相关接口都带 `disclaimer`，原文是「相似度不是涨停概率」。`skipped` 列出没能参加打分的涨停样本和原因。
+
+`GET /api/sync/status` 在契约字段之外，还会给出 `phase`、`done`、`total`、`saved`、`failed`。`message` 用中文说明当前步骤。
 
 涨停列表里的 `board` 只有 `SH` 或 `SZ`。`first_limit_time` 日线里没有，所以是 null。

@@ -41,7 +41,9 @@
 | `volume_features` | 当天涨停股的换手率中位数、成交量中位数 |
 | `key_points` | 几句要点 |
 | `headline` | 一行标题 |
-| `model` | 写出标题的模型名 |
+| `model` | 写出标题的模型名。统计版是空字符串 |
+| `source` | `statistics` 是系统自己的统计；`ai` 表示标题和要点来自模型 |
+| `ai_error` | 模型没配或调用失败时的原因。成功时为 null |
 | `generated_at` | 生成时间，东八区 |
 
 列表接口 `GET /api/summaries` 只返回 `date`、`limitup_count`、`headline`。

@@ -14,13 +14,7 @@ from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import classify, normalize_code
 from backend.app.services.retention import quote_dates
 from backend.app.services.similarity_service import pool_dates, scan_market, similar_to
-from backend.app.services.summary_service import (
-    AiFailed,
-    AiNotConfigured,
-    generate_summary,
-    get_summary,
-    list_summaries,
-)
+from backend.app.services.summary_service import generate_summary, get_summary, list_summaries
 from backend.app.services.sync_service import start_sync, status
 
 router = APIRouter()
@@ -248,9 +242,4 @@ def summary_generate(day: str) -> dict:
     with session_scope() as session:
         if parsed not in quote_dates(session):
             raise HTTPException(status_code=404, detail="这一天没有行情")
-        try:
-            return generate_summary(session, parsed)
-        except AiNotConfigured as exc:
-            raise HTTPException(status_code=409, detail="未配置AI接口") from exc
-        except AiFailed as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return generate_summary(session, parsed)

@@ -46,11 +46,28 @@ def _mount_static(app: FastAPI) -> None:
         raise HTTPException(status_code=404, detail="没有这个页面")
 
 
+def bootstrap_if_empty() -> None:
+    """库里还没有行情时，后台拉一次，不挡住服务启动。"""
+    import os
+
+    if os.environ.get("LP_AUTO_SYNC", "1") == "0":
+        return
+    from backend.app.core.database import session_scope
+    from backend.app.models.tables import DailyQuote
+    from backend.app.services.sync_service import start_sync
+
+    with session_scope() as session:
+        exists = session.query(DailyQuote.id).first()
+    if exists is None:
+        start_sync()
+
+
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         init_db()
         start_scheduler()
+        bootstrap_if_empty()
         yield
         stop_scheduler()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
@@ -22,7 +23,15 @@ _STATE = {
     "progress": 0,
     "message": "还没有同步",
     "task_id": "",
+    "phase": "idle",
+    "done": 0,
+    "total": 0,
+    "saved": 0,
+    "failed": 0,
 }
+_PACE_LOCK = threading.Lock()
+_NEXT_FETCH = 0.0
+_FETCH_GAP = 1 / 16
 
 
 def status() -> dict:
@@ -31,12 +40,26 @@ def status() -> dict:
     snapshot["last_sync_at"] = read_settings_file().get("last_sync_at")
     snapshot["running"] = bool(snapshot["running"])
     snapshot["progress"] = int(snapshot["progress"])
+    snapshot["done"] = int(snapshot.get("done") or 0)
+    snapshot["total"] = int(snapshot.get("total") or 0)
+    snapshot["saved"] = int(snapshot.get("saved") or 0)
+    snapshot["failed"] = int(snapshot.get("failed") or 0)
     return snapshot
 
 
 def reset_state() -> None:
     with _LOCK:
-        _STATE.update(running=False, progress=0, message="还没有同步", task_id="")
+        _STATE.update(
+            running=False,
+            progress=0,
+            message="还没有同步",
+            task_id="",
+            phase="idle",
+            done=0,
+            total=0,
+            saved=0,
+            failed=0,
+        )
 
 
 _FETCH_LIST = fetch_stock_list
@@ -48,6 +71,37 @@ def set_fetcher(list_fn=None, kline_fn=None) -> None:
     global _FETCH_LIST, _FETCH_KLINE
     _FETCH_LIST = list_fn or fetch_stock_list
     _FETCH_KLINE = kline_fn or fetch_kline
+    from backend.app.services.history_backfill import clear_calc_memory
+
+    clear_calc_memory()
+
+
+def _pace() -> None:
+    global _NEXT_FETCH
+    with _PACE_LOCK:
+        now = time.monotonic()
+        wait = _NEXT_FETCH - now
+        if wait > 0:
+            _NEXT_FETCH += _FETCH_GAP
+        else:
+            wait = 0.0
+            _NEXT_FETCH = now + _FETCH_GAP
+    if wait > 0:
+        time.sleep(wait)
+
+
+def fetch_kline_retry(code: str, start: date, end: date) -> list[dict]:
+    """限速，失败再试两次。给全市场同步和按需补拉共用。"""
+    last: Exception | None = None
+    for attempt in range(3):
+        try:
+            _pace()
+            return _FETCH_KLINE(code, start, end)
+        except Exception as exc:
+            last = exc
+            time.sleep(0.2 * (2**attempt))
+    assert last is not None
+    raise last
 
 
 def run_sync_now() -> dict:
@@ -80,7 +134,7 @@ def _run(task_id: str) -> None:
         source = str(read_settings_file().get("data_source") or "eastmoney")
         if source not in {"eastmoney", "东方财富"}:
             raise RuntimeError(f"这一版只支持 eastmoney 行情，当前数据源是 {source}")
-        _set(progress=2, message="正在下载股票列表")
+        _set(progress=2, phase="list", message="正在下载股票列表")
         stocks = _FETCH_LIST()
         end = today()
         start = end - timedelta(days=max(20, retention_days() * 3))
@@ -88,14 +142,22 @@ def _run(task_id: str) -> None:
         done = 0
         failed = 0
         saved = 0
-        _set(progress=8, message=f"股票列表 {total} 只，开始下载日线")
+        _set(
+            progress=8,
+            phase="kline",
+            total=total,
+            done=0,
+            saved=0,
+            failed=0,
+            message=f"股票列表 {total} 只，开始下载日线",
+        )
 
         def _one(item: tuple[str, str]):
             code, name = item
-            bars = _FETCH_KLINE(code, start, end)
+            bars = fetch_kline_retry(code, start, end)
             return code, name, bars
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=12) as pool:
             futures = [pool.submit(_one, item) for item in stocks]
             for future in as_completed(futures):
                 done += 1
@@ -109,18 +171,39 @@ def _run(task_id: str) -> None:
                         saved += 1
                     else:
                         failed += 1
-                if done % 20 == 0 or done == total:
-                    progress = 8 + int(82 * done / max(total, 1))
-                    _set(progress=progress, message=f"已处理 {done}/{total}")
-        _set(progress=94, message="正在清理过期明细")
+                progress = 8 + int(80 * done / max(total, 1))
+                _set(
+                    progress=progress,
+                    phase="kline",
+                    done=done,
+                    total=total,
+                    saved=saved,
+                    failed=failed,
+                    message=f"正在下载日线 {done}/{total}，已写入 {saved} 只，失败 {failed} 只",
+                )
+        _set(progress=92, phase="cleanup", message="正在清理过期明细")
         purge_expired()
         _refresh_limit_counts()
+        summary_note = "，当日总结没有写成"
+        try:
+            _set(progress=96, phase="summary", message="正在写当日总结")
+            from backend.app.services.summary_service import refresh_latest_summary
+
+            if refresh_latest_summary() is not None:
+                summary_note = "，已写当日总结"
+        except Exception:
+            summary_note = "，当日总结没有写成"
         moment = datetime.now(SHANGHAI).isoformat(timespec="seconds")
         stamp("last_sync_at", moment)
         _set(
             running=False,
             progress=100,
-            message=f"同步完成：写入 {saved} 只，失败 {failed} 只",
+            phase="done",
+            done=done,
+            total=total,
+            saved=saved,
+            failed=failed,
+            message=f"同步完成：写入 {saved} 只，失败 {failed} 只{summary_note}",
         )
     except Exception as exc:
         _set(running=False, progress=0, message=str(exc) or "同步失败")

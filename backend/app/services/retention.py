@@ -6,6 +6,7 @@ from backend.app.core.clock import SHANGHAI
 from backend.app.core.config import retention_days, stamp
 from backend.app.core.database import session_scope
 from backend.app.models.tables import (
+    CalcBar,
     DailyFeature,
     DailyQuote,
     DataQualityError,
@@ -29,14 +30,23 @@ def purge_expired() -> dict:
     keep = retention_days()
     with session_scope() as session:
         days = quote_dates(session)
-        if len(days) <= keep:
-            deleted = {"daily_quotes": 0}
-            kept = [day.isoformat() for day in days]
+        if not days:
+            deleted = {"daily_quotes": 0, "calc_bars": 0}
+            kept = []
             cutoff = None
+        elif len(days) <= keep:
+            # 正式行情已经不多于保留天数。更早的补拉 K 线仍然要删掉。
+            cutoff = days[0]
+            deleted = {
+                "daily_quotes": 0,
+                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < cutoff).delete(synchronize_session=False),
+            }
+            kept = [day.isoformat() for day in days]
         else:
             cutoff = days[-keep]
             deleted = {
                 "daily_quotes": session.query(DailyQuote).filter(DailyQuote.trade_date < cutoff).delete(synchronize_session=False),
+                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < cutoff).delete(synchronize_session=False),
                 "daily_features": session.query(DailyFeature).filter(DailyFeature.trade_date < cutoff).delete(synchronize_session=False),
                 "limit_up_patterns": session.query(LimitUpPattern).filter(LimitUpPattern.limit_up_date < cutoff).delete(synchronize_session=False),
                 "pattern_matches": session.query(PatternMatch).filter(PatternMatch.target_date < cutoff).delete(synchronize_session=False),
@@ -45,6 +55,9 @@ def purge_expired() -> dict:
                 "trading_days": session.query(TradingDay).filter(TradingDay.trade_date < cutoff).delete(synchronize_session=False),
             }
             kept = [day.isoformat() for day in days if day >= cutoff]
+    from backend.app.services.history_backfill import clear_calc_memory
+
+    clear_calc_memory()
     moment = datetime.now(SHANGHAI).isoformat(timespec="seconds")
     stamp("last_cleanup_at", moment)
     return {

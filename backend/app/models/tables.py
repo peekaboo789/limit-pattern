@@ -74,6 +74,25 @@ class DailyQuote(Base):
     source: Mapped[str] = mapped_column(String(32), default="")
 
 
+class CalcBar(Base):
+    """补来的历史日线，只给形态计算用。清理任务会把它和正式行情一起删到保留窗口外。"""
+
+    __tablename__ = "calc_bars"
+    __table_args__ = (UniqueConstraint("stock_code", "trade_date", name="uq_calc_bar"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(6), index=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    open: Mapped[float | None] = mapped_column(Float, nullable=True)
+    high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pre_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
 class DailyFeature(Base):
     __tablename__ = "daily_features"
     __table_args__ = (UniqueConstraint("stock_code", "trade_date", name="uq_feature"),)

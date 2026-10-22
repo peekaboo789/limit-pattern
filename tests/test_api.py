@@ -224,9 +224,14 @@ def test_retention_keeps_summaries(client, monkeypatch):
     assert blocked.status_code == 200
     fresh = client.put("/api/settings", json={"ai_base_url": "", "ai_model": ""})
     assert fresh.json()["ai_enabled"] is False
-    denied = client.post(f"/api/summaries/{days[-1].isoformat()}/generate")
-    assert denied.status_code == 409
-    assert denied.json()["detail"] == "未配置AI接口"
+    stats = client.post(f"/api/summaries/{days[-1].isoformat()}/generate")
+    assert stats.status_code == 200
+    body = stats.json()
+    assert body["source"] == "statistics"
+    assert body["model"] == ""
+    assert body["limitup_count"] >= 1
+    assert body["sectors"] and body["ladder"] and body["volume_features"]
+    assert any(point.startswith("板块：") for point in body["key_points"])
 
 
 def test_sync_filters_non_ashares(client):

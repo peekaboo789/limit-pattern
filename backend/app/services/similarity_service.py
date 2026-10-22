@@ -6,11 +6,12 @@ from datetime import date
 
 import numpy as np
 
-from backend.app.algorithms.features import Bar, build_three_day_window
+from backend.app.algorithms.features import build_three_day_window
 from backend.app.algorithms.similarity import score_components
 from backend.app.core.constants import COMPARE_WINDOW_TRADING_DAYS
 from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import BOARD_LABELS, classify
+from backend.app.services.history_backfill import ensure_prior_bars, load_bars
 from backend.app.services.retention import quote_dates
 
 DISCLAIMER = "相似度不是涨停概率"
@@ -21,46 +22,34 @@ def pool_dates(session, as_of: date) -> list[date]:
     return days[-COMPARE_WINDOW_TRADING_DAYS:]
 
 
-def _bars(session, code: str, as_of: date) -> list[Bar]:
-    rows = (
-        session.query(DailyQuote)
-        .filter(DailyQuote.stock_code == code, DailyQuote.trade_date <= as_of)
-        .order_by(DailyQuote.trade_date)
-        .all()
-    )
-    bars: list[Bar] = []
-    for row in rows:
-        if None in (row.open, row.high, row.low, row.close):
-            continue
-        bars.append(
-            Bar(
-                trade_date=row.trade_date,
-                open=row.open,
-                high=row.high,
-                low=row.low,
-                close=row.close,
-                pre_close=row.pre_close,
-                volume=row.volume,
-                amount=row.amount,
-                turnover_rate=row.turnover_rate,
-            )
-        )
-    return bars
-
-
-def _samples(session, as_of: date) -> tuple[list[date], list[dict]]:
+def _samples(session, as_of: date) -> tuple[list[date], list[dict], list[dict]]:
     dates = pool_dates(session, as_of)
     if not dates:
-        return [], []
+        return [], [], []
+    names = _names(session)
     rows = (
         session.query(DailyQuote)
         .filter(DailyQuote.trade_date.in_(dates), DailyQuote.is_limit_up.is_(True))
         .all()
     )
     samples: list[dict] = []
+    skipped: list[dict] = []
     for row in rows:
-        window = build_three_day_window(_bars(session, row.stock_code, row.trade_date), row.trade_date, include_as_of_date=False)
+        reason = ensure_prior_bars(session, row.stock_code, row.trade_date, as_of)
+        window = build_three_day_window(
+            load_bars(session, row.stock_code, min(row.trade_date, as_of)),
+            row.trade_date,
+            include_as_of_date=False,
+        )
         if not window.ok:
+            skipped.append(
+                {
+                    "code": row.stock_code,
+                    "name": names.get(row.stock_code, ""),
+                    "limit_date": row.trade_date.isoformat(),
+                    "reason": reason or "凑不齐涨停前三根K线",
+                }
+            )
             continue
         samples.append(
             {
@@ -71,7 +60,8 @@ def _samples(session, as_of: date) -> tuple[list[date], list[dict]]:
             }
         )
     samples.sort(key=lambda item: (item["limit_date"], item["code"]))
-    return dates, samples
+    skipped.sort(key=lambda item: (item["limit_date"], item["code"]))
+    return dates, samples, skipped
 
 
 def _names(session) -> dict[str, str]:
@@ -89,19 +79,21 @@ def _empty(code: str, name: str, dates: list[date], window: list[str] | None = N
         "pool_size": 0,
         "disclaimer": DISCLAIMER,
         "matches": [],
+        "skipped": [],
     }
 
 
 def similar_to(session, code: str, as_of: date, top: int) -> dict:
     names = _names(session)
-    dates, samples = _samples(session, as_of)
-    window = build_three_day_window(_bars(session, code, as_of), as_of, include_as_of_date=True)
+    dates, samples, skipped = _samples(session, as_of)
+    window = build_three_day_window(load_bars(session, code, as_of), as_of, include_as_of_date=True)
     if not window.ok:
         raise LookupError("这只股票在这一天凑不齐三天行情")
     target_window = [bar.trade_date.isoformat() for bar in window.days]
     comparable = [sample for sample in samples if sample["code"] != code]
     payload = _empty(code, names.get(code, ""), dates, target_window)
     payload["pool_size"] = len(samples)
+    payload["skipped"] = skipped
     if not comparable:
         return payload
     parts = score_components(
@@ -133,13 +125,15 @@ def similar_to(session, code: str, as_of: date, top: int) -> dict:
 
 
 def scan_market(session, as_of: date, top: int, min_score: float) -> dict:
-    dates, samples = _samples(session, as_of)
+    dates, samples, skipped = _samples(session, as_of)
     names = _names(session)
     base = {
         "date": as_of.isoformat(),
+        "pool_dates": [day.isoformat() for day in dates],
         "pool_size": len(samples),
         "disclaimer": DISCLAIMER,
         "items": [],
+        "skipped": skipped,
     }
     if not samples:
         return base
@@ -151,7 +145,7 @@ def scan_market(session, as_of: date, top: int, min_score: float) -> dict:
     ]
     targets: list[tuple[str, list[float]]] = []
     for code in codes:
-        window = build_three_day_window(_bars(session, code, as_of), as_of, include_as_of_date=True)
+        window = build_three_day_window(load_bars(session, code, as_of), as_of, include_as_of_date=True)
         if window.ok:
             targets.append((code, window.vector))
     if not targets:

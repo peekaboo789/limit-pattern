@@ -180,37 +180,45 @@ def call_chat(prompt: str) -> str:
         raise AiFailed("AI 接口没有返回文本") from exc
 
 
-def generate_summary(session, day: date, chat=None) -> dict:
+def ai_ready() -> bool:
     settings = read_settings_file()
-    if not (settings.get("ai_base_url") and settings.get("ai_model") and settings.get("ai_api_key")):
-        raise AiNotConfigured("未配置AI接口")
-    facts = build_facts(session, day)
-    prompt = "下面是已经算好的涨停统计，请只据此写 headline 和 key_points：\n" + json.dumps(
-        facts, ensure_ascii=False
-    )
-    text = chat(prompt) if chat is not None else call_chat(prompt)
-    written = _extract_json(text)
-    points = written.get("key_points")
-    if not isinstance(points, list) or not all(isinstance(item, str) and item.strip() for item in points):
-        points = facts["key_points"]
-    headline = written.get("headline")
-    if not isinstance(headline, str) or not headline.strip():
-        headline = facts["headline"]
-    payload = {
+    return bool(settings.get("ai_base_url") and settings.get("ai_model") and settings.get("ai_api_key"))
+
+
+def statistical_points(facts: dict) -> list[str]:
+    points = [facts["headline"]]
+    if facts["sectors"]:
+        text = "，".join(f"{item['name']} {item['count']} 只" for item in facts["sectors"])
+        points.append(f"板块：{text}")
+    if facts["ladder"]:
+        text = "，".join(f"{item['height']} 连板 {item['count']} 只" for item in facts["ladder"])
+        points.append(f"连板：{text}")
+    volume = facts["volume_features"]
+    if volume.get("median_turnover_rate") is not None:
+        points.append(f"涨停股换手率中位数 {volume['median_turnover_rate']}")
+    if volume.get("median_volume") is not None:
+        points.append(f"涨停股成交量中位数 {volume['median_volume']}")
+    return points
+
+
+def _statistics_payload(facts: dict) -> dict:
+    return {
         "date": facts["date"],
         "limitup_count": facts["limitup_count"],
         "sectors": facts["sectors"],
         "ladder": facts["ladder"],
         "patterns": facts["patterns"],
         "volume_features": facts["volume_features"],
-        "key_points": [item.strip() for item in points][:5],
-        "headline": headline.strip(),
-        "model": str(settings["ai_model"]),
+        "key_points": statistical_points(facts),
+        "headline": facts["headline"],
+        "model": "",
+        "source": "statistics",
+        "ai_error": None,
         "generated_at": datetime.now(SHANGHAI).isoformat(timespec="seconds"),
     }
-    missing = [key for key in REQUIRED_KEYS if key not in payload]
-    if missing:
-        raise AiFailed("总结缺少字段")
+
+
+def _save_summary(session, day: date, payload: dict) -> dict:
     row = session.get(AiDailySummary, day)
     if row is None:
         row = AiDailySummary(trade_date=day, payload=payload)
@@ -221,6 +229,67 @@ def generate_summary(session, day: date, chat=None) -> dict:
     path = summaries_dir() / f"{day.isoformat()}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return payload
+
+
+def generate_summary(session, day: date, chat=None) -> dict:
+    """先落统计版。配了 AI 再补标题和要点；模型失败时仍保留统计版。"""
+    facts = build_facts(session, day)
+    payload = _statistics_payload(facts)
+    if not ai_ready() and chat is None:
+        return _save_summary(session, day, payload)
+    prompt = "下面是已经算好的涨停统计，请只据此写 headline 和 key_points：\n" + json.dumps(
+        facts, ensure_ascii=False
+    )
+    try:
+        text = chat(prompt) if chat is not None else call_chat(prompt)
+        written = _extract_json(text)
+    except (AiNotConfigured, AiFailed) as exc:
+        payload["ai_error"] = str(exc)
+        return _save_summary(session, day, payload)
+    points = written.get("key_points")
+    headline = written.get("headline")
+    if isinstance(points, list) and all(isinstance(item, str) and item.strip() for item in points):
+        payload["key_points"] = [item.strip() for item in points][:5]
+    if isinstance(headline, str) and headline.strip():
+        payload["headline"] = headline.strip()
+    settings = read_settings_file()
+    payload["model"] = str(settings.get("ai_model") or "")
+    payload["source"] = "ai"
+    payload["ai_error"] = None
+    return _save_summary(session, day, payload)
+
+
+def refresh_latest_summary() -> dict | None:
+    """同步结束后重写最近一个交易日的总结。"""
+    from backend.app.core.clock import today
+    from backend.app.core.database import session_scope
+    from backend.app.services.retention import quote_dates
+
+    with session_scope() as session:
+        days = [item for item in quote_dates(session) if item <= today()]
+        if not days:
+            return None
+        return generate_summary(session, days[-1])
+
+
+def ensure_daily_summary(day: date | None = None) -> dict | None:
+    """没有这一天的总结才写。给收盘后的定时任务补漏。"""
+    from backend.app.core.clock import today
+    from backend.app.core.database import session_scope
+    from backend.app.services.retention import quote_dates
+
+    with session_scope() as session:
+        if day is None:
+            days = [item for item in quote_dates(session) if item <= today()]
+            if not days:
+                return None
+            day = days[-1]
+        elif day > today():
+            return None
+        existing = session.get(AiDailySummary, day)
+        if existing is not None:
+            return dict(existing.payload or {})
+        return generate_summary(session, day)
 
 
 def list_summaries(session) -> dict:
