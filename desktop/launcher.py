@@ -1,0 +1,880 @@
+"""三日涨停形态统计桌面启动器。
+
+在子线程里启动 uvicorn，端口被占用就往后换，轮询 ``/api/health`` 成功后用
+pywebview（WebView2）打开窗口。关闭窗口缩到托盘，托盘提供「显示 / 退出」。
+同一 Windows 会话只允许一个实例。日志写到 ``LP_DATA_DIR/logs/launcher.log``。
+
+应用选择：
+
+- 环境变量 ``LP_USE_STUB=1`` 时强制使用 stub。
+- 否则优先 ``backend.app.main:app``；导入失败时退回 ``desktop.stub_app``。
+- 静态页优先已有的 ``LP_STATIC_DIR``，其次 ``frontend/dist``，最后才是 stub 页面。
+  选定的目录会写回 ``LP_STATIC_DIR``，供后端挂载。
+
+数据目录：``LP_DATA_DIR``，缺省时 Windows 为 ``%LOCALAPPDATA%\\LimitPattern``，
+其他系统为 ``~/.limit_pattern``。服务只绑定 ``127.0.0.1``。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import socket
+import sys
+import threading
+import traceback
+import urllib.error
+import urllib.request
+import webbrowser
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+APP_TITLE = "三日涨停形态统计"
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8765
+LOGGER_NAME = "limitpattern.launcher"
+_LOG_HANDLER_MARK = "_limitpattern_file"
+WEBVIEW2_MINIMUM = "86.0.622.0"
+WEBVIEW2_GUIDS = (
+    "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",  # Runtime
+    "{2CD8A007-E189-409D-A2C8-9AF4EF3C72AA}",  # Beta
+    "{0D50BFEC-CD6A-4F9A-964C-C7416E3ACB10}",  # Dev
+    "{65C35B14-6C1D-4122-AC46-7148CC9D6497}",  # Canary
+)
+WEBVIEW2_MISSING_MESSAGE = (
+    "未检测到可用的 WebView2 内嵌窗口环境（需要安装 Microsoft Edge WebView2 Runtime，"
+    "以及 .NET Framework 4.6.2 或更高版本）。\n\n"
+    "将使用系统默认浏览器打开本程序。安装 WebView2 后重新启动，即可使用内嵌窗口。"
+)
+
+logger = logging.getLogger(LOGGER_NAME)
+
+
+class AppState:
+    def __init__(self) -> None:
+        self.url = ""
+        self.quitting = False
+        self.browser_mode = False
+        self.window = None
+        self.icon = None
+        self.server: ServerHandle | None = None
+        self.control: ControlServer | None = None
+        self.quit_event = threading.Event()
+        self.show_requested = threading.Event()
+
+
+def project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def bundle_root() -> Path:
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass)
+    return Path(sys.executable).resolve().parent
+
+
+def ensure_import_path() -> None:
+    """源码运行时把仓库根目录放进 sys.path，冻结后由 PyInstaller 提供导入。"""
+    if is_frozen():
+        return
+    root = str(project_root())
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+def resolve_data_dir() -> Path:
+    env = os.environ.get("LP_DATA_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA", "").strip()
+        if local:
+            return Path(local) / "LimitPattern"
+        return Path.home() / "AppData" / "Local" / "LimitPattern"
+    return Path.home() / ".limit_pattern"
+
+
+def default_stub_static() -> Path:
+    if is_frozen():
+        for relative in (Path("desktop") / "stub_static", Path("stub_static")):
+            candidate = bundle_root() / relative
+            if candidate.is_dir():
+                return candidate
+    return Path(__file__).resolve().parent / "stub_static"
+
+
+def resolve_static_dir() -> tuple[Path, str]:
+    """返回 ``(目录, 来源)``。来源是 ``env`` / ``frontend`` / ``stub``。"""
+    env = os.environ.get("LP_STATIC_DIR", "").strip()
+    if env:
+        path = Path(env).expanduser()
+        if path.is_dir():
+            return path, "env"
+        logger.warning("LP_STATIC_DIR 不存在：%s", path)
+    frontend = (bundle_root() if is_frozen() else project_root()) / "frontend" / "dist"
+    if (frontend / "index.html").is_file():
+        return frontend, "frontend"
+    return default_stub_static(), "stub"
+
+
+def stub_forced() -> bool:
+    return os.environ.get("LP_USE_STUB", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_stub_factory():
+    ensure_import_path()
+    try:
+        from desktop.stub_app import create_app
+    except ImportError:
+        from stub_app import create_app
+    return create_app
+
+
+def _import_backend_app():
+    import importlib
+
+    ensure_import_path()
+    try:
+        module = importlib.import_module("backend.app.main")
+    except ModuleNotFoundError as exc:
+        missing = exc.name or ""
+        if missing == "backend" or missing.startswith("backend."):
+            logger.info("未找到后端模块 %s，使用 stub", missing or "backend")
+            return None
+        logger.exception("后端依赖缺失（%s），使用 stub", missing)
+        return None
+    except Exception:
+        logger.exception("导入 backend.app.main:app 失败，使用 stub")
+        return None
+    app = getattr(module, "app", None)
+    if app is None:
+        logger.error("backend.app.main 没有名为 app 的对象，使用 stub")
+        return None
+    return app
+
+
+def load_app(static_dir: Path) -> tuple[object, str]:
+    if not stub_forced():
+        backend_app = _import_backend_app()
+        if backend_app is not None:
+            logger.info("应用来源=backend")
+            return backend_app, "backend"
+    app = _load_stub_factory()(static_dir)
+    logger.info("应用来源=stub")
+    return app, "stub"
+
+
+def setup_logging(data_dir: Path) -> Path:
+    log_dir = data_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "launcher.log"
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    for handler in list(root.handlers):
+        if getattr(handler, _LOG_HANDLER_MARK, False):
+            root.removeHandler(handler)
+            handler.close()
+    handler = RotatingFileHandler(log_path, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    setattr(handler, _LOG_HANDLER_MARK, True)
+    root.addHandler(handler)
+    logger.info("日志文件 %s", log_path)
+    return log_path
+
+
+def _bypass_local_proxy() -> None:
+    existing = os.environ.get("NO_PROXY", os.environ.get("no_proxy", ""))
+    parts = [item.strip() for item in existing.split(",") if item.strip()]
+    for host in ("127.0.0.1", "localhost"):
+        if host not in parts:
+            parts.append(host)
+    joined = ",".join(parts)
+    os.environ["NO_PROXY"] = joined
+    os.environ["no_proxy"] = joined
+
+
+def bind_server_socket(host: str, preferred: int, attempts: int = 50) -> tuple[socket.socket, int]:
+    if preferred < 1 or preferred > 65535:
+        preferred = DEFAULT_PORT
+    last_error: Exception | None = None
+    for offset in range(attempts):
+        port = preferred + offset
+        if port > 65535:
+            break
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            if sys.platform != "win32":
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+            sock.listen(128)
+            return sock, port
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+    raise RuntimeError(f"从 {host}:{preferred} 起 {attempts} 个端口都不可用") from last_error
+
+
+class ServerHandle:
+    def __init__(self, app: object, host: str, port: int, sock: socket.socket) -> None:
+        self.app = app
+        self.host = host
+        self.port = port
+        self.sock = sock
+        self.server = None
+        self.thread: threading.Thread | None = None
+        self.error = ""
+        self._stopped = False
+
+    def start(self) -> None:
+        import uvicorn
+
+        for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            logging.getLogger(name).setLevel(logging.INFO)
+        config = uvicorn.Config(
+            self.app,
+            host=self.host,
+            port=self.port,
+            log_config=None,
+            access_log=False,
+            log_level="info",
+            lifespan="on",
+            use_colors=False,
+            workers=1,
+            timeout_graceful_shutdown=2,
+        )
+        self.server = uvicorn.Server(config)
+        self.thread = threading.Thread(target=self._run, name="limitpattern-uvicorn", daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        try:
+            assert self.server is not None
+            self.server.run(sockets=[self.sock])
+        except BaseException:
+            self.error = traceback.format_exc()
+            logger.error("uvicorn 异常退出\n%s", self.error)
+
+    def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
+        server = self.server
+        thread = self.thread
+        if server is not None:
+            server.should_exit = True
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5)
+        if thread is not None and thread.is_alive() and server is not None:
+            server.force_exit = True
+            thread.join(timeout=3)
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+def wait_until_healthy(host: str, port: int, thread: threading.Thread | None, timeout: float = 30.0) -> dict:
+    url = f"http://{host}:{port}/api/health"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    deadline = _monotonic() + timeout
+    last_error = "尚未连接"
+    while _monotonic() < deadline:
+        if thread is not None and not thread.is_alive():
+            raise RuntimeError(f"服务线程已退出，{url} 没有就绪")
+        try:
+            with opener.open(request, timeout=1.5) as response:
+                raw = response.read().decode("utf-8")
+                if response.status != 200:
+                    last_error = f"HTTP {response.status}"
+                else:
+                    payload = json.loads(raw)
+                    if payload.get("status") == "ok":
+                        return payload
+                    last_error = raw
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            last_error = str(exc)
+        _sleep(0.2)
+    raise TimeoutError(f"等待 {url} 超时：{last_error}")
+
+
+def _monotonic() -> float:
+    import time
+
+    return time.monotonic()
+
+
+def _sleep(seconds: float) -> None:
+    import time
+
+    time.sleep(seconds)
+
+
+class SingleInstance:
+    """Windows 用会话级互斥量，所有平台再用数据目录里的文件锁。"""
+
+    def __init__(self, data_dir: Path) -> None:
+        self.data_dir = data_dir
+        self._file = None
+        self._mutex = None
+        self._kernel32 = None
+
+    def try_acquire(self) -> bool:
+        if sys.platform == "win32" and not self._acquire_mutex():
+            return False
+        if not self._acquire_file():
+            self.release()
+            return False
+        return True
+
+    def _acquire_mutex(self) -> bool:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.CreateMutexW(None, False, "Local\\LimitPattern.SingleInstance")
+        if not handle:
+            raise OSError("CreateMutexW 失败")
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            kernel32.CloseHandle(handle)
+            return False
+        self._mutex = handle
+        self._kernel32 = kernel32
+        return True
+
+    def _acquire_file(self) -> bool:
+        path = self.data_dir / "instance.lock"
+        handle = open(path, "a+b")
+        self._file = handle
+        try:
+            if handle.tell() == 0 and handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+    def release(self) -> None:
+        handle = self._file
+        self._file = None
+        if handle is not None:
+            try:
+                handle.seek(0)
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                handle.close()
+            except OSError:
+                pass
+        if self._mutex is not None and self._kernel32 is not None:
+            self._kernel32.CloseHandle(self._mutex)
+            self._mutex = None
+
+
+class ControlServer:
+    """第二个实例连上这个端口并发送 SHOW，用来唤起已有窗口。"""
+
+    def __init__(self, data_dir: Path, on_show) -> None:
+        self.data_dir = data_dir
+        self.on_show = on_show
+        self.quit_event = threading.Event()
+        self.port = 0
+        self._sock: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self, http_port: int, url: str) -> int:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind((DEFAULT_HOST, 0))
+        sock.listen(5)
+        sock.settimeout(0.5)
+        self._sock = sock
+        self.port = sock.getsockname()[1]
+        _write_json(
+            self.data_dir / "instance.json",
+            {"pid": os.getpid(), "port": http_port, "control_port": self.port, "url": url},
+        )
+        self._thread = threading.Thread(target=self._loop, name="limitpattern-control", daemon=True)
+        self._thread.start()
+        return self.port
+
+    def _loop(self) -> None:
+        assert self._sock is not None
+        while not self.quit_event.is_set():
+            try:
+                connection, _addr = self._sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            with connection:
+                try:
+                    data = connection.recv(64)
+                except OSError:
+                    continue
+                if data.startswith(b"SHOW"):
+                    try:
+                        self.on_show()
+                    except Exception:
+                        logger.exception("处理显示请求失败")
+
+    def stop(self) -> None:
+        self.quit_event.set()
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            self._thread = None
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _remove_instance_file(data_dir: Path) -> None:
+    path = data_dir / "instance.json"
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if int(info.get("pid", -1)) != os.getpid():
+        return
+    path.unlink(missing_ok=True)
+
+
+def signal_existing_instance(data_dir: Path) -> bool:
+    path = data_dir / "instance.json"
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+        port = int(info["control_port"])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        logger.info("已有实例在运行，但没有可通知的控制端口")
+        return False
+    try:
+        with socket.create_connection((DEFAULT_HOST, port), timeout=1.0) as connection:
+            connection.sendall(b"SHOW\n")
+    except OSError:
+        logger.info("已有实例在运行，通知它显示窗口失败")
+        return False
+    logger.info("已通知正在运行的实例显示窗口")
+    return True
+
+
+def version_at_least(version: str, minimum: str = WEBVIEW2_MINIMUM) -> bool:
+    def parse(text: str) -> tuple[int, ...] | None:
+        stripped = text.strip()
+        if not stripped or stripped in {"0", "0.0.0.0"}:
+            return None
+        parts: list[int] = []
+        for item in stripped.split("."):
+            digits = "".join(ch for ch in item if ch.isdigit())
+            if not digits:
+                return None
+            parts.append(int(digits))
+        return tuple(parts) if parts else None
+
+    current = parse(version)
+    target = parse(minimum)
+    if current is None or target is None:
+        return False
+    width = max(len(current), len(target))
+    current = current + (0,) * (width - len(current))
+    target = target + (0,) * (width - len(target))
+    return current >= target
+
+
+def webview2_installed() -> bool:
+    if sys.platform != "win32":
+        return False
+    import platform
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full"
+        ) as key:
+            release, _kind = winreg.QueryValueEx(key, "Release")
+        if int(release) < 394802:  # .NET Framework 4.6.2
+            return False
+    except OSError:
+        return False
+
+    machine = platform.machine().lower()
+    roots = [(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\EdgeUpdate\Clients")]
+    if machine in {"x86", "i386"}:
+        roots.append((winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients"))
+    else:
+        roots.append((winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients"))
+        roots.append((winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients"))
+    for hive, root in roots:
+        for guid in WEBVIEW2_GUIDS:
+            try:
+                with winreg.OpenKey(hive, root + "\\" + guid) as key:
+                    revision, _kind = winreg.QueryValueEx(key, "pv")
+            except OSError:
+                continue
+            if version_at_least(str(revision)):
+                return True
+    return False
+
+
+def explain_webview_unavailable(force_browser: bool) -> str | None:
+    """返回 None 表示使用内嵌窗口；空字符串表示改用浏览器但不弹窗。"""
+    if force_browser:
+        return ""
+    if sys.platform == "win32" and not webview2_installed():
+        return WEBVIEW2_MISSING_MESSAGE
+    return None
+
+
+def window_close_action(quitting: bool, tray_ready: bool) -> str:
+    if quitting or not tray_ready:
+        return "destroy"
+    return "hide"
+
+
+def notify(message: str, title: str = APP_TITLE) -> None:
+    logger.info("提示：%s", message.replace("\n", " "))
+    if sys.platform != "win32":
+        print(message, file=sys.stderr)
+        return
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.MessageBoxW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint)
+        user32.MessageBoxW.restype = ctypes.c_int
+        user32.MessageBoxW(None, message, title, 0x40 | 0x00010000)
+    except Exception:
+        logger.exception("弹出提示框失败")
+        print(message, file=sys.stderr)
+
+
+def open_browser(url: str) -> None:
+    logger.info("使用默认浏览器打开 %s", url)
+    webbrowser.open(url)
+
+
+def make_tray_image():
+    from PIL import Image, ImageDraw
+
+    size = 64
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((2, 2, 61, 61), radius=12, fill=(11, 15, 20, 255))
+    draw.rectangle((31, 10, 33, 54), fill=(226, 61, 61, 255))
+    draw.rectangle((26, 20, 38, 46), fill=(226, 61, 61, 255))
+    return image
+
+
+def show_ui(state: AppState) -> None:
+    if state.browser_mode:
+        if state.url:
+            open_browser(state.url)
+        return
+    window = state.window
+    if window is None:
+        state.show_requested.set()
+        return
+    try:
+        window.show()
+    except Exception:
+        logger.exception("显示窗口失败")
+        if state.url:
+            open_browser(state.url)
+
+
+def stop_tray(state: AppState) -> None:
+    icon = state.icon
+    state.icon = None
+    if icon is None:
+        return
+    try:
+        icon.stop()
+    except Exception:
+        logger.exception("停止托盘失败")
+
+
+def request_quit(state: AppState) -> None:
+    if state.quitting:
+        state.quit_event.set()
+        return
+    state.quitting = True
+    logger.info("退出程序")
+    if state.server is not None:
+        state.server.stop()
+    window = state.window
+    if window is not None:
+        try:
+            window.destroy()
+        except Exception:
+            logger.exception("销毁窗口失败")
+    state.quit_event.set()
+    stop_tray(state)
+
+
+def start_tray(state: AppState) -> bool:
+    try:
+        import pystray
+
+        image = make_tray_image()
+        menu = pystray.Menu(
+            pystray.MenuItem("显示", lambda _icon, _item: show_ui(state), default=True),
+            pystray.MenuItem("退出", lambda _icon, _item: request_quit(state)),
+        )
+        icon = pystray.Icon("LimitPattern", image, APP_TITLE, menu)
+        state.icon = icon
+        threading.Thread(target=icon.run, name="limitpattern-tray", daemon=True).start()
+        logger.info("托盘图标已创建")
+        return True
+    except Exception:
+        logger.exception("托盘图标创建失败")
+        state.icon = None
+        return False
+
+
+def _hide_window(state: AppState) -> None:
+    window = state.window
+    if window is None:
+        return
+    try:
+        window.hide()
+        logger.info("窗口已隐藏到托盘")
+    except Exception:
+        logger.exception("隐藏窗口失败")
+
+
+def run_webview(state: AppState) -> None:
+    import webview
+
+    def on_closing() -> bool:
+        action = window_close_action(state.quitting, state.icon is not None)
+        if action == "destroy":
+            return True
+        # 在关闭回调里同步 hide() 会卡住 WinForms 消息循环，所以丢到别的线程。
+        threading.Thread(target=_hide_window, args=(state,), name="limitpattern-hide", daemon=True).start()
+        return False
+
+    window = webview.create_window(
+        APP_TITLE,
+        state.url,
+        width=1280,
+        height=800,
+        min_size=(960, 640),
+        background_color="#0b0f14",
+        text_select=True,
+        confirm_close=False,
+    )
+    if window is None:
+        raise RuntimeError("pywebview 没有创建窗口")
+    state.window = window
+    window.events.closing += on_closing
+    logger.info("启动 pywebview，加载 %s", state.url)
+    webview.start()
+
+
+def verify_gui_imports() -> None:
+    if is_frozen():
+        root = bundle_root()
+        for relative in (
+            "pythonnet/runtime/Python.Runtime.dll",
+            "clr_loader/ffi/dlls/amd64/ClrLoader.dll",
+            "webview/lib/Microsoft.Web.WebView2.Core.dll",
+            "webview/lib/Microsoft.Web.WebView2.WinForms.dll",
+            "webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
+        ):
+            path = root / relative
+            logger.info("资源%s %s", "存在" if path.is_file() else "缺失", path)
+        logger.info("PYTHONNET_PYDLL=%s", os.environ.get("PYTHONNET_PYDLL", ""))
+    logger.info("开始导入 WebView2 / pythonnet")
+    import clr  # noqa: F401
+
+    logger.info("已导入 clr")
+    import webview
+
+    logger.info("已导入 webview %s", getattr(webview, "__version__", ""))
+    import webview.platforms.edgechromium  # noqa: F401
+
+    logger.info("已导入 edgechromium")
+    import webview.platforms.winforms  # noqa: F401
+
+    logger.info("已导入 winforms")
+
+
+def _wait_until_quit(state: AppState) -> None:
+    try:
+        while not state.quit_event.wait(0.5):
+            pass
+    except KeyboardInterrupt:
+        request_quit(state)
+
+
+def launch_ui(state: AppState, force_browser: bool) -> None:
+    reason = explain_webview_unavailable(force_browser)
+    tray_ready = start_tray(state)
+    if reason is not None:
+        state.browser_mode = True
+        if reason:
+            notify(reason)
+        open_browser(state.url)
+        if tray_ready:
+            _wait_until_quit(state)
+        else:
+            logger.warning("没有托盘图标。结束本进程即可退出，日志里有数据目录。")
+            _wait_until_quit(state)
+        return
+    try:
+        run_webview(state)
+    except Exception as exc:
+        logger.exception("内嵌窗口启动失败")
+        if state.quitting:
+            return
+        state.browser_mode = True
+        notify("内嵌窗口启动失败，将改用默认浏览器打开。\n" + str(exc))
+        open_browser(state.url)
+        _wait_until_quit(state)
+
+
+def _install_excepthook(smoke: bool, data_dir: Path) -> None:
+    def hook(exc_type, exc, tb) -> None:
+        if exc_type is KeyboardInterrupt:
+            return
+        logger.critical("未捕获异常", exc_info=(exc_type, exc, tb))
+        if not smoke:
+            notify(f"程序出现未捕获错误。请查看日志：{data_dir / 'logs' / 'launcher.log'}")
+
+    sys.excepthook = hook
+
+
+def _serve_and_open(args: argparse.Namespace, data_dir: Path, state: AppState) -> int:
+    static_dir, static_kind = resolve_static_dir()
+    os.environ["LP_STATIC_DIR"] = str(static_dir)
+    logger.info("静态目录（%s）%s", static_kind, static_dir)
+    app, _source = load_app(static_dir)
+    preferred = args.port if args.port and args.port > 0 else DEFAULT_PORT
+    sock, port = bind_server_socket(DEFAULT_HOST, preferred)
+    if port != preferred:
+        logger.info("端口 %s 已被占用，改用 %s", preferred, port)
+    os.environ["LP_PORT"] = str(port)
+    state.url = f"http://{DEFAULT_HOST}:{port}/"
+    server = ServerHandle(app, DEFAULT_HOST, port, sock)
+    state.server = server
+    server.start()
+    timeout = 45.0 if is_frozen() else 15.0
+    payload = wait_until_healthy(DEFAULT_HOST, port, server.thread, timeout=timeout)
+    logger.info("健康检查通过 %s", json.dumps(payload, ensure_ascii=False))
+    logger.info("服务已就绪 %s", state.url)
+    control = ControlServer(data_dir, lambda: show_ui(state))
+    state.control = control
+    control.start(port, state.url)
+    if args.check_gui or (args.smoke and is_frozen() and sys.platform == "win32"):
+        verify_gui_imports()
+    if args.smoke:
+        return 0
+    launch_ui(state, args.open_browser)
+    return 0
+
+
+def _run(args: argparse.Namespace, data_dir: Path) -> int:
+    logger.info("启动 pid=%s frozen=%s argv=%s", os.getpid(), is_frozen(), sys.argv)
+    _install_excepthook(args.smoke, data_dir)
+    instance = SingleInstance(data_dir)
+    if not instance.try_acquire():
+        logger.info("已有实例在运行")
+        signal_existing_instance(data_dir)
+        if args.smoke:
+            logger.error("smoke 检测到已有实例，无法自检")
+            return 2
+        notify("三日涨停形态统计已在运行。")
+        return 0
+    state = AppState()
+    try:
+        return _serve_and_open(args, data_dir, state)
+    except KeyboardInterrupt:
+        logger.info("收到中断，准备退出")
+        state.quitting = True
+        return 0
+    finally:
+        if state.control is not None:
+            state.control.stop()
+        if state.server is not None:
+            state.server.stop()
+        stop_tray(state)
+        _remove_instance_file(data_dir)
+        instance.release()
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="LimitPattern", description="三日涨停形态统计桌面启动器")
+    parser.add_argument("--smoke", action="store_true", help="启动服务并检查 /api/health 后退出")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="首选端口，被占用时自动 +1")
+    parser.add_argument("--open-browser", action="store_true", help="不使用内嵌窗口，直接打开系统浏览器")
+    parser.add_argument("--check-gui", action="store_true", help="额外导入 WebView2 / pythonnet（Windows 打包自检）")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if sys.version_info < (3, 11):
+        print("需要 Python 3.11 或更高版本", file=sys.stderr)
+        return 1
+    data_dir = resolve_data_dir()
+    os.environ["LP_DATA_DIR"] = str(data_dir)
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"无法创建数据目录 {data_dir}：{exc}", file=sys.stderr)
+        return 1
+    _bypass_local_proxy()
+    try:
+        setup_logging(data_dir)
+    except Exception as exc:
+        print(f"无法创建日志：{exc}", file=sys.stderr)
+        return 1
+    try:
+        return _run(args, data_dir)
+    except Exception:
+        logger.exception("启动失败")
+        if not args.smoke:
+            notify(f"程序启动失败。请查看日志：{data_dir / 'logs' / 'launcher.log'}")
+        return 1
+
+
+if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.freeze_support()
+    raise SystemExit(main())

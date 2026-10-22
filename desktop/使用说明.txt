@@ -1,0 +1,16 @@
+三日涨停形态统计 — Windows 绿色版
+
+启动：
+  双击 LimitPattern\LimitPattern.exe
+  若压缩包里还有 LimitPattern-onefile.exe，那是功能相同的单文件版。
+
+运行方式：
+  程序只监听本机 127.0.0.1。默认端口 8765，被占用时自动往后换端口。
+  数据目录：%LOCALAPPDATA%\LimitPattern
+  日志目录：%LOCALAPPDATA%\LimitPattern\logs
+  关闭窗口会缩到右下角托盘；托盘菜单可以选择「显示」或「退出」。
+  未安装 Microsoft Edge WebView2 时，会弹出中文提示，并改用系统默认浏览器打开。
+
+页面与接口：
+  后端入口是 backend.app.main:app，页面来自 frontend/dist（环境变量 LP_STATIC_DIR）。
+  两者都还没有打进这个包时，使用内置占位页，只保证 /api/health 可用。
