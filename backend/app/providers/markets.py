@@ -85,6 +85,31 @@ def _tagged_exchange(raw: str) -> str | None:
     return None
 
 
+def excluded_board_names() -> set[str]:
+    from backend.app.core.config import excluded_boards
+
+    return excluded_boards()
+
+
+def board_excluded(board: str | None) -> bool:
+    return bool(board) and board in excluded_board_names()
+
+
+def market_scope_text() -> str:
+    """设置页展示当前纳入范围。科创板默认不在里面。"""
+    excluded = excluded_board_names()
+    parts = ["上证主板（600/601/603/605）", "深证主板（000/001/002/003）"]
+    if "chinext" not in excluded:
+        parts.append("创业板（300/301/302）")
+    if "star" not in excluded:
+        parts.append("科创板（688/689）")
+    return "、".join(parts)
+
+
+def included_board_names() -> list[str]:
+    return [name for name in ("main_board", "chinext", "star") if name not in excluded_board_names()]
+
+
 def accept_instrument(raw_symbol: str, code: str = "", name: str = "") -> tuple[str, str] | None:
     """返回 (6 位代码, 交易所)。前缀表优先于行情源自带的 sh/sz。
 
@@ -92,8 +117,8 @@ def accept_instrument(raw_symbol: str, code: str = "", name: str = "") -> tuple[
     sz600519 这种标错市场的，仍按代码前缀当成上证股票，并记一条日志。
     """
     code = normalize_code(code or raw_symbol)
-    exchange, _board = classify(code)
-    if exchange not in {"SSE", "SZSE"}:
+    exchange, board = classify(code)
+    if exchange not in {"SSE", "SZSE"} or board_excluded(board):
         return None
     tagged = _tagged_exchange(raw_symbol)
     if tagged == "SSE" and code[:3] in {"000", "001", "002", "003"}:
@@ -124,11 +149,16 @@ def symbol_of(code: str) -> str:
 
 
 def reject_reason(code: str, allowed: set[str] | None = None) -> str | None:
+    exchange, board = classify(code)
+    if board == "star" and board_excluded(board):
+        return "科创板不在纳入范围"
+    if board_excluded(board):
+        label = BOARD_LABELS.get(board or "", board or "该板块")
+        return f"{label}不在纳入范围"
     if allowed is None:
         from backend.app.core.config import get_settings
 
         allowed = get_settings().exchange_set()
-    exchange, _board = classify(code)
     if exchange is None:
         return "不是沪深 A 股"
     if exchange not in allowed:
@@ -138,3 +168,7 @@ def reject_reason(code: str, allowed: set[str] | None = None) -> str | None:
 
 def keep_code(code: str, allowed: set[str] | None = None) -> bool:
     return reject_reason(code, allowed) is None
+
+
+def is_in_scope(code: str) -> bool:
+    return keep_code(code)

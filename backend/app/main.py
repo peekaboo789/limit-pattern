@@ -66,6 +66,9 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         init_db()
+        from backend.app.services.retention import purge_excluded_boards
+
+        purge_excluded_boards()
         start_scheduler()
         bootstrap_if_empty()
         yield

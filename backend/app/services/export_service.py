@@ -9,7 +9,7 @@ from urllib.parse import quote
 from backend.app.core.clock import SHANGHAI
 from backend.app.core.config import exports_dir, public_settings
 from backend.app.models.tables import DailyQuote, Stock
-from backend.app.providers.markets import classify
+from backend.app.providers.markets import classify, is_in_scope
 from backend.app.services.similarity_service import DISCLAIMER, pool_dates, scan_market, similar_to
 from backend.app.services.summary_service import _streak, get_summary
 
@@ -99,6 +99,8 @@ def _pool_rows(session, day: date) -> tuple[list[str], list[list]]:
             .all()
         )
         for quote in quotes:
+            if not is_in_scope(quote.stock_code):
+                continue
             exchange, _board = classify(quote.stock_code)
             rows.append(
                 [

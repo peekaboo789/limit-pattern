@@ -70,17 +70,21 @@ def upgrade_existing_tables(engine=None) -> list[str]:
     """没有迁移框架。缺的列就地补上，旧行保持 NULL。"""
     engine = engine or get_engine()
     added: list[str] = []
+    sqlite = str(engine.url).startswith("sqlite")
     expected = {
         "ai_pick_results": {
             "at_composite_score": "FLOAT",
             "at_level": "VARCHAR(16)",
             "at_model_gap": "FLOAT",
-        }
+        },
+        "daily_quotes": {
+            "amount_estimated": "INTEGER" if sqlite else "BOOLEAN",
+        },
     }
     with engine.begin() as conn:
         for table, columns in expected.items():
-            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall() if str(engine.url).startswith("sqlite") else []
-            if not rows and not str(engine.url).startswith("sqlite"):
+            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall() if sqlite else []
+            if not rows and not sqlite:
                 continue
             existing = {row[1] for row in rows}
             if not existing:

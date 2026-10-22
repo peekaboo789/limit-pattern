@@ -264,11 +264,54 @@ def test_sync_filters_non_ashares(client):
     assert rejected.status_code == 422
 
 
+def test_star_board_is_excluded_from_queries_and_cleanup(client, monkeypatch):
+    denied = client.get("/api/kline", params={"code": "688981"})
+    assert denied.status_code == 422
+    assert denied.json()["detail"] == "科创板不在纳入范围"
+    denied = client.get("/api/similarity", params={"code": "689009"})
+    assert denied.status_code == 422
+    assert denied.json()["detail"] == "科创板不在纳入范围"
+    days = _seed()
+    with session_scope() as session:
+        session.add(Stock(code="688981", name="中芯国际", exchange="SSE", board="star"))
+        session.add(
+            DailyQuote(
+                stock_code="688981",
+                trade_date=days[-1],
+                open=10,
+                high=12,
+                low=10,
+                close=12,
+                pre_close=10,
+                volume=1000,
+                amount=1000,
+                is_limit_up=True,
+                source="test",
+            )
+        )
+    listed = {item["code"] for item in client.get("/api/limitups").json()["items"]}
+    assert "688981" not in listed
+    from backend.app.services.retention import purge_excluded_boards
+
+    removed = purge_excluded_boards()
+    assert removed["codes"] == 1
+    with session_scope() as session:
+        assert session.get(Stock, "688981") is None
+        left = session.query(DailyQuote).filter(DailyQuote.stock_code == "688981").count()
+    assert left == 0
+    view = client.get("/api/settings").json()
+    assert view["excluded_boards"] == ["star"]
+    assert "创业板（300/301/302）" in view["market_scope"]
+    assert "688/689" not in view["market_scope"]
+    monkeypatch.setenv("EXCLUDED_BOARDS", "")
+    assert keep_code("688981")
+
+
 def test_market_prefixes():
     assert keep_code("600000")
     assert keep_code("000001")
     assert keep_code("300750")
-    assert keep_code("688981")
+    assert not keep_code("688981")
     assert keep_code("302132")
     assert not keep_code("920001")
     assert not keep_code("200001")

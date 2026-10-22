@@ -63,7 +63,7 @@ function option(): EChartsCoreOption {
           `收盘 ${formatPrice(bar.close)}`,
           `<span style="color:${color}">涨跌 ${formatPct(bar.pct_chg)}</span>`,
           `成交量 ${formatVolume(bar.volume)}`,
-          `成交额 ${formatAmount(bar.amount)}`,
+          `成交额 ${formatAmount(bar.amount)}${bar.amount_estimated ? '（估算）' : ''}`,
         ].join('<br/>')
       },
     },

@@ -10,6 +10,7 @@ import httpx
 from backend.app.core.clock import SHANGHAI
 from backend.app.core.config import read_settings_file, summaries_dir
 from backend.app.models.tables import AiDailySummary, DailyQuote
+from backend.app.providers.markets import is_in_scope
 from backend.app.services.similarity_service import board_name
 
 REQUIRED_KEYS = (
@@ -76,6 +77,7 @@ def build_facts(session, day: date) -> dict:
         .order_by(DailyQuote.stock_code)
         .all()
     )
+    rows = [row for row in rows if is_in_scope(row.stock_code)]
     sectors: dict[str, int] = {}
     ladders: dict[int, list[str]] = {}
     patterns: dict[str, list[str]] = {}

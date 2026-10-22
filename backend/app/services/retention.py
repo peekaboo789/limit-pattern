@@ -25,8 +25,66 @@ def quote_dates(session, as_of=None) -> list:
     return [row[0] for row in query.order_by(DailyQuote.trade_date)]
 
 
+def purge_excluded_boards() -> dict:
+    """删掉配置里排除的板块。默认是科创板。启动和每次清理都会走这里。"""
+    from backend.app.core.config import excluded_boards
+    from backend.app.models.tables import Stock
+    from backend.app.providers.markets import classify
+
+    excluded = excluded_boards()
+    if not excluded:
+        return {"codes": 0}
+    with session_scope() as session:
+        codes: set[str] = set()
+        for column in (
+            DailyQuote.stock_code,
+            CalcBar.stock_code,
+            DailyFeature.stock_code,
+            LimitUpPattern.stock_code,
+            SkippedRecord.stock_code,
+            DataQualityError.stock_code,
+        ):
+            codes.update(row[0] for row in session.query(column).distinct() if row[0])
+        codes.update(row[0] for row in session.query(Stock.code).all())
+        doomed = [code for code in codes if classify(code)[1] in excluded]
+        deleted = _delete_codes(session, doomed)
+    if doomed:
+        from backend.app.services.history_backfill import clear_calc_memory
+
+        clear_calc_memory()
+    return {"codes": len(doomed), "deleted": deleted}
+
+
+def _delete_codes(session, codes: list[str]) -> dict[str, int]:
+    from backend.app.models.tables import PatternMatch, Stock
+
+    deleted = {
+        "daily_quotes": 0,
+        "calc_bars": 0,
+        "daily_features": 0,
+        "limit_up_patterns": 0,
+        "pattern_matches": 0,
+        "skipped_records": 0,
+        "data_quality_errors": 0,
+        "stocks": 0,
+    }
+    for start in range(0, len(codes), 400):
+        chunk = codes[start : start + 400]
+        deleted["daily_quotes"] += session.query(DailyQuote).filter(DailyQuote.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["calc_bars"] += session.query(CalcBar).filter(CalcBar.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["daily_features"] += session.query(DailyFeature).filter(DailyFeature.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["limit_up_patterns"] += session.query(LimitUpPattern).filter(LimitUpPattern.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["pattern_matches"] += session.query(PatternMatch).filter(PatternMatch.target_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["pattern_matches"] += session.query(PatternMatch).filter(PatternMatch.sample_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["skipped_records"] += session.query(SkippedRecord).filter(SkippedRecord.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["data_quality_errors"] += session.query(DataQualityError).filter(DataQualityError.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["stocks"] += session.query(Stock).filter(Stock.code.in_(chunk)).delete(synchronize_session=False)
+    return deleted
+
+
 def purge_expired() -> dict:
     """删掉保留窗口之前的行情和标签。总结表和 summaries/ 文件不动。"""
+    excluded = purge_excluded_boards()
     keep = retention_days()
     with session_scope() as session:
         days = quote_dates(session)
@@ -65,5 +123,6 @@ def purge_expired() -> dict:
         "cutoff": None if cutoff is None else cutoff.isoformat(),
         "kept_dates": kept,
         "deleted": deleted,
+        "excluded_boards": excluded,
         "last_cleanup_at": moment,
     }

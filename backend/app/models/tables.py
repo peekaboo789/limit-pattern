@@ -63,6 +63,7 @@ class DailyQuote(Base):
     pre_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     volume: Mapped[float | None] = mapped_column(Float, nullable=True)
     amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount_estimated: Mapped[bool] = mapped_column(Boolean, default=False)
     turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_limit_up: Mapped[bool] = mapped_column(Boolean, default=False)

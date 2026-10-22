@@ -155,7 +155,7 @@ onMounted(() => {
             <td>{{ formatTime(item.first_limit_time) }}</td>
             <td><span class="tag" :class="limitTypeClass(item.limit_type)">{{ item.limit_type }}</span></td>
             <td class="right">{{ formatTurnover(item.turnover_rate) }}</td>
-            <td class="right">{{ formatAmount(item.amount) }}</td>
+            <td class="right">{{ formatAmount(item.amount) }}<template v-if="item.amount_estimated"> 估</template></td>
           </tr>
         </tbody>
       </table>

@@ -107,6 +107,7 @@ def default_settings() -> dict:
         "ai_api_key": os.environ.get("AI_API_KEY", "").strip(),
         "data_source": os.environ.get("DATA_PROVIDER", "auto").strip() or "auto",
         "active_source": "",
+        "excluded_boards": ["star"],
         "last_sync_at": None,
         "last_cleanup_at": None,
     }
@@ -138,6 +139,18 @@ def write_settings_file(payload: dict) -> None:
     tmp.replace(path)
 
 
+def excluded_boards() -> set[str]:
+    """默认剔除科创板。环境变量 EXCLUDED_BOARDS 优先，空字符串表示一块都不剔。"""
+    if "EXCLUDED_BOARDS" in os.environ:
+        return {part.strip() for part in os.environ["EXCLUDED_BOARDS"].split(",") if part.strip()}
+    raw = read_settings_file().get("excluded_boards")
+    if isinstance(raw, str):
+        return {part.strip() for part in raw.split(",") if part.strip()}
+    if isinstance(raw, list):
+        return {str(part).strip() for part in raw if str(part).strip()}
+    return {"star"}
+
+
 def public_settings() -> dict:
     raw = read_settings_file()
     key = str(raw.get("ai_api_key") or "")
@@ -153,9 +166,24 @@ def public_settings() -> dict:
         "data_source": str(raw.get("data_source") or "auto"),
         "data_source_options": ["auto", "eastmoney", "tencent", "sina"],
         "active_source": str(raw.get("active_source") or ""),
+        "excluded_boards": sorted(excluded_boards()),
+        "included_boards": _included_board_names(),
+        "market_scope": _market_scope_text(),
         "last_sync_at": raw.get("last_sync_at"),
         "last_cleanup_at": raw.get("last_cleanup_at"),
     }
+
+
+def _included_board_names() -> list[str]:
+    from backend.app.providers.markets import included_board_names
+
+    return included_board_names()
+
+
+def _market_scope_text() -> str:
+    from backend.app.providers.markets import market_scope_text
+
+    return market_scope_text()
 
 
 def update_settings(changes: dict) -> dict:

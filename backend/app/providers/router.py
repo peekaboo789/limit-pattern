@@ -48,6 +48,20 @@ def order_for(configured: str) -> list[str]:
     return [name]
 
 
+def source_chain(configured: str, active: str = "") -> list[str]:
+    """auto 时从当前源开始，后面接着其余源，供逐只回退。指定单一源时不换。"""
+    order = order_for(configured)
+    if len(order) == 1:
+        return order
+    chain: list[str] = []
+    if active in SOURCE_ORDER:
+        chain.append(active)
+    for name in order:
+        if name not in chain:
+            chain.append(name)
+    return chain
+
+
 def probe(name: str) -> list[tuple[str, str]]:
     module = _module(name)
     stocks = module.fetch_stock_list()

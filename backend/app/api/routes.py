@@ -13,7 +13,7 @@ from backend.app.core.config import exports_dir, public_settings, update_setting
 from backend.app.services.export_service import content_disposition, render_export, save_copy
 from backend.app.core.database import session_scope
 from backend.app.models.tables import CalcBar, DailyQuote, Stock
-from backend.app.providers.markets import classify, normalize_code
+from backend.app.providers.markets import classify, is_in_scope, normalize_code, reject_reason
 from backend.app.services.retention import quote_dates
 from backend.app.services.similarity_service import pool_dates, scan_market, similar_to
 from backend.app.services.summary_service import generate_summary, get_summary, list_summaries
@@ -44,9 +44,14 @@ def _code(value: str) -> str:
     code = normalize_code(value)
     if len(code) != 6 or not code.isdigit():
         raise HTTPException(status_code=422, detail="股票代码应为 6 位数字")
+    reason = reject_reason(code)
+    if reason == "科创板不在纳入范围":
+        raise HTTPException(status_code=422, detail=reason)
     exchange, _board = classify(code)
     if exchange not in {"SSE", "SZSE"}:
         raise HTTPException(status_code=422, detail="只支持沪深 A 股")
+    if reason:
+        raise HTTPException(status_code=422, detail=reason)
     return code
 
 
@@ -74,6 +79,7 @@ def _limit_item(row: DailyQuote, names: dict[str, str], streak: int) -> dict:
         "pct_chg": row.change_percent,
         "volume": row.volume,
         "amount": row.amount,
+        "amount_estimated": bool(row.amount_estimated),
         "turnover_rate": row.turnover_rate,
         "consecutive_boards": streak,
         "first_limit_time": None,
@@ -179,7 +185,11 @@ def limitups(date: str | None = None) -> dict:
             .order_by(DailyQuote.stock_code)
             .all()
         )
-        items = [_limit_item(row, names, streaks.get(row.stock_code, 1)) for row in rows]
+        items = [
+            _limit_item(row, names, streaks.get(row.stock_code, 1))
+            for row in rows
+            if is_in_scope(row.stock_code)
+        ]
     return {"date": day.isoformat(), "items": items}
 
 
@@ -201,10 +211,12 @@ def pool() -> dict:
                 .order_by(DailyQuote.stock_code)
                 .all()
             )
-            for row in rows:
-                item = _limit_item(row, names, streaks.get(row.stock_code, 1))
-                item["limit_date"] = day.isoformat()
-                items.append(item)
+        for row in rows:
+            if not is_in_scope(row.stock_code):
+                continue
+            item = _limit_item(row, names, streaks.get(row.stock_code, 1))
+            item["limit_date"] = day.isoformat()
+            items.append(item)
     return {"dates": [day.isoformat() for day in dates], "items": items}
 
 
@@ -214,7 +226,7 @@ def _pct_chg(close: float | None, pre_close: float | None) -> float | None:
     return round((close - pre_close) / pre_close * 100, 4)
 
 
-def _kline_bar(day: date, row, pct: float | None) -> dict:
+def _kline_bar(day: date, row, pct: float | None, estimated: bool = False) -> dict:
     return {
         "date": day.isoformat(),
         "open": row.open,
@@ -223,6 +235,7 @@ def _kline_bar(day: date, row, pct: float | None) -> dict:
         "close": row.close,
         "volume": row.volume,
         "amount": row.amount,
+        "amount_estimated": estimated,
         "pct_chg": pct,
     }
 
@@ -239,14 +252,19 @@ def kline(code: str, days: int = Query(30, ge=1, le=120)) -> dict:
             .all()
         )
         for row in calc_rows:
-            merged[row.trade_date] = _kline_bar(row.trade_date, row, _pct_chg(row.close, row.pre_close))
+            merged[row.trade_date] = _kline_bar(row.trade_date, row, _pct_chg(row.close, row.pre_close), False)
         rows = (
             session.query(DailyQuote)
             .filter(DailyQuote.stock_code == normalized, DailyQuote.trade_date <= today())
             .all()
         )
         for row in rows:
-            merged[row.trade_date] = _kline_bar(row.trade_date, row, row.change_percent)
+            merged[row.trade_date] = _kline_bar(
+                row.trade_date,
+                row,
+                row.change_percent,
+                bool(getattr(row, "amount_estimated", False)),
+            )
         ordered = [merged[day] for day in sorted(merged)]
         bars = ordered[-days:]
     return {"code": normalized, "name": stock.name if stock else "", "bars": bars}

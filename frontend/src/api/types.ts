@@ -19,6 +19,9 @@ export interface Settings {
   data_source: string
   data_source_options?: string[]
   active_source?: string
+  excluded_boards?: string[]
+  included_boards?: string[]
+  market_scope?: string
   last_sync_at: string | null
   last_cleanup_at: string | null
 }
@@ -59,6 +62,7 @@ export interface LimitUpItem {
   pct_chg: number
   volume: number
   amount: number
+  amount_estimated?: boolean
   turnover_rate: number
   consecutive_boards: number
   first_limit_time: string | null
@@ -87,6 +91,7 @@ export interface KBar {
   close: number
   volume: number
   amount: number
+  amount_estimated?: boolean
   pct_chg: number
 }
 

@@ -32,5 +32,7 @@ const SOURCE_LABELS: Record<string, string> = {
 }
 
 export function sourceLabel(source: string): string {
+  if (!source) return ''
+  if (source.includes(',')) return source.split(',').map((item) => sourceLabel(item.trim())).filter(Boolean).join('、')
   return SOURCE_LABELS[source] ?? source
 }

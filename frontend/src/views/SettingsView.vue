@@ -131,6 +131,11 @@ onMounted(() => {
         <span class="hint">当前选择「{{ sourceLabel(form.data_source) }}」。实际连上的源是「{{ sourceLabel(meta?.active_source || '') || '还没有' }}」。</span>
       </label>
       <div class="readonly">
+        <span class="muted">纳入范围</span>
+        <b>{{ meta?.market_scope || '上证主板、深证主板、创业板' }}</b>
+      </div>
+      <p class="hint">默认不含科创板（688/689）。查询科创板代码会提示「科创板不在纳入范围」。要用环境变量 EXCLUDED_BOARDS 调整。</p>
+      <div class="readonly">
         <span class="muted">上次同步</span>
         <b>{{ formatDateTime(meta?.last_sync_at) }}</b>
       </div>

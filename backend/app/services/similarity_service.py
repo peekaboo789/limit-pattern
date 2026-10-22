@@ -10,7 +10,7 @@ from backend.app.algorithms.features import build_three_day_window
 from backend.app.algorithms.similarity import score_components
 from backend.app.core.constants import COMPARE_WINDOW_TRADING_DAYS
 from backend.app.models.tables import DailyQuote, Stock
-from backend.app.providers.markets import BOARD_LABELS, classify
+from backend.app.providers.markets import BOARD_LABELS, classify, is_in_scope
 from backend.app.services.history_backfill import ensure_prior_bars, load_bars
 from backend.app.services.retention import quote_dates
 
@@ -35,6 +35,8 @@ def _samples(session, as_of: date) -> tuple[list[date], list[dict], list[dict]]:
     samples: list[dict] = []
     skipped: list[dict] = []
     for row in rows:
+        if not is_in_scope(row.stock_code):
+            continue
         reason = ensure_prior_bars(session, row.stock_code, row.trade_date, as_of)
         window = build_three_day_window(
             load_bars(session, row.stock_code, min(row.trade_date, as_of)),
@@ -145,6 +147,8 @@ def scan_market(session, as_of: date, top: int, min_score: float) -> dict:
     ]
     targets: list[tuple[str, list[float]]] = []
     for code in codes:
+        if not is_in_scope(code):
+            continue
         window = build_three_day_window(load_bars(session, code, as_of), as_of, include_as_of_date=True)
         if window.ok:
             targets.append((code, window.vector))
