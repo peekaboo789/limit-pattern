@@ -1,6 +1,9 @@
 # Build the LimitPattern Windows green build (onedir zip) and, if it succeeds, a onefile exe.
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
+# PyInstaller 的 spec 会打印中文。不设这个，Windows 控制台 cp1252 会把打包打崩。
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 
 function Get-PeSubsystemSafe([string]$Path) {
     $stream = [System.IO.File]::OpenRead($Path)
@@ -38,11 +41,18 @@ else {
 
 Write-Host "== python dependencies =="
 python -m pip install --upgrade pip
-python -m pip install -r desktop/requirements-dev.txt
-if (Test-Path "requirements.txt") {
-    python -m pip install -r requirements.txt
+function Install-Requirements([string]$RelativePath) {
+    $full = Join-Path $Root $RelativePath
+    if (Test-Path $full) {
+        Write-Host "pip install -r $RelativePath"
+        python -m pip install -r $full
+    }
 }
-python -m pip install -r desktop/requirements-build.txt
+Install-Requirements "desktop/requirements-dev.txt"
+Install-Requirements "requirements.txt"
+Install-Requirements "backend/requirements.txt"
+Install-Requirements "backend/requirements-ml.txt"
+Install-Requirements "desktop/requirements-build.txt"
 
 Write-Host "== icon =="
 python scripts/make_icon.py
@@ -78,6 +88,7 @@ if (-not $env:RUNNER_TEMP) {
 }
 New-Item -ItemType Directory -Force -Path $smokeData | Out-Null
 $env:LP_DATA_DIR = $smokeData
+$env:LP_AUTO_SYNC = "0"
 Remove-Item Env:LP_USE_STUB -ErrorAction SilentlyContinue
 $exe = Join-Path $onedir "LimitPattern.exe"
 $process = Start-Process -FilePath $exe -ArgumentList "--smoke","--check-gui" -WorkingDirectory $onedir -PassThru -WindowStyle Hidden

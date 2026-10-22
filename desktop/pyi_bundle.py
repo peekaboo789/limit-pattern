@@ -75,7 +75,31 @@ WINDOWS_GUI_HIDDEN = [
 
 
 def _log(message: str) -> None:
-    print(f"[limitpattern] {message}")
+    """Windows 上 PyInstaller 的控制台经常是 cp1252，中文不能把打包打崩。"""
+    text = f"[limitpattern] {message}\n"
+    stream = sys.stdout
+    try:
+        stream.write(text)
+        stream.flush()
+    except UnicodeEncodeError:
+        buffer = getattr(stream, "buffer", None)
+        payload = text.encode(getattr(stream, "encoding", None) or "utf-8", errors="replace")
+        if buffer is not None:
+            buffer.write(payload)
+            buffer.flush()
+        else:
+            stream.write(payload.decode("ascii", errors="replace"))
+
+
+def _force_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            continue
 
 
 def _wanted_module(name: str) -> bool:
@@ -140,7 +164,37 @@ def icon_path() -> str | None:
     return str(icon) if icon.is_file() else None
 
 
+# 这些名字是字符串导入或可选依赖，模块图经常扫不到。没装就不要写进 hiddenimports。
+OPTIONAL_HIDDEN = (
+    "sqlalchemy.dialects.sqlite",
+    "sqlalchemy.sql.default_comparator",
+    "greenlet",
+    "apscheduler.schedulers.background",
+    "apscheduler.triggers.cron",
+    "apscheduler.executors.pool",
+    "apscheduler.jobstores.memory",
+    "pydantic_settings",
+    "tzdata",
+    "tzlocal",
+    "sklearn.cluster",
+    "sklearn.decomposition",
+    "sklearn.metrics",
+)
+
+
+def _spec_exists(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def _optional_hiddenimports() -> list[str]:
+    return [name for name in OPTIONAL_HIDDEN if _spec_exists(name)]
+
+
 def analysis_kwargs() -> dict:
+    _force_utf8_stdio()
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     datas: list[tuple[str, str]] = []
@@ -161,9 +215,14 @@ def analysis_kwargs() -> dict:
         _log("frontend/dist 不存在，窗口使用 stub 页面")
 
     hiddenimports.extend(_backend_modules())
+    hiddenimports.extend(_optional_hiddenimports())
     backend = ROOT / "backend"
     if backend.is_dir() and importlib.util.find_spec("backend") is not None:
         _try_package_files("backend", datas, binaries)
+    for package in ("sqlalchemy", "apscheduler", "tzdata"):
+        if importlib.util.find_spec(package) is not None:
+            hiddenimports.extend(_try_submodules(package))
+            _try_package_files(package, datas, binaries)
 
     hiddenimports.extend(
         [

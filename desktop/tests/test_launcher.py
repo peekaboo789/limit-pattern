@@ -13,13 +13,18 @@ from fastapi.testclient import TestClient
 from desktop.launcher import (
     WEBVIEW2_MISSING_MESSAGE,
     ControlServer,
+    ExportApi,
     SingleInstance,
     bind_server_socket,
+    default_save_directory,
+    enable_webview_downloads,
     explain_webview_unavailable,
     load_app,
     main,
     resolve_data_dir,
     resolve_static_dir,
+    sanitize_export_filename,
+    save_text_as,
     signal_existing_instance,
     version_at_least,
     window_close_action,
@@ -203,6 +208,80 @@ def test_smoke_uses_stub_and_ignores_proxy(monkeypatch, tmp_path):
     assert "应用来源=stub" in text
     assert "健康检查通过" in text
     assert '"status": "ok"' in text
+
+
+def test_export_filename_and_default_directory(tmp_path):
+    assert sanitize_export_filename(r"..\pool") == "pool.txt"
+    assert sanitize_export_filename("报告.txt") == "报告.txt"
+    assert sanitize_export_filename("") == "export.txt"
+    assert sanitize_export_filename("a<b>.txt") == "a_b_.txt"
+
+    (tmp_path / "Downloads").mkdir()
+    assert default_save_directory(tmp_path) == tmp_path / "Downloads"
+    (tmp_path / "Desktop").mkdir()
+    assert default_save_directory(tmp_path) == tmp_path / "Desktop"
+
+
+def test_save_text_as_writes_utf8_bom(monkeypatch, tmp_path):
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    monkeypatch.setattr("desktop.launcher.default_save_directory", lambda home=None: desktop)
+    target = desktop / "涨停.txt"
+
+    def ask(directory, name):
+        assert directory == desktop
+        assert name == "涨停.txt"
+        return str(target)
+
+    saved = save_text_as("涨停", "你好\n", ask)
+    assert saved == str(target)
+    blob = target.read_bytes()
+    assert blob.startswith(b"\xef\xbb\xbf")
+    assert blob.decode("utf-8-sig") == "你好\n"
+    assert save_text_as("涨停.txt", "x", lambda _directory, _name: None) is None
+
+
+def test_export_api_save_file_uses_save_dialog(monkeypatch, tmp_path):
+    import types
+
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    monkeypatch.setattr("desktop.launcher.default_save_directory", lambda home=None: desktop)
+    fake_webview = types.ModuleType("webview")
+
+    class _FileDialog:
+        SAVE = 30
+
+    fake_webview.FileDialog = _FileDialog
+    monkeypatch.setitem(sys.modules, "webview", fake_webview)
+
+    class FakeWindow:
+        def __init__(self):
+            self.kwargs = None
+
+        def create_file_dialog(self, dialog_type, directory="", allow_multiple=False, save_filename="", file_types=()):
+            self.kwargs = {
+                "dialog_type": dialog_type,
+                "directory": directory,
+                "save_filename": save_filename,
+                "file_types": file_types,
+            }
+            return (str(desktop / save_filename),)
+
+    window = FakeWindow()
+    api = ExportApi()
+    api.window = window
+    saved = api.save_file("pool", "甲")
+    assert window.kwargs["dialog_type"] == 30
+    assert window.kwargs["directory"] == str(desktop)
+    assert window.kwargs["save_filename"] == "pool.txt"
+    assert saved == str(desktop / "pool.txt")
+    assert (desktop / "pool.txt").read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_enable_webview_downloads():
+    settings = {"ALLOW_DOWNLOADS": False}
+    assert enable_webview_downloads(settings)["ALLOW_DOWNLOADS"] is True
 
 
 def test_smoke_reports_existing_instance(monkeypatch, tmp_path):

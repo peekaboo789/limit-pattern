@@ -2,6 +2,8 @@
 
 在子线程里启动 uvicorn，端口被占用就往后换，轮询 ``/api/health`` 成功后用
 pywebview（WebView2）打开窗口。关闭窗口缩到托盘，托盘提供「显示 / 退出」。
+窗口的 ``js_api.save_file(filename, text)`` 供页面「导出 TXT」：弹出系统另存为对话框，
+按 UTF-8 BOM 写入，并打开 ``ALLOW_DOWNLOADS`` 作为浏览器下载的备用。
 同一 Windows 会话只允许一个实例。日志写到 ``LP_DATA_DIR/logs/launcher.log``。
 
 应用选择：
@@ -666,6 +668,85 @@ def start_tray(state: AppState) -> bool:
         return False
 
 
+def sanitize_export_filename(filename: str) -> str:
+    """只保留文件名，避免页面传入的路径写到别的目录。"""
+    raw = str(filename or "").replace("\\", "/").split("/")[-1].strip().replace("\x00", "")
+    cleaned = "".join("_" if char in '<>:"|?*' else char for char in raw).strip(" .")
+    if cleaned in {"", ".", ".."}:
+        cleaned = "export.txt"
+    if Path(cleaned).suffix == "":
+        cleaned += ".txt"
+    return cleaned
+
+
+def default_save_directory(home: Path | None = None) -> Path:
+    """优先桌面，其次下载目录，都没有就用用户主目录。"""
+    root = Path(home) if home is not None else Path.home()
+    for name in ("Desktop", "桌面"):
+        candidate = root / name
+        if candidate.is_dir():
+            return candidate
+    for name in ("Downloads", "下载"):
+        candidate = root / name
+        if candidate.is_dir():
+            return candidate
+    return root
+
+
+def save_text_as(filename: str, text: str, ask_path) -> str | None:
+    """弹出另存为并写入 UTF-8 BOM。取消时返回 None，成功返回保存路径。"""
+    name = sanitize_export_filename(filename)
+    directory = default_save_directory()
+    chosen = ask_path(directory, name)
+    if not chosen:
+        logger.info("导出已取消")
+        return None
+    path = Path(str(chosen))
+    if path.suffix == "":
+        path = path.with_suffix(".txt")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("" if text is None else str(text), encoding="utf-8-sig", newline="\n")
+    logger.info("已导出 %s", path)
+    return str(path)
+
+
+class ExportApi:
+    """pywebview js_api。页面调用 ``window.pywebview.api.save_file(filename, text)``。"""
+
+    def __init__(self) -> None:
+        self.window = None
+
+    def save_file(self, filename: str, text: str) -> str | None:
+        import webview
+
+        window = self.window
+
+        def ask_path(directory: Path, name: str) -> str | None:
+            if window is None:
+                raise RuntimeError("窗口还没准备好，不能导出")
+            selected = window.create_file_dialog(
+                webview.FileDialog.SAVE,
+                directory=str(directory),
+                save_filename=name,
+                file_types=("文本文件 (*.txt)", "所有文件 (*.*)"),
+            )
+            if not selected:
+                return None
+            return str(selected[0])
+
+        return save_text_as(filename, text, ask_path)
+
+
+def enable_webview_downloads(settings: dict | None = None) -> dict:
+    """允许页面触发的文件下载，作为 save_file 之外的备用。"""
+    if settings is None:
+        import webview
+
+        settings = webview.settings
+    settings["ALLOW_DOWNLOADS"] = True
+    return settings
+
+
 def _hide_window(state: AppState) -> None:
     window = state.window
     if window is None:
@@ -688,9 +769,12 @@ def run_webview(state: AppState) -> None:
         threading.Thread(target=_hide_window, args=(state,), name="limitpattern-hide", daemon=True).start()
         return False
 
+    enable_webview_downloads()
+    export_api = ExportApi()
     window = webview.create_window(
         APP_TITLE,
         state.url,
+        js_api=export_api,
         width=1280,
         height=800,
         min_size=(960, 640),
@@ -700,6 +784,7 @@ def run_webview(state: AppState) -> None:
     )
     if window is None:
         raise RuntimeError("pywebview 没有创建窗口")
+    export_api.window = window
     state.window = window
     window.events.closing += on_closing
     logger.info("启动 pywebview，加载 %s", state.url)
