@@ -106,6 +106,11 @@ ALERT_SPIKE_POINTS = 2.0
 ALERT_SPIKE_WINDOW_SECONDS = 180
 ALERT_POLL_SECONDS = 3.0
 ALERT_RETENTION_DAYS = 30
+#: 环形缓冲留多久 = 跳升窗口 + 一点余量。留太久没意义（判据只看 3 分钟前那一个点），
+#: 留太短则永远取不到「3 分钟前」，`rise_3min` 会一直是 None。
+ALERT_SAMPLE_KEEP_SECONDS = ALERT_SPIKE_WINDOW_SECONDS + 30.0
+#: 池子为空时多久重查一次库。读库可能只是撞上一次写锁，不能一次失败就把这一档判死。
+ALERT_POOL_RETRY_SECONDS = 60.0
 
 # 预测页三项权重
 PREDICTION_WEIGHT_SHAPE = 0.5

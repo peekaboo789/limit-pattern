@@ -8,6 +8,8 @@ import type {
   DailyRankState,
   ExportParams,
   Health,
+  IntradayWatchAck,
+  IntradayWatchState,
   KlineResponse,
   LimitUpsResponse,
   PickHistoryResponse,
@@ -89,6 +91,14 @@ export const api = {
     request<RealtimeTop>(`/api/realtime/top${query({ metric: params.metric, top_n: params.top_n })}`),
 
   realtimeStatus: () => request<RealtimeStatus>('/api/realtime/status'),
+
+  intradayWatch: () => request<IntradayWatchState>('/api/realtime/intraday-watch'),
+
+  ackIntradayWatch: (stockCode?: string, tier?: string) =>
+    request<IntradayWatchAck>(
+      `/api/realtime/intraday-watch/ack${query({ stock_code: stockCode, tier })}`,
+      { method: 'POST' },
+    ),
 
   startBoardAnalysis: () => request<StartAck>('/api/ai/analysis', { method: 'POST' }),
 

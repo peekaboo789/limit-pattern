@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import type { AiPick, RealtimeRow } from '@/api/types'
+import IntradayWatchPanel from '@/components/IntradayWatchPanel.vue'
 import { aiReady } from '@/stores/session'
 import { realtime, refreshRealtimeNow, releaseRealtime, retainRealtime, setRankMetric, setTopCount, startBoardAnalysis, startSingleAnalysis, clearSingle } from '@/stores/realtime'
+import { refreshWatchNow, releaseWatch, retainWatch } from '@/stores/watch'
 import { boardLabel, formatDateTime, formatGap, formatPct, formatPrice, formatScore, pctClass, spendWord } from '@/utils/format'
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -77,17 +79,21 @@ function openSimilarity(row: RealtimeRow): void {
 }
 
 function onVisibility(): void {
-  if (document.visibilityState === 'visible') refreshRealtimeNow(true)
+  if (document.visibilityState !== 'visible') return
+  refreshRealtimeNow(true)
+  refreshWatchNow()
 }
 
 onMounted(() => {
   retainRealtime()
+  retainWatch()
   document.addEventListener('visibilitychange', onVisibility)
 })
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibility)
   releaseRealtime()
+  releaseWatch()
 })
 </script>
 
@@ -107,6 +113,8 @@ onUnmounted(() => {
 
   <p v-if="realtime.error" class="alert">{{ realtime.error }}</p>
   <p v-else-if="realtime.note" class="hint">{{ realtime.note }}</p>
+
+  <IntradayWatchPanel />
 
   <section class="card">
     <div class="card-head">

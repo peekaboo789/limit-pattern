@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
@@ -15,6 +16,8 @@ from backend.app.core.database import session_scope
 from backend.app.models.tables import CalcBar, DailyQuote, Stock
 from backend.app.core.constants import REALTIME_TOP_N_MAX, REALTIME_TOP_N_MIN
 from backend.app.providers.markets import classify, is_in_scope, normalize_code, reject_reason
+from backend.app.services.intraday_watch import watcher
+from backend.app.services.intraday_watch_store import TIERS
 from backend.app.services.realtime_tracker import RANK_METRICS, tracker
 from backend.app.services import ai_picks
 from backend.app.services.ai_analysis_service import (
@@ -327,6 +330,46 @@ def realtime_top(metric: str | None = None, top_n: int | None = None) -> dict:
 def realtime_status() -> dict:
     """刷新节奏、当前时段、形态窗口用的是哪根 K 线。不触发扫描。"""
     return tracker.status()
+
+
+# --- 盘中涨幅报警榜（前一交易日固定榜那几名，今天盯涨幅）--------------------
+
+
+@router.get("/realtime/intraday-watch", response_model=dict)
+def intraday_watch_state() -> dict[str, Any]:
+    """报警榜的整份状态：池子、每只今天的涨幅与近 3 分钟跳升、报过哪些、还没确认哪些。
+
+    读的是最近一轮采样的结果，**不在请求里跑网络轮次**——采样由后台线程按 3 秒节奏跑，
+    否则窗口一收进托盘就断采，报警只剩一个好看的浮层。
+
+    `status` 五个值是五件不同的事，页面各说各话：`watching` 在采；`pre_open` / `after_close`
+    时段不对，不敲上游；`no_pool` 没有可盯的池子（四种缺池各有各的话，在 `pool.note` 里）；
+    `unavailable` 取不到快照，或数据源回的还不是今天的价。
+
+    这里没有一条会花钱的路径：读的是价格与库里已有的名次表，一次网关都不敲。
+    """
+    return watcher.state()
+
+
+@router.post("/realtime/intraday-watch/ack", response_model=dict)
+def intraday_watch_ack(
+    stock_code: str | None = Query(None, description="只确认这一只；不给就是全部"),
+    tier: str | None = Query(None, description=" | ".join(TIERS) + "；不给就是这一只的两档"),
+) -> dict[str, Any]:
+    """点「知道了」：写上确认时刻，返回还剩几条没确认、窗口该不该继续置顶。
+
+    置顶**只由这一句解除**，前端自己记一个布尔变量是不行的：刷新一次、换个浏览器、
+    服务重启，那个变量就没了，而窗口还摞在最前面，用户看不出为什么。
+    确认只作用在**今天**这一天的账上（去重键就是「交易日 + 代码 + 档」），
+    昨天那几条没点的不会被这一句顺手清掉，也不会再来敲今天这一次。
+    """
+    if tier is not None and tier not in TIERS:
+        raise HTTPException(
+            status_code=422, detail=f"没有这个报警档位，可选 {' | '.join(TIERS)}"
+        )
+    day = today().isoformat()
+    result = watcher.ack(day, stock_code=stock_code, tier=tier)
+    return {"trade_date": day, "stock_code": stock_code, "tier": tier, **result}
 
 
 # --- AI 综合分析（盘中整榜与单股直评）----------------------------------------

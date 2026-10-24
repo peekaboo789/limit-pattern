@@ -304,19 +304,47 @@ class AiDailySummary(Base):
 
 
 class IntradayWatchAlert(Base):
+    """盘中涨幅报警的账：一天、一只、一档只留一条。
+
+    这张表存在的唯一理由是「每只每天每档只报一次」这条规则必须活过进程重启。
+    只记在内存里，绿色版一退出、服务一重开，当天已经涨过 7% 的那几只就会再报一遍、
+    窗口再被摞到最前面——那是打扰，不是报警。去重的判据是这句唯一约束，
+    不是「服务记得别重复」。
+
+    `fired_at` 与 `acked_at` 都是定长 ISO 串：字典序就是时间序，裁剪和排序按它比较才成立
+    （与另两张 AI 表同一取向）。`acked_at` 是这张表唯一的「用户动作」列，空串就是还没点
+    「知道了」，而**未确认的置顶档正是桌面版该把窗口摞在最前面那些只**——所以解除置顶
+    不是前端的一个布尔变量，是这里的一次写库：页面刷新、窗口重开、服务重启之后，
+    「还剩几条没点」仍然答得出来。
+
+    刻意不存盘中每一轮的价格序列：那是采样的中间量，只活在内存的环形缓冲里。
+    这张表是派生账，删掉只丢报警历史，随时可以裁（保留窗口见 store）。
+    """
+
     __tablename__ = "intraday_watch_alerts"
     __table_args__ = (
         UniqueConstraint("trade_date", "stock_code", "tier", name="uq_watch_alert"),
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    #: 报警属于哪一个交易日（判据日，也是去重键之一）。库里这张表建得早，
+    #: 日期列一直是 Date，与另两张 AI 表的写法保持一致，不按字符串存。
     trade_date: Mapped[date] = mapped_column(Date, index=True)
     stock_code: Mapped[str] = mapped_column(String(6))
+    #: 触发那一刻快照给的名字，抄下来留档：事后改名不影响这条账读得懂
+    stock_name: Mapped[str] = mapped_column(String(32), default="")
     tier: Mapped[str] = mapped_column(String(16))
+    #: 名次与分数可空：池子口径以后可能换，换到没有名次的口径时宁可空着，也不许写 0 名
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: 触发那一刻的当日累计涨幅，它是这条报警的出处；事后拿当前价替代就答不上「凭什么报我」
     percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: 第一档不看涨速，所以它是 None 而不是 0.0——「0 个百分点跳升」是一个有内容的结论，
+    #: 「这一档压根不靠跳升判定」是另一回事，两者不许混成同一个 0
     rise_3min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: 几点报的。旧库里这一列可能是空的，那种行由 `created_at` 兜住（见 store 的 fired_label）
+    fired_at: Mapped[str] = mapped_column(String(32), default="")
     acked_at: Mapped[str] = mapped_column(String(40), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 

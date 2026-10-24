@@ -317,6 +317,99 @@ export interface RealtimeStatus {
   disclaimer: string
 }
 
+// --- 盘中涨幅报警榜 ----------------------------------------------------------
+
+/** 一条报警：一天、一只、一档只有这一条，`acked_at` 空串就是还没点「知道了」。 */
+export interface WatchAlert {
+  id: number
+  trade_date: string
+  stock_code: string
+  stock_name: string
+  tier: string
+  tier_label: string
+  rank: number | null
+  score: number | null
+  percent: number | null
+  rise_3min: number | null
+  fired_at: string
+  acked_at: string
+}
+
+export interface WatchRow {
+  stock_code: string
+  stock_name: string
+  rank: number | null
+  score: number | null
+  reason: string
+  counter_evidence: string
+  feed_rank: number | null
+  last_price: number | null
+  change_percent: number | null
+  rise_3min: number | null
+  sample_span_seconds: number | null
+  sampled_at: string
+  no_snapshot: boolean
+  alert: WatchAlert | null
+  spike: WatchAlert | null
+}
+
+export interface WatchSampling {
+  rounds: number
+  last_round_at: string | null
+  last_round_seconds_ago: number | null
+  snapshot_date: string
+  today: string
+  source: string
+  error: string
+  thread_running: boolean
+}
+
+export interface WatchPoolInfo {
+  pool_date: string | null
+  status: string
+  note: string
+  row_count: number
+}
+
+export interface IntradayWatchState {
+  status: string
+  trade_date: string
+  session_phase: string
+  note: string
+  pool: WatchPoolInfo | null
+  rows: WatchRow[]
+  row_count: number
+  alerts: WatchAlert[]
+  unacked: WatchAlert[]
+  pending_pin_codes: string[]
+  pinning: boolean
+  sampling: WatchSampling
+  pool_size: number
+  alert_tier: string
+  pin_tier: string
+  alert_percent: number
+  pin_percent: number
+  rise_window_seconds: number
+  rise_min_points: number
+  poll_seconds: number
+  sample_keep_seconds: number
+  idle_exit_seconds: number
+  disclaimer: string
+}
+
+/** 点「知道了」的回包：还剩几条、窗口该不该继续置顶，都是库里刚读完的那一份。 */
+export interface IntradayWatchAck {
+  trade_date: string
+  stock_code: string | null
+  tier: string | null
+  ok: boolean
+  acked?: number
+  remaining?: number
+  pinning?: boolean
+  pending_pin_codes?: string[]
+  error?: string
+}
+
 // --- AI 分析（整榜综合分析、单股直评）---------------------------------------
 
 export interface FormulaBlock {

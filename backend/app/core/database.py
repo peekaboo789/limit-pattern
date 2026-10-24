@@ -130,6 +130,10 @@ def upgrade_existing_tables(engine=None) -> list[str]:
         "daily_quotes": {
             "amount_estimated": "INTEGER" if sqlite else "BOOLEAN",
         },
+        "intraday_watch_alerts": {
+            "stock_name": "VARCHAR(32)",
+            "fired_at": "VARCHAR(32)",
+        },
     }
     with engine.begin() as conn:
         for table, columns in expected.items():
