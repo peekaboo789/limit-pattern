@@ -42,10 +42,41 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1
 
+      # 打包日志里留一份可直接对账的指纹：本机能核对下载到的 zip 是不是这一趟出的件。
+      - name: 记录产物指纹
+        if: always()
+        shell: pwsh
+        run: |
+          $zip = "desktop/dist/LimitPattern-win64.zip"
+          if (Test-Path $zip) {
+            $item = Get-Item $zip
+            Write-Host "zip 大小 $($item.Length) 字节"
+            Write-Host "zip md5 $((Get-FileHash -Algorithm MD5 $zip).Hash.ToLower())"
+            Write-Host "zip sha256 $((Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower())"
+            python -c "import zipfile; print('zip 条目数', len(zipfile.ZipFile('desktop/dist/LimitPattern-win64.zip').namelist()))"
+          } else {
+            Write-Host "zip 不存在，本趟没出件"
+          }
+          $status = "desktop/dist/onefile_status.txt"
+          if (Test-Path $status) {
+            $onefile = (Get-Content $status -Raw -Encoding UTF8).Trim()
+            Write-Host "单文件版 $onefile"
+          }
+
       - name: 上传 LimitPattern-win64.zip
         uses: actions/upload-artifact@v4
         with:
           name: LimitPattern-win64.zip
           path: desktop/dist/LimitPattern-win64.zip
           if-no-files-found: error
+          compression-level: 0
+
+      # 冒烟挂了的时候，launcher.log 是唯一能说清挂在启动哪一步的东西，成败都要留。
+      - name: 上传冒烟日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher.log
+          path: ${{ runner.temp }}/lp-smoke/logs/launcher.log
+          if-no-files-found: ignore
           compression-level: 0
