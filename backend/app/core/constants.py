@@ -112,6 +112,17 @@ ALERT_SAMPLE_KEEP_SECONDS = ALERT_SPIKE_WINDOW_SECONDS + 30.0
 #: 池子为空时多久重查一次库。读库可能只是撞上一次写锁，不能一次失败就把这一档判死。
 ALERT_POOL_RETRY_SECONDS = 60.0
 
+# 数据质量闸门
+#: 涨跌幅判 error 时在板块通用幅度上再放的余量。公开源的四舍五入和盘中口径差异会做出
+#: 10.03% 这种数，卡死 ±10% 会把好数据判成脏数据。
+QUALITY_CHANGE_TOLERANCE_PERCENT = 1.5
+#: 前收盘价与上一根收盘价允许的绝对差（元）。除权除息那一天的接不上由更长的间隔挡掉。
+QUALITY_PRE_CLOSE_TOLERANCE = 0.02
+#: 一天有行情的股票数低于近期水位这个比例，就判这个源只回了半张表。
+QUALITY_UNIVERSE_MIN_RATIO = 0.6
+#: 一次脏行清理最多允许删掉全天行情的比例。超过就是检查本身跑坏了，宁可什么都不删。
+QUALITY_PURGE_MAX_RATIO = 0.05
+
 # 预测页三项权重
 PREDICTION_WEIGHT_SHAPE = 0.5
 PREDICTION_WEIGHT_CARRY = 0.3

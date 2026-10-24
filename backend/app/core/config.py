@@ -150,6 +150,12 @@ def default_settings() -> dict:
         "excluded_boards": ["star"],
         "last_sync_at": None,
         "last_cleanup_at": None,
+        #: 质量闸门与出数来源账。`read_settings_file()` 只回这里列出的键，
+        #: 所以 `stamp()` 想留的键必须先在这里登记，否则盖下去就读不回来。
+        "last_quality_at": None,
+        "last_quality_errors": None,
+        "last_quality_warnings": None,
+        "last_sync_sources": None,
     }
 
 
@@ -307,7 +313,12 @@ def update_settings(changes: dict) -> dict:
     return public_settings()
 
 
-def stamp(field: str, value: str) -> None:
+def stamp(field: str, value: object) -> None:
+    """往 settings.json 盖一个键。值原样写：字符串、数字、dict 都行。
+
+    一轮同步结束要留的那份「出数来源账」是 dict，为了一个键先把整个 dict 转成字符串，
+    读的那头还得再 parse 一次，两处都得记着这个约定。这里直接存结构。
+    """
     current = read_settings_file()
     current[field] = value
     write_settings_file(current)

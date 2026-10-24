@@ -52,6 +52,9 @@ def status() -> dict:
     settings = read_settings_file()
     snapshot["data_source"] = settings.get("data_source") or "auto"
     snapshot["active_source"] = snapshot.get("active_source") or settings.get("active_source") or ""
+    #: 上一轮的出数来源账（哪几个源各出了多少只、质量检查记了几条）。没有跑过同步就是 None，
+    #: 不是空 dict——「查过且没问题」和「没查过」不能读成同一个数。
+    snapshot["last_sync_sources"] = settings.get("last_sync_sources")
     return snapshot
 
 
@@ -347,6 +350,9 @@ def _run(task_id: str) -> None:
         saved = 0
         switched = 0
         used_sources: set[str] = set()
+        #: 每轮出数来源账：这一轮哪几个源各出了多少只。事后只看见「写入 4300 只」是不够的——
+        #: 一半来自备用源意味着主源已经只回半张表，那是要在页面上看得出来的事。
+        source_counts: dict[str, int] = {}
         primary = _CHAIN[0] if _CHAIN else active
         _set(
             progress=8,
@@ -378,6 +384,7 @@ def _run(task_id: str) -> None:
                         saved += 1
                         if source_name:
                             used_sources.add(source_name)
+                            source_counts[source_name] = source_counts.get(source_name, 0) + 1
                         if primary and source_name and source_name != primary:
                             switched += 1
                     else:
@@ -400,6 +407,20 @@ def _run(task_id: str) -> None:
                 _cross_check_sample(active)
             except Exception:
                 logger.info("交叉校验没有做成")
+        #: 查完才写总结：账表里那些 error 说的就是这批行，先落账，页面上「这一天有没有脏数据」
+        #: 才有出处。跑砸了要在消息里说破，不能让它变成一个安静的 0。
+        _set(progress=94, phase="quality", message="正在做数据质量检查")
+        quality: dict = {}
+        quality_note = ""
+        try:
+            quality = _quality_pass(dict(stocks))
+            quality_note = (
+                f"，质量检查记了 {quality.get('errors')} 条 error、"
+                f"{quality.get('warnings')} 条 warning"
+            )
+        except Exception as exc:
+            quality_note = f"，质量检查没有跑成：{exc or type(exc).__name__}"
+            logger.exception("质量检查没有跑成")
         summary_note = "，当日总结没有写成"
         try:
             _set(progress=96, phase="summary", message="正在写当日总结")
@@ -411,6 +432,22 @@ def _run(task_id: str) -> None:
             summary_note = "，当日总结没有写成"
         moment = datetime.now(SHANGHAI).isoformat(timespec="seconds")
         stamp("last_sync_at", moment)
+        stamp(
+            "last_sync_sources",
+            {
+                "at": moment,
+                "active_source": active,
+                "chain": list(_CHAIN or ([active] if active else [])),
+                "sources": dict(sorted(source_counts.items())),
+                "saved": saved,
+                "failed": failed,
+                "switched": switched,
+                "quality_errors": int(quality.get("errors") or 0),
+                "quality_warnings": int(quality.get("warnings") or 0),
+                "quality_scanned_days": int(quality.get("scanned_days") or 0),
+                "quality_skipped": len(quality.get("skipped_checks") or []),
+            },
+        )
         if used_sources:
             ordered = [name for name in (_CHAIN or [active]) if name in used_sources]
             ordered.extend(sorted(used_sources - set(ordered)))
@@ -425,10 +462,21 @@ def _run(task_id: str) -> None:
             saved=saved,
             failed=failed,
             active_source=read_settings_file().get("active_source") or active,
-            message=f"同步完成：写入 {saved} 只，失败 {failed} 只{switch_note}{summary_note}",
+            message=f"同步完成：写入 {saved} 只，失败 {failed} 只{switch_note}{quality_note}{summary_note}",
         )
     except Exception as exc:
         _set(running=False, progress=0, message=str(exc) or "同步失败")
+
+
+def _quality_pass(names: dict[str, str]) -> dict:
+    """跑一遍质量检查。只写 `data_quality_errors`，删脏行是 `/api/quality/purge` 的活。
+
+    名称那份是本轮股票列表顺手带来的，不用再多敲一次网络。
+    """
+    from backend.app.services.quality_service import run_checks
+
+    with session_scope() as session:
+        return run_checks(session, names=names)
 
 
 def _save_stock(code: str, name: str, bars: list[dict], source: str = "eastmoney") -> None:

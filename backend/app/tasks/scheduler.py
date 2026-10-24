@@ -40,11 +40,16 @@ def _safe_summary() -> None:
 
 
 def _safe_daily_rank_prepare() -> None:
-    """收盘后把「每日 AI 固定榜」的那 100 行输入备好。
+    """上午 10:00 把「每日 AI 固定榜」的那 100 行输入备好。
 
     这一步只算本系统自己的数（相似度、特征、评分模型），一分钱不花、一次网关都不敲；
-    花钱的那一次排名永远要用户在页面上点一下。备好的输入落 `status=prepared`，
-    非交易日会被「交易日必须是今天」那道闸挡回来，那句原因写进日志。
+    花钱的那一次排名永远要用户在页面上点一下。备好的输入落 `status=prepared`。
+    挑 10:00 而不是收盘后，是因为页面上那份榜读的就是当天上午的形态窗口——
+    等到 17:10 才备，用户整个白天都点不动那颗花钱的按钮。
+
+    非交易日会被「交易日必须是今天」那道闸挡回来（休市日行情源回的还是上一个交易日的价，
+    照原样落库等于拿昨天的整张榜覆盖昨天的输入、顺手把已经排好的名次压回 `prepared`），
+    那句原因写进日志。
     """
     try:
         from backend.app.core.database import session_scope
@@ -71,9 +76,13 @@ def start_scheduler() -> None:
     scheduler.add_job(_safe_sync, "cron", hour=17, minute=10, id="daily-sync")
     scheduler.add_job(_safe_purge, "cron", hour=17, minute=40, id="daily-purge")
     scheduler.add_job(_safe_summary, "cron", hour=18, minute=10, id="daily-summary")
+    scheduler.add_job(_safe_daily_rank_prepare, "cron", hour=10, minute=0, id="daily-rank-prepare")
     scheduler.start()
     _SCHEDULER = scheduler
-    logger.info("定时任务已启动：17:10 同步并写总结，17:40 清理明细，18:10 补写缺失的总结")
+    logger.info(
+        "定时任务已启动：10:00 备每日 AI 固定榜的输入，17:10 同步并写总结，"
+        "17:40 清理明细，18:10 补写缺失的总结"
+    )
 
 
 def scheduled_job_ids() -> list[str]:

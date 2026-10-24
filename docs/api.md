@@ -8,7 +8,7 @@
 | GET | `/api/settings` | 保留天数、对比窗口、AI 是否启用、地址、模型、密钥是否已填、数据源（`auto` / `eastmoney` / `tencent` / `sina`）、实际使用的源、纳入范围 `market_scope`、`excluded_boards`、上次同步、上次清理 |
 | PUT | `/api/settings` | 修改可写项。`ai_api_key` 只写入、不回显。对比窗口传了非 3 会 422 |
 | POST | `/api/sync` | 后台同步，返回 `{"task_id": "..."}` |
-| GET | `/api/sync/status` | `running`、`progress`（0–100）、`message`、`last_sync_at` |
+| GET | `/api/sync/status` | `running`、`progress`（0–100）、`message`、`last_sync_at`、`last_sync_sources`（上一轮的出数来源账） |
 | GET | `/api/limitups?date=` | 某一天的涨停列表。不传日期用最近一个有行情的交易日 |
 | GET | `/api/pool` | 最近 3 个交易日的涨停池 |
 | GET | `/api/kline?code=&days=30` | 日 K。正式行情优先，缺的日期用补拉的计算 K 线补上。不会返回今天之后的 K 线 |
@@ -33,6 +33,10 @@
 | POST | `/api/ai/daily-rank/rank?date=` | 排出前 20 名：这一页唯一会花钱的接口。没有备好的输入回 409，没配网关回 400 |
 | GET | `/api/ai/daily-rank/status` | 只问「在不在跑」，不碰库——页面上 2 秒一拍读的就是这个 |
 | GET | `/api/ai/daily-rank/history?limit=15` | 最近排过的几份榜。`limit` 1 到 60 |
+| GET | `/api/quality/summary` | 质量账表的总账：error / warning 各多少条、十四项检查各多少条、最晚记到哪天、上次检查时刻，加上「能不能删」（`purge`）与十四项检查的名字、中文说法、error/warning 归属（`checks`） |
+| POST | `/api/quality/check?start=&end=&max_days=` | 跑一遍十四项检查。**只写账表，一个行情字段都不改**。不传区间就查库里现存的那段日期 |
+| GET | `/api/quality/errors?date=&severity=&check=&limit=200` | 账目明细。`severity` 只能是 `error` / `warning`，`check` 用检查项的名字（`ohlc_check` 那种），给错都回 422 |
+| POST | `/api/quality/purge?start=&end=&confirm=` | 删掉 error 级日线与它们的下游。**默认只算不删**（`dry_run=true`），要真删必须带 `confirm=true` |
 | GET | `/api/summaries` | 已保存的每日总结目录 |
 | GET | `/api/summaries/{date}` | 某一天的总结 JSON |
 | POST | `/api/summaries/{date}/generate` | 重新生成。没配 AI 时写统计版；配了则加上解读。模型失败时仍返回统计版，并带 `ai_error` |
@@ -40,6 +44,8 @@
 相似度相关接口都带 `disclaimer`，原文是「相似度不是涨停概率」。`skipped` 列出没能参加打分的涨停样本和原因。
 
 `GET /api/sync/status` 在契约字段之外，还会给出 `phase`、`done`、`total`、`saved`、`failed`。`message` 用中文说明当前步骤。
+
+`last_sync_sources` 是上一轮同步留下的出数来源账：`at`、`active_source`、`chain`、`sources`（每个源各出了多少只）、`saved`、`failed`、`switched`、`quality_errors`、`quality_warnings`、`quality_scanned_days`、`quality_skipped`。从没跑完过一轮时它是 `null`，不是空对象——「查过且没问题」和「没查过」不能读成同一个数。
 
 涨停列表里的 `board` 只有 `SH` 或 `SZ`。`first_limit_time` 日线里没有，所以是 null。`amount_estimated` 为 true 时，成交额是用成交量乘均价估算的。
 
@@ -73,3 +79,58 @@
 `POST /api/realtime/intraday-watch/ack` 回 `ok`、`acked`（真被确认掉的条数）、`remaining`（还剩几条没确认）、`pinning`、`pending_pin_codes`，并回显 `trade_date`、`stock_code`、`tier`。写库失败时 `ok` 是 `false` 并带 `error`，不是 HTTP 错误——页面上要显示「这句没记上」，不能显示成「没有报警了」。确认之后内存里那份状态就地换掉，下一次读到的 `pinning` 就是刚变化的那个事实；桌面置顶线程最迟 `poll_seconds` 之后跟着放开。
 
 去重键是「交易日 + 代码 + 档位」，有数据库唯一约束兜底：同一只股票同一档一天只记第一次触发，之后价格再怎么动都不重复报。
+
+## 数据质量闸门
+
+十四项检查只读、只往 `data_quality_errors` 写账；删数据是 `POST /api/quality/purge` 的活，而且默认不删。
+每一项都有 error 和 warning 两种归属：**只有 error 会被下游当作拦路条件**（`blocked_codes(session, day)` 就是给建样本、
+构造训练集那一类动作问的），warning 只记账。这么分是因为公开源的日线字段完整度不一样——腾讯、新浪经常只给量不给额，
+把「没有成交额」判成 error 等于把整个源判死，那会把闸门用成删数据的刀。
+
+| 检查项 | 中文说法 | 归属 |
+| --- | --- | --- |
+| `code_check` | 代码不是六位数字 | error |
+| `market_check` | 代码前缀与库里的交易所不一致 | error |
+| `security_type_check` | 板块判不出来 | warning |
+| `name_check` | 股票名称为空 | warning |
+| `trade_date_check` | 行情日期落在未来或周末 | error |
+| `ohlc_check` | 开高低收缺项、非正数或高低关系不成立 | error |
+| `volume_check` | 成交量缺项或为负 | error |
+| `amount_check` | 成交额为负 | error |
+| `duplicate_check` | 同一只股票同一天有多行 | error |
+| `missing_check` | 这只股票在这一段里缺了行情日 | warning |
+| `change_percent_check` | 当日涨跌幅超出该板块通用涨跌停幅度 | error |
+| `code_name_match_check` | 库里的名称与本轮股票列表对不上 | warning |
+| `universe_size_check` | 这一天有行情的股票数明显少于近期水位 | error |
+| `pre_close_continuity_check` | 前收盘价接不上上一根的收盘价 | error |
+
+`GET /api/quality/summary` 的 `checks` 数组就是这张表的机器版本，页面照着它渲染列头，别把中文说法抄进代码。
+
+三个判据写死在 `core/constants.py`，页面上没有开关：涨跌幅超出板块通用幅度再放 `QUALITY_CHANGE_TOLERANCE_PERCENT`（1.5 个百分点）
+才算脏——公开源的四舍五入会做出 10.03% 这种数；前收盘价与上一根收盘价的绝对差超过 `QUALITY_PRE_CLOSE_TOLERANCE`（0.02 元）
+算接不上，且只在两根线真的挨着（间隔 ≤ 8 天）时比，中间隔着长假或停牌段接不上不是脏数据；一天有行情的股票数低于近期中位数的
+`QUALITY_UNIVERSE_MIN_RATIO`（60%）判 `universe_size_check`，库里股票数不足 50 只时这一项直接跳过并写进日志（首启、测试都属这种，
+说「跳过了」比给一个假通过值钱）。
+
+回包 `written` 是新写的条数，`existing` 是「已经记过、这次跳过」的条数。同一个「日期 + 代码 + 检查项」只记一次、不累加：
+每轮同步都会重写同一批行，累加只会让一个一直没修的问题在页面上越看越严重。`skipped_checks` 说明这一趟哪些项没做成——
+`code_name_match_check` 只有同步那一趟做得成（股票列表是它自己下的），手动调 `POST /api/quality/check` 时它回的不是「通过」而是
+「名称核对没做成」。空库回 `ok: true` 但 `scanned_days`、`scanned_rows` 都是 0，并在 `skipped_checks` 里写明区间里没有行情行。
+
+### 清理接口的三道闸
+
+`POST /api/quality/purge` 的 `planned` 先给数字：`daily_quotes`、`calc_bars`、`daily_features`、`skipped_records`、
+`limit_up_patterns`、`pattern_matches`、`data_quality_errors` 各会带走多少行。不带 `confirm` 时 `dry_run` 是 `true`、
+`deleted` 是空对象，一个字节都不动。
+
+第一道闸是 `confirm`。第二道是比例：要删的日线超过区间内行情行数的 `QUALITY_PURGE_MAX_RATIO`（5%）时回
+`ok: false` 与 `refused`，一条都不删——那不是「清理几条脏行」，而是检查本身跑坏了（比如某个源整段只回了半天表），
+这一刀砍下去动的是原始行情红线。第三道是删除范围：只有 error 级账目指到的「哪只哪天」会被删，`error_pairs` 不含
+没有日期的账（名称对不上）和没有代码的账（整天的股票数水位），所以这两种永远不会按天删掉主档。
+
+跟着一起删的是下游派生行：补拉的计算 K 线、特征行、跳过记录，样本行（涨停那天自己脏，或它那三天形态窗口里坐着被抽掉的一根——
+这种向量再也复现不出来），匹配行两头都算（目标那天脏了结果不成立，样本那天脏了分数是抄来的），以及指向被删那一行的 error 账本身。
+正式日线以外的东西都可以重算，不用备份。
+
+删完在同一趟里复查**一遍**，新暴露的 error 放进 `newly_exposed` 报出来，然后停手。中间那根被抽掉之后，后面那根的
+`pre_close` 就接不上了，那是删除动作造出来的缺口、不是原因；照着它再删一轮会顺着时间轴把历史啃穿。第二轮交给下一次同步或人工判断。

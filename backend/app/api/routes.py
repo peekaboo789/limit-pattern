@@ -34,6 +34,17 @@ from backend.app.services.ai_daily_rank_service import history as daily_rank_his
 from backend.app.services.ai_daily_rank_service import prepare_from_tracker
 from backend.app.services.ai_daily_rank_service import state as daily_rank_state
 from backend.app.services.ai_gateway import AiNotConfigured
+from backend.app.services.purge_service import purge_condition, purge_error_rows
+from backend.app.services.quality_service import (
+    CHECKS,
+    CHECK_LABELS,
+    CHECK_SEVERITY,
+    ERROR as ERROR_SEVERITY,
+    WARNING as WARNING_SEVERITY,
+    counts as counts_summary,
+    list_errors,
+    run_checks,
+)
 from backend.app.services.retention import quote_dates
 from backend.app.services.similarity_service import pool_dates, scan_market, similar_to
 from backend.app.services.summary_service import generate_summary, get_summary, list_summaries
@@ -594,3 +605,79 @@ def summary_generate(day: str) -> dict:
         if parsed not in quote_dates(session):
             raise HTTPException(status_code=404, detail="这一天没有行情")
         return generate_summary(session, parsed)
+
+
+# --- 数据质量闸门（零成本，一次网关都不敲）-----------------------------------
+
+
+@router.get("/quality/summary")
+def quality_summary() -> dict:
+    """账表的总账：error/warning 各多少条、按检查项各多少、能不能删。
+
+    那份 `checks` 是把十四项检查的名字、中文说法与 error/warning 归属一起给出去，
+    页面照着它渲染列头——判据字符串抄进前端是两套口径的开始。
+    """
+    with session_scope() as session:
+        return {
+            **counts_summary(session),
+            "purge": purge_condition(session),
+            "checks": [
+                {"check": name, "label": CHECK_LABELS[name], "severity": CHECK_SEVERITY[name]}
+                for name, _label, _severity in CHECKS
+            ],
+        }
+
+
+@router.post("/quality/check")
+def quality_check(
+    start: str | None = None,
+    end: str | None = None,
+    max_days: int | None = Query(None, ge=1, le=60),
+) -> dict:
+    """跑一遍十四项检查。只往账表里写，一个行情字段都不改。
+
+    这一趟没有本轮股票列表，所以「代码↔名称」那一项是**没做成**而不是通过，
+    回包的 `skipped_checks` 里明写着；名称核对只有同步那一趟真做得成（列表是它自己下的）。
+    """
+    with session_scope() as session:
+        return run_checks(
+            session,
+            start=_parse_day(start, default_latest=False) if start else None,
+            end=_parse_day(end, default_latest=False) if end else None,
+            max_days=max_days,
+        )
+
+
+@router.get("/quality/errors")
+def quality_errors(
+    date: str | None = None,
+    severity: str | None = None,
+    check: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict:
+    """账目明细。`check` 用检查项的名字（`code_check` 那种），不是中文说法。"""
+    if severity is not None and severity not in {ERROR_SEVERITY, WARNING_SEVERITY}:
+        raise HTTPException(status_code=422, detail="severity 只能是 error 或 warning")
+    if check is not None and check not in CHECK_SEVERITY:
+        raise HTTPException(status_code=422, detail="没有这个检查项")
+    day = _parse_day(date, default_latest=False) if date else None
+    with session_scope() as session:
+        rows = list_errors(session, trade_date=day, severity=severity, check_name=check, limit=limit)
+    return {"items": rows, "count": len(rows)}
+
+
+@router.post("/quality/purge")
+def quality_purge(start: str | None = None, end: str | None = None, confirm: bool = False) -> dict:
+    """删掉 error 级日线与它们的下游。**默认只算不删**，要真删必须带 `confirm=true`。
+
+    原始行情是红线，所以这一颗按钮不放在页面上顺手能点到的位置：先预演看 `planned`，
+    再决定。删完只复查一遍，新暴露的 error 只报不删——第二轮删的是上一轮删除动作
+    自己造出来的缺口，照它删会把历史啃穿。
+    """
+    with session_scope() as session:
+        return purge_error_rows(
+            session,
+            start=_parse_day(start, default_latest=False) if start else None,
+            end=_parse_day(end, default_latest=False) if end else None,
+            confirm=bool(confirm),
+        )

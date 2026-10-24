@@ -131,19 +131,20 @@ flowchart LR
 
 | 时间 | 做什么 |
 | --- | --- |
-| 17:10 | 同步当天行情，写完接着清理过期明细，并重写当天总结 |
+| 10:00 | 把当时那份相似榜前 100 行备成当天 AI 固定榜的输入。只算本系统自己的数，一分钱不花、一次网关都不敲；那天不是交易日时会被「交易日必须是今天」那道闸挡回来，原因写进日志 |
+| 17:10 | 同步当天行情，写完接着清理过期明细、跑一遍十四项数据质量检查，并重写当天总结 |
 | 17:40 | 再清理一次过期明细 |
 | 18:10 | 当天总结如果还没有，补写一份。同步仍在跑时跳过 |
 
-周末和节假日没有新行情时，同步可能失败或写不进新的一天。已有的总结不会被删。
+周末和节假日没有新行情时，同步可能失败或写不进新的一天。已有的总结不会被删。质量检查跑不成的那几轮不变成安静的 0：它会写在同步完成的那句消息里。
 
 ## 开发路线图
 
-第一阶段是现在仓库里能双击或用源码跑起来的部分。表里 ✅ 指这条能力已经三层接通：后端有实现、有 HTTP 接口、页面上用得上；只写了算法文件、没接线没页面的仍记 ⏳，差别在表下那两段里说清。
+第一阶段是现在仓库里能双击或用源码跑起来的部分。表里 ✅ 指这条能力已经三层接通：后端有实现、有 HTTP 接口、页面上用得上；⏳ 差在哪一层，表下那几段逐条说清——有的是只写了算法文件没接线，有的是接口都齐了但页面上还没有那一块。
 
 | 状态 | 能力 |
 | --- | --- |
-| ✅ | 东方财富、腾讯、新浪三个行情源。`auto` 在 5xx 或限流后逐只换源，每只记下实际来源 |
+| ✅ | 东方财富、腾讯、新浪三个行情源。`auto` 在 5xx 或限流后逐只换源，每只记下实际来源，一轮下来还留一份「哪个源各出了多少只」的账 |
 | ✅ | 同步后抽样核对收盘价、昨收、涨停价 |
 | ✅ | 沪深 A 股过滤、涨停价四舍五入到分、ST 和新股前 5 日的规则 |
 | ✅ | 两种三日窗口、最近 3 个交易日涨停池、排除自身、不用未来数据 |
@@ -160,11 +161,14 @@ flowchart LR
 | ✅ | 报警榜：只盯前一交易日固定榜挑出的那几名，涨过 3% 报一次、涨过 6% 且在跳升时把窗口置顶；页面有浮层，桌面版还有窗口标题和托盘提示，点「知道了」才放开 |
 | ⏳ | 历史回测：相似度分档之后，下一交易日真的涨停的比例 |
 | ⏳ | 聚类：把涨停前形态分成几组再看 |
-| ✅ | 每日 AI 固定榜：收盘后凑输入、让模型排出前 20 名，第二天盘中就盯这几名。它不是按历史发生率挑的预测池，也不给涨停概率 |
+| ✅ | 每日 AI 固定榜：每天上午 10:00 凑好那 100 行输入（一分钱不花）、页面上点一次才让模型排出前 20 名，第二天盘中就盯这几名。它不是按历史发生率挑的预测池，也不给涨停概率 |
 | ✅ | AI 深度分析：多条证据交给模型写结论，数字仍须能对回本地统计；整榜分析和单只直评都有，页面不给模型编的数留位置 |
+| ⏳ | 数据质量闸门：十四项检查跟着每轮同步真跑、脏行清理有三道闸，四个接口都能读能预演，差的是页面上还没有那本账 |
 | ⏳ | 多个 AI 网关切换、行业题材、封板时间、Docker 镜像 |
 
-两张 ⏳ 不是完全没有代码：`backend/app/algorithms/calibration.py` 有 Brier 分、ECE 这几个纯函数，`clustering.py` 有 KMeans 加轮廓系数选 k，库表 `backtest_runs`、`backtest_observations` 也建好了。差的是把它们接起来：没有服务调用、没有 HTTP 接口、页面上看不见。回测那一档还缺原料——`ai_evidence.py` 里「相似度分档的次日发生率」这条证据就是因为没有观测数据被砍掉的。
+回测和聚类那两张 ⏳ 不是完全没有代码：`backend/app/algorithms/calibration.py` 有 Brier 分、ECE 这几个纯函数，`clustering.py` 有 KMeans 加轮廓系数选 k，库表 `backtest_runs`、`backtest_observations` 也建好了。差的是把它们接起来：没有服务调用、没有 HTTP 接口、页面上看不见。回测那一档还缺原料——`ai_evidence.py` 里「相似度分档的次日发生率」这条证据就是因为没有观测数据被砍掉的。
+
+质量闸门那张 ⏳ 差在另一头，是三层里缺最上面那一层：`backend/app/services/quality_service.py` 的十四项检查每轮同步末尾都真跑一遍（跑不成会在同步消息里说破，不会安静地变成 0），账落进 `data_quality_errors`；`purge_service.py` 的清理默认只预演、删除比例超 5% 直接拒、删完只复查一遍不再删第二轮。四个接口见 `docs/api.md` 的「数据质量闸门」一节。
 
 最后一行那四件是一件都没有：设置里只有单套地址、模型、密钥，没有可切换的网关清单；行业题材没有数据源，页面上那个「板块」是交易所板块（主板、创业板）不是行业；封板时间日线里给不出来，`first_limit_time` 永远是 null、涨停池那一列永远显示「—」；仓库里没有 Dockerfile，也没有 compose 文件。
 
@@ -308,7 +312,7 @@ npm run build
 | 地址 | `127.0.0.1:8765` | 只绑本机。端口被占用时桌面程序会往后换 |
 | `LP_DATA_DIR` | Windows：`%LOCALAPPDATA%\LimitPattern`；其它：`~/.limit_pattern` | 里面有 `lp.db`、`settings.json`、`summaries/`、`exports/`、`logs/` |
 | `LP_STATIC_DIR` | 仓库里的 `frontend/dist` | 有 `index.html` 才挂网页 |
-| `LP_SCHEDULER` | 开启 | 设为 `0` 关闭 17:10、17:40、18:10 |
+| `LP_SCHEDULER` | 开启 | 设为 `0` 关闭 10:00、17:10、17:40、18:10 |
 | `LP_AUTO_SYNC` | 开启 | 设为 `0` 时，空库启动也不自动同步 |
 | `LP_USE_STUB` | 关闭 | 设为 `1` 时桌面程序改用占位接口，正常不要开 |
 | 保留交易日 | 5，可改 3–30 | 设置页 |
@@ -346,6 +350,6 @@ logs/launcher.log
 
 基址 `http://127.0.0.1:8765`。成功时直接返回 JSON。失败时 HTTP 4xx/5xx，正文是 `{"detail": "中文说明"}`。日期是 `YYYY-MM-DD`，股票代码是 6 位。
 
-常用路径：`/api/health`、`/api/settings`、`/api/sync`、`/api/sync/status`、`/api/limitups`、`/api/pool`、`/api/kline`、`/api/similarity`、`/api/scan`、`/api/summaries`、`/api/export`。盘中那一组是 `/api/realtime/top`、`/api/realtime/status`、`/api/realtime/intraday-watch`、`/api/realtime/intraday-watch/ack`；AI 那一组是 `/api/ai/analysis`、`/api/ai/single/{code}`、`/api/ai/reports`、`/api/ai/picks*`、`/api/ai/daily-rank*`。AI 组里只有三颗按钮花钱：整榜分析、单股直评、每日固定榜的「排出名次」；其余 AI 路径和本系统所有行情路径都不敲网关。
+常用路径：`/api/health`、`/api/settings`、`/api/sync`、`/api/sync/status`、`/api/limitups`、`/api/pool`、`/api/kline`、`/api/similarity`、`/api/scan`、`/api/summaries`、`/api/export`。质量那一组是 `/api/quality/summary`、`/api/quality/check`、`/api/quality/errors`、`/api/quality/purge`，四个都不敲任何上游。盘中那一组是 `/api/realtime/top`、`/api/realtime/status`、`/api/realtime/intraday-watch`、`/api/realtime/intraday-watch/ack`；AI 那一组是 `/api/ai/analysis`、`/api/ai/single/{code}`、`/api/ai/reports`、`/api/ai/picks*`、`/api/ai/daily-rank*`。AI 组里只有三颗按钮花钱：整榜分析、单股直评、每日固定榜的「排出名次」；其余 AI 路径和本系统所有行情路径都不敲网关。
 
 每个路径的查询参数和字段见 [docs/api.md](docs/api.md)。

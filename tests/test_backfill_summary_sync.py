@@ -136,12 +136,26 @@ def test_empty_database_starts_a_sync(tmp_path, monkeypatch):
     reset_engine()
 
 
-def test_scheduler_includes_summary_after_sync(monkeypatch):
+def test_scheduler_registers_prepare_and_summary(monkeypatch):
+    """四个定时任务：10:00 备固定榜输入，17:10 同步，17:40 清理，18:10 补总结。
+
+    备榜那一步在调度里是真的挂着的那一拍——它写好了却没注册过，是「检查写了但没跑」
+    那类事故的另一个版本，所以这里连钟点一起判，不许它挪到别的时刻去。
+    """
     monkeypatch.setenv("LP_SCHEDULER", "1")
+    import backend.app.tasks.scheduler as scheduler_module
     from backend.app.tasks.scheduler import scheduled_job_ids, start_scheduler, stop_scheduler
 
     start_scheduler()
     try:
-        assert set(scheduled_job_ids()) == {"daily-sync", "daily-purge", "daily-summary"}
+        assert set(scheduled_job_ids()) == {
+            "daily-sync",
+            "daily-purge",
+            "daily-summary",
+            "daily-rank-prepare",
+        }
+        prepare = scheduler_module._SCHEDULER.get_job("daily-rank-prepare")
+        assert "hour='10'" in str(prepare.trigger)
+        assert "minute='0'" in str(prepare.trigger)
     finally:
         stop_scheduler()
