@@ -5,6 +5,8 @@ pywebview（WebView2）打开窗口。关闭窗口缩到托盘，托盘提供「
 窗口的 ``js_api.save_file(filename, text)`` 供页面「导出 TXT」：弹出系统另存为对话框，
 按 UTF-8 BOM 写入，并打开 ``ALLOW_DOWNLOADS`` 作为浏览器下载的备用。
 同一 Windows 会话只允许一个实例。日志写到 ``LP_DATA_DIR/logs/launcher.log``。
+服务就绪后再起一条 ``desktop.watch_pin`` 线程盯「盘中涨幅报警榜」：判据全在后端，这一层只把
+后端说的「该置顶」落到窗口上（置顶 + 标题带待确认条数 + 托盘通知），退出时把置顶和标题交回去。
 
 应用选择：
 
@@ -33,6 +35,11 @@ import urllib.request
 import webbrowser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+try:  # ``python -m desktop.launcher`` / 冻结包里的正常路径
+    from desktop.watch_pin import WatchPin
+except ImportError:  # ``python desktop/launcher.py``：此时 sys.path 是 desktop 目录本身
+    from watch_pin import WatchPin
 
 APP_TITLE = "三日涨停形态统计"
 DEFAULT_HOST = "127.0.0.1"
@@ -64,6 +71,7 @@ class AppState:
         self.icon = None
         self.server: ServerHandle | None = None
         self.control: ControlServer | None = None
+        self.watch_pin: WatchPin | None = None
         self.quit_event = threading.Event()
         self.show_requested = threading.Event()
 
@@ -665,12 +673,33 @@ def stop_tray(state: AppState) -> None:
         logger.exception("停止托盘失败")
 
 
+def start_watch_pin(state: AppState) -> None:
+    """起报警置顶线程。浏览器模式没有窗口可摞，这一层仍然照跑——那时只剩托盘那一句提醒。"""
+    pin = WatchPin(state, base_url=state.url, base_title=APP_TITLE)
+    state.watch_pin = pin
+    pin.start()
+
+
+def stop_watch_pin(state: AppState) -> None:
+    """停线程并把置顶、标题交还给桌面。撤早了会漏报警，撤晚了用户退出后桌面还压一层 TOPMOST。"""
+    pin = state.watch_pin
+    state.watch_pin = None
+    if pin is None:
+        return
+    try:
+        pin.stop()
+    except Exception:
+        logger.exception("停止涨幅报警置顶线程失败")
+
+
 def request_quit(state: AppState) -> None:
     if state.quitting:
         state.quit_event.set()
         return
     state.quitting = True
     logger.info("退出程序")
+    #: 先于销毁窗口：置顶是在这个窗口上，窗口没了就无从取消
+    stop_watch_pin(state)
     if state.server is not None:
         state.server.stop()
     window = state.window
@@ -925,6 +954,7 @@ def _serve_and_open(args: argparse.Namespace, data_dir: Path, state: AppState) -
         verify_gui_imports()
     if args.smoke:
         return 0
+    start_watch_pin(state)
     launch_ui(state, args.open_browser)
     return 0
 
@@ -949,6 +979,9 @@ def _run(args: argparse.Namespace, data_dir: Path) -> int:
         state.quitting = True
         return 0
     finally:
+        #: 置顶线程读的是本地服务的接口，停它就等于停采样保活——放在服务之前收，
+        #: 免得收尾那一拍报一条「读状态失败」进日志，看起来像出了事
+        stop_watch_pin(state)
         if state.control is not None:
             state.control.stop()
         if state.server is not None:

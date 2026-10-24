@@ -252,7 +252,9 @@ def analysis_kwargs() -> dict:
             "desktop",
             "desktop.stub_app",
             "desktop.launcher",
+            "desktop.watch_pin",
             "stub_app",
+            "watch_pin",
         ]
     )
 
