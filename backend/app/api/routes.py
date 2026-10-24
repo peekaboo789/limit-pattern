@@ -13,7 +13,24 @@ from backend.app.core.config import exports_dir, public_settings, update_setting
 from backend.app.services.export_service import content_disposition, render_export, save_copy
 from backend.app.core.database import session_scope
 from backend.app.models.tables import CalcBar, DailyQuote, Stock
+from backend.app.core.constants import REALTIME_TOP_N_MAX, REALTIME_TOP_N_MIN
 from backend.app.providers.markets import classify, is_in_scope, normalize_code, reject_reason
+from backend.app.services.realtime_tracker import RANK_METRICS, tracker
+from backend.app.services import ai_picks
+from backend.app.services.ai_analysis_service import (
+    board_runner,
+    board_selection,
+    one_row_board,
+    single_runner,
+    single_selection,
+)
+from backend.app.services.ai_analysis_store import list_reports, report_detail
+from backend.app.services.ai_daily_rank_service import daily_rank_runner
+from backend.app.services.ai_daily_rank_service import get_board as daily_rank_row
+from backend.app.services.ai_daily_rank_service import history as daily_rank_history
+from backend.app.services.ai_daily_rank_service import prepare_from_tracker
+from backend.app.services.ai_daily_rank_service import state as daily_rank_state
+from backend.app.services.ai_gateway import AiNotConfigured
 from backend.app.services.retention import quote_dates
 from backend.app.services.similarity_service import pool_dates, scan_market, similar_to
 from backend.app.services.summary_service import generate_summary, get_summary, list_summaries
@@ -211,12 +228,12 @@ def pool() -> dict:
                 .order_by(DailyQuote.stock_code)
                 .all()
             )
-        for row in rows:
-            if not is_in_scope(row.stock_code):
-                continue
-            item = _limit_item(row, names, streaks.get(row.stock_code, 1))
-            item["limit_date"] = day.isoformat()
-            items.append(item)
+            for row in rows:
+                if not is_in_scope(row.stock_code):
+                    continue
+                item = _limit_item(row, names, streaks.get(row.stock_code, 1))
+                item["limit_date"] = day.isoformat()
+                items.append(item)
     return {"dates": [day.isoformat() for day in dates], "items": items}
 
 
@@ -294,6 +311,221 @@ def scan(
         if day not in quote_dates(session):
             raise HTTPException(status_code=404, detail="这一天没有行情")
         return scan_market(session, day, top, min_score)
+
+
+@router.get("/realtime/top")
+def realtime_top(metric: str | None = None, top_n: int | None = None) -> dict:
+    """盘中监控的榜：榜前 N 只每 2 秒随请求重算，全市场每 120 秒由后台线程跑一轮。"""
+    if metric is not None and metric not in RANK_METRICS:
+        raise HTTPException(status_code=422, detail="没有这个排序指标")
+    if top_n is not None and (top_n < REALTIME_TOP_N_MIN or top_n > REALTIME_TOP_N_MAX):
+        raise HTTPException(status_code=422, detail=f"榜单条数要在 {REALTIME_TOP_N_MIN} 到 {REALTIME_TOP_N_MAX} 之间")
+    return tracker.top(metric=metric, top_n=top_n)
+
+
+@router.get("/realtime/status")
+def realtime_status() -> dict:
+    """刷新节奏、当前时段、形态窗口用的是哪根 K 线。不触发扫描。"""
+    return tracker.status()
+
+
+# --- AI 综合分析（盘中整榜与单股直评）----------------------------------------
+
+
+def _current_board() -> tuple[dict, dict]:
+    """屏幕上那一份榜，连同「它是按什么口径选出来的」。
+
+    分析用的榜必须与页面显示的是同一批打分结果：另取一次价会变成两套数，
+    而页面上那句「我分析的就是这一榜」就成了假话。取不到就当场说清是预热中还是报错了。
+    """
+    payload = tracker.top()
+    snapshot = payload.get("snapshot")
+    if not snapshot:
+        raise HTTPException(
+            status_code=409,
+            detail=f"监控榜还没有可用的一份（状态 {payload.get('status')}："
+            f"{payload.get('error') or '这一轮还没跑出全市场结果'}）",
+        )
+    selection = board_selection(
+        metric=str(payload.get("metric") or ""),
+        metric_label=str(payload.get("metric_label") or ""),
+        top_n=int(payload.get("top_n") or 0),
+    )
+    snapshot["metric"] = selection["metric"]
+    snapshot["metric_label"] = selection["metric_label"]
+    snapshot["top_n"] = selection["top_n"]
+    return snapshot, selection
+
+
+@router.post("/ai/analysis")
+def ai_analysis_start() -> dict:
+    """起一次整榜分析。已经有一份在跑就接着等那一份，不重复花钱。"""
+    board, selection = _current_board()
+    try:
+        return board_runner.start("", lambda: board, selection=selection)
+    except AiNotConfigured as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/ai/analysis")
+def ai_analysis_state() -> dict:
+    """轮询读的那一份：在跑就给进度（已收到多少字），跑完给结论。
+
+    内存里没有就从存档兜底——重开程序或十分钟到了，页面上不该变成「什么都没有」。
+
+    先读进度、后读结论：这一对必须按这个顺序读。反过来读的话，轮询可能卡在
+    「结论还没落地、进度已经清掉」那一瞬之间——页面显示「没在跑、也没有结论」，
+    用户只能重进页面才看得见那份已经跑完的分析。
+    """
+    running = board_runner.status()
+    with session_scope() as session:
+        result = board_runner.result("")
+        report = result.get("report")
+        if report and report.get("ok"):
+            report["pick_history"] = ai_picks.history_overview(
+                session, [str(pick.get("stock_code") or "") for pick in report.get("picks") or []]
+            )
+        return {"runner": running, "source": result.get("source"), "report": report}
+
+
+@router.post("/ai/single/{code}")
+def ai_single_start(code: str) -> dict:
+    """单股直评：只把这一只股票的证据交给模型，最多回一条结论。"""
+    key = _code(code)
+    if not is_in_scope(key):
+        raise HTTPException(status_code=422, detail=f"{key} 不在统计范围内：{reject_reason(key)}")
+
+    def provider() -> dict:
+        with session_scope() as session:
+            return one_row_board(session, key)
+
+    try:
+        return single_runner.start(key, provider, selection=single_selection(key))
+    except AiNotConfigured as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/ai/single/{code}")
+def ai_single_state(code: str) -> dict:
+    """这一只股票的直评结论 + 它被推荐过的老账（从没推过就是 null，不是 0 次）。
+
+    读取顺序和整榜那一份一样：先问在不在跑，再取结论。
+    """
+    key = _code(code)
+    running = single_runner.status(key)
+    with session_scope() as session:
+        result = single_runner.result(key)
+        report = result.get("report")
+        if report and report.get("picks"):
+            report["ai_history"] = ai_picks.pick_history(session, key)
+        return {
+            "code": key,
+            "runner": running,
+            "source": result.get("source"),
+            "report": report,
+            "ai_history": ai_picks.pick_history(session, key),
+        }
+
+
+@router.get("/ai/reports")
+def ai_reports(chain: str | None = None, limit: int = Query(20, ge=1, le=100)) -> dict:
+    with session_scope() as session:
+        return list_reports(session, chain=chain or "", limit=limit)
+
+
+@router.get("/ai/reports/{report_id}")
+def ai_report_detail(report_id: int) -> dict:
+    with session_scope() as session:
+        payload = report_detail(session, report_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="没有这份存档")
+    return payload
+
+
+# --- AI 推荐的对账账本（零成本）----------------------------------------------
+
+
+@router.get("/ai/picks/summary")
+def ai_picks_summary() -> dict:
+    with session_scope() as session:
+        return ai_picks.summary(session)
+
+
+@router.post("/ai/picks/check")
+def ai_picks_check() -> dict:
+    """把待验证的行和库里已有的行情对一遍。只读库，一次网关都不敲。"""
+    with session_scope() as session:
+        check = ai_picks.reconcile(session)
+        summary = ai_picks.summary(session)
+    return {"reconcile": check, **summary}
+
+
+@router.get("/ai/picks")
+def ai_picks_list(
+    date: str | None = None, verdict: str | None = None, limit: int = Query(200, ge=1, le=500)
+) -> dict:
+    with session_scope() as session:
+        return ai_picks.result_rows(session, trade_date=date or "", verdict=verdict or "", limit=limit)
+
+
+@router.get("/ai/picks/{code}")
+def ai_picks_history(code: str) -> dict:
+    key = _code(code)
+    with session_scope() as session:
+        history = ai_picks.pick_history(session, key)
+    #: 从没被推荐过是第一等答案，不是一片 0 的空表
+    return {"code": key, "never_recommended": history is None, "history": history}
+
+
+# --- 每日 AI 固定榜 ----------------------------------------------------------
+
+
+@router.get("/ai/daily-rank")
+def ai_daily_rank(date: str | None = None) -> dict:
+    """某一天那份固定榜：备好的输入、排出的名次、校验闸的计数、有没有在跑。"""
+    day = "" if not date else str(_parse_day(date, default_latest=False))
+    with session_scope() as session:
+        return daily_rank_state(session, day)
+
+
+@router.post("/ai/daily-rank/prepare")
+def ai_daily_rank_prepare() -> dict:
+    """备好那 100 行输入。这一步是本系统自己算的，一分钱不花、一次网关都不敲。"""
+    with session_scope() as session:
+        try:
+            return prepare_from_tracker(session)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/ai/daily-rank/rank")
+def ai_daily_rank_start(date: str | None = None) -> dict:
+    """排出前 20 名：这是这一页唯一会花钱的按钮。"""
+    day = str(_parse_day(date, default_latest=True)) if date else str(today())
+    with session_scope() as session:
+        row = daily_rank_row(session, day)
+        feed = ((row.payload or {}).get("prepared") or {}).get("feed") if row else None
+    if row is None or not feed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{day} 没有备好的输入（这一天没备过，或那天不是交易日）。先点「备好输入」，那一步不花钱",
+        )
+    try:
+        return daily_rank_runner.start(day)
+    except AiNotConfigured as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/ai/daily-rank/status")
+def ai_daily_rank_status() -> dict:
+    """只问「在不在跑」，不碰库——页面上那 2 秒一拍读的就是这个。"""
+    return daily_rank_runner.status()
+
+
+@router.get("/ai/daily-rank/history")
+def ai_daily_rank_history(limit: int = Query(15, ge=1, le=60)) -> dict:
+    with session_scope() as session:
+        return daily_rank_history(session, limit=limit)
 
 
 @router.get("/summaries")

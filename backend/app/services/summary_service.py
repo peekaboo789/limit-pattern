@@ -5,12 +5,11 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 
-import httpx
-
 from backend.app.core.clock import SHANGHAI
 from backend.app.core.config import read_settings_file, summaries_dir
 from backend.app.models.tables import AiDailySummary, DailyQuote
 from backend.app.providers.markets import is_in_scope
+from backend.app.services import ai_gateway
 from backend.app.services.similarity_service import board_name
 
 REQUIRED_KEYS = (
@@ -142,49 +141,26 @@ def _extract_json(text: str) -> dict:
     return payload
 
 
+SUMMARY_SYSTEM = (
+    "你是行情统计助手。只根据用户给的数字写总结。"
+    "不要预测涨停，不要编写新闻、公告或财报。"
+    "只返回 JSON，包含 headline 和 key_points。key_points 是 3 到 5 条字符串。"
+)
+
+
 def call_chat(prompt: str) -> str:
-    settings = read_settings_file()
-    url = str(settings.get("ai_base_url") or "").rstrip("/")
-    key = str(settings.get("ai_api_key") or "")
-    model = str(settings.get("ai_model") or "")
-    if not (url and key and model):
-        raise AiNotConfigured("未配置AI接口")
-    endpoint = url if url.endswith("/chat/completions") else url + "/chat/completions"
+    """总结走和分析同一条网关（`ai_gateway`），不在这里另开一份 HTTP 调用。"""
     try:
-        response = httpx.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {key}"},
-            json={
-                "model": model,
-                "temperature": 0.2,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是行情统计助手。只根据用户给的数字写总结。"
-                            "不要预测涨停，不要编写新闻、公告或财报。"
-                            "只返回 JSON，包含 headline 和 key_points。key_points 是 3 到 5 条字符串。"
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-            },
-            timeout=90.0,
-        )
-    except httpx.HTTPError as exc:
-        raise AiFailed("AI 接口没有连上") from exc
-    if response.status_code >= 400:
-        raise AiFailed(f"AI 接口返回 HTTP {response.status_code}")
-    body = response.json()
-    try:
-        return str(body["choices"][0]["message"]["content"])
-    except (KeyError, IndexError, TypeError) as exc:
-        raise AiFailed("AI 接口没有返回文本") from exc
+        return ai_gateway.call_chat(prompt, system=SUMMARY_SYSTEM)
+    except ai_gateway.AiNotConfigured as exc:
+        raise AiNotConfigured(str(exc)) from exc
+    except ai_gateway.AiGatewayError as exc:
+        raise AiFailed(str(exc)) from exc
 
 
 def ai_ready() -> bool:
-    settings = read_settings_file()
-    return bool(settings.get("ai_base_url") and settings.get("ai_model") and settings.get("ai_api_key"))
+    return ai_gateway.ai_ready()
+
 
 
 def statistical_points(facts: dict) -> list[str]:

@@ -115,6 +115,48 @@ def _store(session, code: str, bars: list[dict], as_of: date) -> int:
     return kept
 
 
+def load_bars_bulk(session, as_of: date, codes: list[str] | None = None) -> dict[str, list[Bar]]:
+    """一次把全市场的历史读进内存，按代码分组。口径与 `load_bars` 完全一致。
+
+    盘中全市场一轮要给四千多只股票建窗口。逐只走 `load_bars` 是每次三轮查询、
+    一万多次往返；这里改成三轮查询取全部，再由调用方在内存里配。
+    `codes` 给了就只取那批（快刷的榜前 N），不给就取全表。
+    """
+    wanted = set(codes) if codes is not None else None
+    grouped: dict[str, dict[date, Bar]] = {}
+
+    def _put(code: str, day: date, bar: Bar, override: bool) -> None:
+        if wanted is not None and code not in wanted:
+            return
+        if bar.trade_date > as_of:
+            return
+        slot = grouped.setdefault(code, {})
+        if override or day not in slot:
+            slot[day] = bar
+
+    calc_rows = session.query(CalcBar).filter(CalcBar.trade_date <= as_of)
+    if wanted is not None:
+        calc_rows = calc_rows.filter(CalcBar.stock_code.in_(list(wanted)))
+    for row in calc_rows.all():
+        bar = _to_bar(row.trade_date, row)
+        if bar is not None:
+            _put(row.stock_code, row.trade_date, bar, False)
+    with _LOCK:
+        for (code, day), payload in _MEMORY.items():
+            bar = _to_bar(day, _DictRow(payload))
+            if bar is not None:
+                _put(code, day, bar, False)
+    official = session.query(DailyQuote).filter(DailyQuote.trade_date <= as_of)
+    if wanted is not None:
+        official = official.filter(DailyQuote.stock_code.in_(list(wanted)))
+    for row in official.all():
+        bar = _to_bar(row.trade_date, row)
+        if bar is not None:
+            # 正式行情盖住补来的线，和 `load_bars` 的优先级一样。
+            _put(row.stock_code, row.trade_date, bar, True)
+    return {code: [slot[day] for day in sorted(slot)] for code, slot in grouped.items()}
+
+
 def ensure_prior_bars(session, code: str, limit_date: date, as_of: date) -> str | None:
     """让涨停日之前至少有三根 K 线。成功返回 None，失败返回可展示的原因。"""
     if limit_date > as_of:

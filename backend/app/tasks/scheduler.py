@@ -39,6 +39,25 @@ def _safe_summary() -> None:
         logger.exception("定时总结失败")
 
 
+def _safe_daily_rank_prepare() -> None:
+    """收盘后把「每日 AI 固定榜」的那 100 行输入备好。
+
+    这一步只算本系统自己的数（相似度、特征、评分模型），一分钱不花、一次网关都不敲；
+    花钱的那一次排名永远要用户在页面上点一下。备好的输入落 `status=prepared`，
+    非交易日会被「交易日必须是今天」那道闸挡回来，那句原因写进日志。
+    """
+    try:
+        from backend.app.core.database import session_scope
+        from backend.app.services.ai_daily_rank_service import prepare_from_tracker
+
+        with session_scope() as session:
+            result = prepare_from_tracker(session)
+        if not result.get("ok"):
+            logger.info("每日 AI 固定榜没有备好输入：%s", result.get("error"))
+    except Exception:
+        logger.exception("每日 AI 固定榜备输入失败")
+
+
 def start_scheduler() -> None:
     global _SCHEDULER
     if os.environ.get("LP_SCHEDULER", "1") == "0":

@@ -1,14 +1,18 @@
 import { api, ApiError } from '@/api/client'
-import type { Health, SyncStatus } from '@/api/types'
+import type { Health, Settings, SyncStatus } from '@/api/types'
 import { reactive } from 'vue'
 
 export const session = reactive({
   health: null as Health | null,
   healthError: '',
+  settings: null as Settings | null,
   sync: null as SyncStatus | null,
   syncError: '',
   startingSync: false,
 })
+
+/** 花钱的按钮只在这三项配齐时才该按得动——判据与后端 `ai_ready()` 同一个字段。 */
+export const aiReady = () => session.settings?.ai_enabled === true
 
 export async function loadHealth(): Promise<void> {
   try {
@@ -16,6 +20,14 @@ export async function loadHealth(): Promise<void> {
     session.healthError = ''
   } catch (error) {
     session.healthError = error instanceof ApiError ? error.detail : '无法连接后端'
+  }
+}
+
+export async function loadSettings(): Promise<void> {
+  try {
+    session.settings = await api.settings()
+  } catch {
+    // 读不到就保持上一份：新页面只因此少一颗按钮，不该顶出红条
   }
 }
 
@@ -63,6 +75,6 @@ export async function startSync(): Promise<void> {
 }
 
 export async function initSession(): Promise<void> {
-  await Promise.all([loadHealth(), loadSync()])
+  await Promise.all([loadHealth(), loadSettings(), loadSync()])
   if (session.sync?.running) ensureSyncPoll()
 }

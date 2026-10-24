@@ -22,7 +22,8 @@ def pool_dates(session, as_of: date) -> list[date]:
     return days[-COMPARE_WINDOW_TRADING_DAYS:]
 
 
-def _samples(session, as_of: date) -> tuple[list[date], list[dict], list[dict]]:
+def limit_up_samples(session, as_of: date) -> tuple[list[date], list[dict], list[dict]]:
+    """截至 `as_of`（含）的最近三个交易日涨停样本。盘中要用它时必须传收盘日，别传当天。"""
     dates = pool_dates(session, as_of)
     if not dates:
         return [], [], []
@@ -87,7 +88,7 @@ def _empty(code: str, name: str, dates: list[date], window: list[str] | None = N
 
 def similar_to(session, code: str, as_of: date, top: int) -> dict:
     names = _names(session)
-    dates, samples, skipped = _samples(session, as_of)
+    dates, samples, skipped = limit_up_samples(session, as_of)
     window = build_three_day_window(load_bars(session, code, as_of), as_of, include_as_of_date=True)
     if not window.ok:
         raise LookupError("这只股票在这一天凑不齐三天行情")
@@ -127,7 +128,7 @@ def similar_to(session, code: str, as_of: date, top: int) -> dict:
 
 
 def scan_market(session, as_of: date, top: int, min_score: float) -> dict:
-    dates, samples, skipped = _samples(session, as_of)
+    dates, samples, skipped = limit_up_samples(session, as_of)
     names = _names(session)
     base = {
         "date": as_of.isoformat(),

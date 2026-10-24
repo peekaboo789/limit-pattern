@@ -198,6 +198,8 @@ class BacktestObservation(Base):
 
 
 class AiPickResult(Base):
+    """AI 推荐出去的那一只，后来到底封没封板。这张账是「它过去被推荐过」那一列的出处。"""
+
     __tablename__ = "ai_pick_results"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -213,8 +215,26 @@ class AiPickResult(Base):
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
+    report_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    model: Mapped[str] = mapped_column(String(64), default="")
+    recommended_at: Mapped[str] = mapped_column(String(32), default="")
+    stock_name: Mapped[str] = mapped_column(String(32), default="")
+    criteria: Mapped[str] = mapped_column(String(500), default="")
+    counter_evidence: Mapped[str] = mapped_column(String(500), default="")
+    at_max_similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    at_to_limit_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    at_change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_is_limit_up: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    actual_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_max_change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_source: Mapped[str] = mapped_column(String(32), default="")
+    checked_at: Mapped[str] = mapped_column(String(32), default="")
+
 
 class AiAnalysisReport(Base):
+    """盘中整榜与单股直评那两次花钱的存档。"""
+
     __tablename__ = "ai_analysis_reports"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -225,8 +245,25 @@ class AiAnalysisReport(Base):
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
+    chain: Mapped[str] = mapped_column(String(16), default="")
+    metric: Mapped[str] = mapped_column(String(24), default="")
+    metric_label: Mapped[str] = mapped_column(String(64), default="")
+    window_mode: Mapped[str] = mapped_column(String(16), default="")
+    started_at: Mapped[str] = mapped_column(String(32), default="")
+    finished_at: Mapped[str] = mapped_column(String(32), default="")
+    latency_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    board_rows: Mapped[int] = mapped_column(Integer, default=0)
+    feed_rows: Mapped[int] = mapped_column(Integer, default=0)
+    picks_count: Mapped[int] = mapped_column(Integer, default=0)
+    picks_beyond_limit: Mapped[int] = mapped_column(Integer, default=0)
+    text_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    recommended_codes: Mapped[list] = mapped_column(JSON, default=list)
+    cost_text: Mapped[str] = mapped_column(String(40), default="")
+
 
 class AiDailyRankBoard(Base):
+    """每日 AI 固定榜：`prepared` 那份输入不花钱，`done` 那一次排名才花钱。"""
+
     __tablename__ = "ai_daily_rank_boards"
     __table_args__ = (UniqueConstraint("trade_date", name="uq_rank_day"),)
 
@@ -236,6 +273,24 @@ class AiDailyRankBoard(Base):
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     prepared_at: Mapped[str] = mapped_column(String(40), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+    base_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    window_mode: Mapped[str] = mapped_column(String(16), default="")
+    metric: Mapped[str] = mapped_column(String(24), default="")
+    metric_label: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(64), default="")
+    started_at: Mapped[str] = mapped_column(String(32), default="")
+    finished_at: Mapped[str] = mapped_column(String(32), default="")
+    latency_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    board_rows: Mapped[int] = mapped_column(Integer, default=0)
+    feed_rows: Mapped[int] = mapped_column(Integer, default=0)
+    picks_count: Mapped[int] = mapped_column(Integer, default=0)
+    picks_beyond_limit: Mapped[int] = mapped_column(Integer, default=0)
+    dropped_codes_count: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, default=0)
+    unverified_citations: Mapped[int] = mapped_column(Integer, default=0)
+    cost_text: Mapped[str] = mapped_column(String(40), default="")
+    error: Mapped[str] = mapped_column(String(1000), default="")
 
 
 class AiDailySummary(Base):

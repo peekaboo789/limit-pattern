@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { api, ApiError } from '@/api/client'
 import type { Settings } from '@/api/types'
+import { session } from '@/stores/session'
 import { formatDateTime } from '@/utils/format'
 import { sourceLabel } from '@/utils/labels'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 const FALLBACK_SOURCES = ['auto', 'eastmoney', 'tencent', 'sina']
 
-const meta = ref<Settings | null>(null)
 const form = reactive({
   retention_trading_days: 5,
   compare_window_trading_days: 3,
@@ -16,6 +16,7 @@ const form = reactive({
   data_source: 'auto',
   ai_api_key: '',
 })
+const meta = computed(() => session.settings)
 const sourceOptions = computed(() =>
   meta.value?.data_source_options?.length ? meta.value.data_source_options : FALLBACK_SOURCES,
 )
@@ -25,7 +26,7 @@ const error = ref('')
 const saved = ref(false)
 
 function apply(settings: Settings) {
-  meta.value = settings
+  session.settings = settings
   form.retention_trading_days = settings.retention_trading_days
   form.compare_window_trading_days = settings.compare_window_trading_days
   form.ai_base_url = settings.ai_base_url

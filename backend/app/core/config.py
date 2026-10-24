@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,17 +23,36 @@ def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+_DATA_DIR_LOCK = threading.Lock()
+_DATA_DIR_CACHE: tuple[str, str, Path] | None = None
+
+
 def data_dir() -> Path:
-    """行情库、设置和每日总结都放在这里。"""
+    """行情库、设置和每日总结都放在这里。
+
+    一轮盘中扫描要给四千多只股票判板块，每只都要问一次设置，设置又落在这个目录里。
+    每次问都重建 Path、stat 一遍再 mkdir 的话，判定本身就把两秒的节奏占满了，
+    所以这里按环境变量缓存路径。目录被外部删掉时下面那次 `is_dir()` 会把它补回来。
+    """
+    global _DATA_DIR_CACHE
     raw = os.environ.get("LP_DATA_DIR", "").strip()
+    env_base = os.environ.get("LOCALAPPDATA", "") if os.name == "nt" else ""
+    with _DATA_DIR_LOCK:
+        cached = _DATA_DIR_CACHE
+    if cached is not None and cached[0] == raw and cached[1] == env_base:
+        path = cached[2]
+        if path.is_dir():
+            return path
     if raw:
         path = Path(raw).expanduser()
     elif os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        base = env_base or str(Path.home() / "AppData" / "Local")
         path = Path(base) / "LimitPattern"
     else:
         path = Path.home() / ".limit_pattern"
     path.mkdir(parents=True, exist_ok=True)
+    with _DATA_DIR_LOCK:
+        _DATA_DIR_CACHE = (raw, env_base, path)
     return path
 
 
@@ -81,8 +102,27 @@ class Settings(BaseSettings):
         return bool(os.environ.get("REDIS_URL", "").strip() or self.redis_url.strip())
 
 
+_SETTINGS_LOCK = threading.Lock()
+_SETTINGS_CACHE: tuple[tuple[str, ...], "Settings"] | None = None
+_SETTINGS_ENV = ("REDIS_URL", "CACHE_ENABLED", "SUPPORTED_EXCHANGES", "DATA_PROVIDER")
+
+
 def get_settings() -> Settings:
-    return Settings()
+    """`Settings` 只读那四个环境变量，值没变就用同一份。
+
+    判一只股票在不在纳入范围要问它一次，一轮全市场就是四千多次；
+    pydantic-settings 每次构造都要把整个环境扫一遍。
+    """
+    global _SETTINGS_CACHE
+    key = tuple(os.environ.get(name, "") for name in _SETTINGS_ENV)
+    with _SETTINGS_LOCK:
+        cached = _SETTINGS_CACHE
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    settings = Settings()
+    with _SETTINGS_LOCK:
+        _SETTINGS_CACHE = (key, settings)
+    return settings
 
 
 def scrub_secrets(text: str) -> str:
@@ -113,23 +153,72 @@ def default_settings() -> dict:
     }
 
 
-def read_settings_file() -> dict:
-    path = settings_path()
-    merged = default_settings()
-    if not path.exists():
-        return merged
+_SETTINGS_FILE_LOCK = threading.Lock()
+_SETTINGS_FILE_CACHE: dict | None = None
+_SETTINGS_FILE_PATH = ""
+_SETTINGS_FILE_SIGNATURE: tuple[int, int] | None = None
+_SETTINGS_FILE_READ_AT = 0.0
+#: 同进程改设置会立刻失效，这里只是给外部编辑器留一个上限：0.25 秒内不重复 stat。
+SETTINGS_FILE_TTL_SECONDS = 0.25
+
+
+def _settings_file_signature(path: Path) -> tuple[int, int] | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return merged
-    if isinstance(payload, dict):
-        for key in merged:
-            if key in payload and payload[key] is not None:
-                merged[key] = payload[key]
-    return merged
+        info = path.stat()
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size)
+
+
+def read_settings_file() -> dict:
+    """读 settings.json，按「哪份文件 + mtime + 大小」缓存，返回浅拷贝。
+
+    一轮盘中扫描要给四千多只股票判板块归属，每只都要问一次排除哪些板块；
+    每次都读盘解析的话，光这件事就把两秒的节奏占满。
+    缓存必须连着文件路径一起比：换数据目录（测试用临时目录、同时跑两份程序）
+    要立刻读到那一份自己的设置，不能沿用上一份。
+    调用方（`update_settings`、`stamp`）拿到的是拷贝，改它不会污染缓存。
+    """
+    global _SETTINGS_FILE_CACHE, _SETTINGS_FILE_PATH, _SETTINGS_FILE_SIGNATURE, _SETTINGS_FILE_READ_AT
+    path = settings_path()
+    text_path = str(path)
+    now = time.monotonic()
+    with _SETTINGS_FILE_LOCK:
+        if (
+            _SETTINGS_FILE_CACHE is not None
+            and _SETTINGS_FILE_PATH == text_path
+            and now - _SETTINGS_FILE_READ_AT < SETTINGS_FILE_TTL_SECONDS
+        ):
+            return dict(_SETTINGS_FILE_CACHE)
+    signature = _settings_file_signature(path)
+    with _SETTINGS_FILE_LOCK:
+        if (
+            _SETTINGS_FILE_CACHE is not None
+            and _SETTINGS_FILE_PATH == text_path
+            and _SETTINGS_FILE_SIGNATURE == signature
+        ):
+            _SETTINGS_FILE_READ_AT = now
+            return dict(_SETTINGS_FILE_CACHE)
+    merged = default_settings()
+    if signature is not None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            for key in merged:
+                if key in payload and payload[key] is not None:
+                    merged[key] = payload[key]
+    with _SETTINGS_FILE_LOCK:
+        _SETTINGS_FILE_CACHE = merged
+        _SETTINGS_FILE_PATH = text_path
+        _SETTINGS_FILE_SIGNATURE = signature
+        _SETTINGS_FILE_READ_AT = time.monotonic()
+    return dict(merged)
 
 
 def write_settings_file(payload: dict) -> None:
+    global _SETTINGS_FILE_CACHE, _SETTINGS_FILE_PATH, _SETTINGS_FILE_SIGNATURE
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
@@ -137,6 +226,10 @@ def write_settings_file(payload: dict) -> None:
     with tmp.open("w", encoding="utf-8", newline="") as handle:
         handle.write(text)
     tmp.replace(path)
+    with _SETTINGS_FILE_LOCK:
+        _SETTINGS_FILE_CACHE = None
+        _SETTINGS_FILE_PATH = ""
+        _SETTINGS_FILE_SIGNATURE = None
 
 
 def excluded_boards() -> set[str]:

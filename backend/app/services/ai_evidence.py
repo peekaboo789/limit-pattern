@@ -1,0 +1,232 @@
+"""给大模型看的证据行。原则只有一条：写进字段里的每个数字都能在库里追到出处。
+
+老工程里有三项证据在这里被砍掉了，因为这一版程序没有能让它们有数的原料，
+留个永远为 null 的字段等于教模型猜：
+
+* 连板延续率（要预测服务）
+* 相似度档位的次日发生率（要回测观测表）
+* 本地证据分（三项加权的那个合成分，本来也不给模型看）
+
+历史成功率那一项改吃 `ai_pick_results` 的对账账本：它确实是「过去发生的频率」，
+只是分母是它自己推荐过的那些行，不是全市场。`_FIELD_DOC` 里写清了这一点。
+"""
+
+from __future__ import annotations
+
+from datetime import date
+
+from backend.app.algorithms.features import compute_day_features
+from backend.app.core.constants import EVIDENCE_ROW_LIMIT, TEXT_LIMIT
+from backend.app.services import ai_picks
+from backend.app.services.history_backfill import load_bars_bulk
+from backend.app.services.score_model import (
+    FORMULA_TEXT,
+    PROMPT_RUBRIC,
+    ROLE_PREAMBLE,
+    build_indicators,
+    formula_for,
+    with_gap,
+)
+
+NO_INVENTION_RULE = (
+    "这些数字之外的具体事实——别的股票怎么走、当天的新闻公告题材消息——输入里没有，"
+    "就不要写成理由或反证；你的经验和判断可以用，凭空的事实不能用。"
+)
+
+AI_DISCLAIMER = (
+    "这一栏的综合评分、等级与各项贡献都由本系统按固定公式算出（口径见下面那一行）："
+    "用的每一个数字都能在库里追到出处，同样的输入永远得到同样的分。"
+    "理由、反证与「它的判断标准」三段出自外部大模型：那部分追不到出处，也没有经过回测校准。"
+    "它自报的相对分不参与上面那个算式，页面上与公式分并排显示、原样给出两者的差："
+    "不取平均、不替任何一方圆场；它没给分时那一格是空白而不是 0 分。"
+    "综合评分与等级都不是涨停概率，也不是收益预测，更不构成对某只股票明天一定涨停的判断。"
+)
+
+#: 每只股票最多摊给模型几行证据。固定榜会传更大的数进来。
+DEFAULT_ROW_LIMIT = EVIDENCE_ROW_LIMIT
+
+_FIELD_DOC = (
+    "每一行是一只股票的证据，字段含义如下："
+    "stock_code 六位代码；stock_name 名称；board 板块；"
+    "at_limit 此刻是否封在涨停价上；limit_confirmed 这个涨停有没有收盘确认（盘中一律没有）；"
+    "last_price 最新价（元）；change_percent 当日涨跌幅（百分数）；"
+    "to_limit_percent 距当日涨停价还差几个点（分母是前收，已封板为 0，缺输入为 null）；"
+    "max_similarity 与最近三个交易日已收盘涨停样本池的最高相似度（0~100）；"
+    "avg_similarity 与同一个样本池的平均相似度；high_sim_count 相似度达到 90 以上的样本条数；"
+    "sample_count 这一轮实际参与比对的样本条数（已剔掉它自己）；"
+    "band 按最高相似度落的那一档；best_match 最像的那一条涨停样本（代码、名称、涨停日、分数）；"
+    "ai_history 它过去被本系统大模型推荐后的对账账本（推过几次、定判几次、命中率、历史总分），"
+    "从没被推荐过时整项为 null；"
+    "indicator_scores 评分模型那七个输入指标的原值；formula 本系统按公式算好的综合评分那份账；"
+    "feed_rank 这一行进提示词的位次。"
+    "任何字段值为 null 都表示本系统没有这一项证据——null 不是 0，也不是「很低」，"
+    "它是「这一项无从谈起」；请把缺失本身当作这一行的不确定性，而不是当作一个低值。"
+    "indicator_scores 与 formula 都是本系统算完的结果，不是让你照着某一项去打分的清单："
+    "分已经算好了，你不用也不能重算。其余字段（相似度、样本条数、历史账）是这些分的出处，"
+    "写依据时可以引用它们。"
+)
+
+SYSTEM_PARTS = (ROLE_PREAMBLE, _FIELD_DOC, PROMPT_RUBRIC, NO_INVENTION_RULE)
+
+INDICATOR_LABELS = {
+    "similarity_score": "三日形态相似度",
+    "pattern_match_rate": "近三日高相似占比",
+    "technical_score": "技术形态评分",
+    "volume_score": "成交量评分",
+    "capital_score": "资金评分",
+    "history_limit_up_rate": "历史成功率",
+    "risk_score": "风险评分",
+}
+
+
+def system_prompt() -> str:
+    """四条链路共用的那一段。数字全部来自 `score_model` 的常量，页面与提示词读同一份。"""
+    return "".join(SYSTEM_PARTS)
+
+
+def _round(value) -> float | None:
+    return None if value is None else round(float(value), 2)
+
+
+def _text(value) -> str:
+    return str(value or "").strip()[:TEXT_LIMIT]
+
+
+def _as_day(value) -> date | None:
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return None
+
+
+def features_at(session, codes: list[str], day: date | None) -> dict[str, dict]:
+    """基准日那一根的日线特征。基准日没有行情（停牌）就整只不给，不拿更早那根冒充。"""
+    if day is None or not codes:
+        return {}
+    grouped = load_bars_bulk(session, day, codes=codes)
+    found: dict[str, dict] = {}
+    for code, bars in grouped.items():
+        if not bars or bars[-1].trade_date != day:
+            continue
+        found[code] = compute_day_features(bars)
+    return found
+
+
+def build_evidence(session, board: dict, *, row_limit: int = DEFAULT_ROW_LIMIT) -> dict:
+    """把一份榜折成给模型看的证据行。
+
+    `board` 是实时监控那份快照（含 `limit_up_rows` / `pending_rows`）。
+    取不到最高相似度的行直接跳过：那一行连自己的分都说不清，进提示词只会让模型编。
+    """
+    rows = [*(board.get("limit_up_rows") or []), *(board.get("pending_rows") or [])]
+    base_day = _as_day(board.get("base_date"))
+    codes = [str(row.get("code") or "") for row in rows if row.get("code")]
+    features = features_at(session, codes, base_day)
+    history = ai_picks.history_overview(session, codes)
+    built: list[dict] = []
+    missing_similarity = 0
+    for row in rows:
+        code = str(row.get("code") or "")
+        max_similarity = row.get("score")
+        if max_similarity is None:
+            missing_similarity += 1
+            continue
+        item_history = history.get(code)
+        indicators = build_indicators(
+            similarity=max_similarity,
+            high_count=row.get("high_score_count"),
+            sample_count=row.get("sample_count"),
+            features=features.get(code),
+            history_rate_percent=None if not item_history else item_history.get("hit_rate_percent"),
+        )
+        formula = formula_for(indicators)
+        built.append(
+            {
+                "stock_code": code,
+                "stock_name": _text(row.get("name")),
+                "board": _text(row.get("board_label") or row.get("board")),
+                "at_limit": bool(row.get("is_limit_up")),
+                "limit_confirmed": bool(row.get("limit_confirmed")),
+                "last_price": _round(row.get("latest")),
+                "change_percent": _round(row.get("pct_chg")),
+                "to_limit_percent": row.get("to_limit_percent"),
+                "limit_up_price": _round(row.get("limit_up_price")),
+                "max_similarity": _round(max_similarity),
+                "avg_similarity": _round(row.get("avg_score")),
+                "high_sim_count": row.get("high_score_count"),
+                "sample_count": row.get("sample_count"),
+                "band": _text(row.get("band")),
+                "best_match": row.get("best_match"),
+                "ai_history": item_history,
+                "indicator_scores": indicators,
+                "formula": formula,
+                "feed_rank": 0,
+            }
+        )
+    kept = built[: max(1, int(row_limit))]
+    for index, item in enumerate(kept):
+        item["feed_rank"] = index + 1
+    return {
+        "rows": kept,
+        "board_rows": len(rows),
+        "feed_rows": len(kept),
+        "skipped_rows": missing_similarity,
+        "history_missing_rows": sum(1 for item in kept if not item["ai_history"]),
+        "feature_missing_rows": sum(1 for item in kept if item["indicator_scores"]["technical_score"] is None),
+        "trade_date": str(board.get("trade_date") or ""),
+        "base_date": str(board.get("base_date") or ""),
+        "window_mode": str(board.get("window_mode") or ""),
+        "metric": str(board.get("metric") or ""),
+        "metric_label": _text(board.get("metric_label")),
+        "board_generated_at": str(board.get("generated_at") or ""),
+        "pool_size": int(board.get("pool_size") or 0),
+        "source": str(board.get("source") or ""),
+    }
+
+
+def prompt_row_of(row: dict) -> dict:
+    """模型真正看到的那一行。历史账只留能对账的那几个数，`recent` 那些原文不进提示词。"""
+    payload = {key: value for key, value in row.items() if key != "ai_history"}
+    history = row.get("ai_history")
+    if isinstance(history, dict):
+        payload["ai_history"] = {
+            key: history.get(key)
+            for key in ("picks", "hits", "misses", "pending", "settled", "hit_rate_percent", "avg_score", "history_score")
+        }
+    return payload
+
+
+def evidence_line(row: dict) -> str:
+    """页面上一行紧凑证据。缺失一律留空而不是 0。"""
+    formula = row.get("formula") or {}
+    parts = [
+        f"最高相似 {row.get('max_similarity') if row.get('max_similarity') is not None else '—'}",
+        f"平均 {row.get('avg_similarity') if row.get('avg_similarity') is not None else '—'}",
+        f"高相似 {row.get('high_sim_count') if row.get('high_sim_count') is not None else '—'}"
+        f"/{row.get('sample_count') if row.get('sample_count') is not None else '—'}",
+        f"距涨停 {row.get('to_limit_percent') if row.get('to_limit_percent') is not None else '—'}%",
+        f"综合 {formula.get('composite_score') if formula.get('has_signal') else '—'}",
+    ]
+    history = row.get("ai_history")
+    if isinstance(history, dict):
+        parts.append(f"AI 老账 推 {history.get('picks')} 次·定判 {history.get('settled')} 次")
+    else:
+        parts.append("AI 老账 没推荐过")
+    return " · ".join(parts)
+
+
+__all__ = [
+    "AI_DISCLAIMER",
+    "FORMULA_TEXT",
+    "INDICATOR_LABELS",
+    "NO_INVENTION_RULE",
+    "ROLE_PREAMBLE",
+    "build_evidence",
+    "evidence_line",
+    "features_at",
+    "prompt_row_of",
+    "system_prompt",
+    "with_gap",
+]
