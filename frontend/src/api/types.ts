@@ -226,6 +226,10 @@ export interface RealtimeRow {
   high_score_count: number
   sample_count: number
   band: string
+  /** 概率列：这一行落的档、该档在最近一次已完成回测里的次日发生率与观测数。 */
+  similarity_band: string
+  next_day_rate_percent: number | null
+  next_day_rate_samples: number
   best_match: RealtimeBestMatch | null
 }
 
@@ -250,6 +254,8 @@ export interface RealtimeSnapshot {
   pending_count: number
   note: string
   disclaimer: string
+  /** 这一轮榜的概率列底表：整轮只读一份，所有行来自同一次回测。 */
+  probability?: ProbabilityTable
   metric?: string
   metric_label?: string
   top_n?: number
@@ -818,4 +824,263 @@ export interface DailyRankHistoryResponse {
   retention_days: number
   feed_limit: number
   pick_count: number
+}
+
+// --- 档2：回测、概率列与次日预测池 ------------------------------------------
+
+/** 概率列底表的一档。`percent` 为 null = 这一档给不出（观测不足 / 没出现过），不是 0%。 */
+export interface ProbabilityRate {
+  percent: number | null
+  samples: number
+  lift: number | null
+}
+
+/** 最近一次**已完成**回测的分档发生率。`run_id` 为 null = 还没跑过回测。 */
+export interface ProbabilityTable {
+  rates: Record<string, ProbabilityRate>
+  floors: number[]
+  run_id: number | null
+  start_date: string | null
+  end_date: string | null
+  day_count: number
+  observation_count: number
+  baseline_percent: number | null
+  min_band_observations: number
+  note: string
+}
+
+export interface BacktestSpotCheck {
+  stock_code: string
+  trade_date: string
+  recorded: number | null
+  recomputed: number | null
+  backtest_pool: number | null
+  production_pool: number | null
+  compared: boolean
+  ok: boolean | null
+  reason: string
+}
+
+export interface BacktestLeakage {
+  passed: boolean
+  window_upto_day?: boolean
+  window_excludes_label?: boolean
+  label_after_day?: boolean
+  sample_window_before_limit?: boolean
+  spot_checks: BacktestSpotCheck[]
+  detail: string
+  days: number
+}
+
+export interface CalibrationBin {
+  lower: number
+  upper: number
+  mean_predicted: number
+  observed_rate: number
+  count: number
+}
+
+export interface CalibrationBandCheck {
+  band: string
+  predicted: number
+  observed: number
+  count: number
+}
+
+export interface BacktestCalibration {
+  available: boolean
+  reason: string
+  split_ratio: number
+  train_days: number
+  test_days: number
+  train_count: number
+  test_count: number
+  brier: number | null
+  log_loss: number | null
+  ece: number | null
+  bins: CalibrationBin[]
+  band_probabilities: Record<string, number>
+  band_checks: CalibrationBandCheck[]
+}
+
+export interface BacktestBucket {
+  band: string
+  sample_count: number
+  limit_up_count: number
+  limit_up_rate: number | null
+  baseline_rate: number | null
+  lift: number | null
+  pending_count: number
+}
+
+export interface BacktestDay {
+  trade_date: string
+  limit_up_count: number
+  pool_size: number
+  pool_dates: string[]
+  skipped_samples: number
+  universe_count: number
+  scanned_count: number
+  missing_bars: number
+  dirty_skipped: number
+  sample_window_ok: boolean
+  next_trade_date: string | null
+}
+
+export interface BacktestRunPayload {
+  run_id: number
+  start_date: string
+  end_date: string
+  status: string
+  note: string
+  error: string
+  split_ratio: number
+  day_count: number
+  observation_count: number
+  baseline_rate: number | null
+  created_at: string | null
+  finished_at: string | null
+  parameters: Record<string, unknown>
+  days: BacktestDay[]
+  buckets: BacktestBucket[]
+  calibration: BacktestCalibration
+  leakage: BacktestLeakage
+  disclaimer: string
+}
+
+export interface BacktestRunSummary {
+  run_id: number
+  start_date: string
+  end_date: string
+  status: string
+  note: string
+  error: string
+  day_count: number
+  observation_count: number
+  baseline_rate: number | null
+  split_ratio: number
+  created_at: string | null
+  finished_at: string | null
+}
+
+export interface BacktestLatest {
+  run: BacktestRunPayload | null
+  probability: ProbabilityTable
+  runs: BacktestRunSummary[]
+  disclaimer: string
+}
+
+export interface BacktestStatus {
+  running: boolean
+  progress: number
+  phase: string
+  message: string
+  task_id: string
+  days_done: number
+  days_total: number
+  current_date: string
+  error: string
+  run_id: number | null
+  last_finished_at: string
+}
+
+export interface BacktestStartAck {
+  task_id: string
+  already_running?: boolean
+  running: boolean
+  progress: number
+  message: string
+  run_id?: number | null
+}
+
+export interface BacktestObservation {
+  trade_date: string
+  stock_code: string
+  stock_name: string
+  max_similarity: number | null
+  avg_similarity: number | null
+  sample_count: number
+  high_similarity_count: number
+  band: string
+  next_date: string | null
+  next_limit_up: boolean | null
+  next_change_percent: number | null
+}
+
+export interface BacktestObservationPage {
+  run_id: number
+  band: string
+  stock_code: string
+  total: number
+  limit: number
+  offset: number
+  items: BacktestObservation[]
+}
+
+export interface PredictionScoreTerms {
+  shape: number
+  carry: number | null
+  band: number | null
+}
+
+export interface PredictionRow {
+  stock_code: string
+  stock_name: string
+  board: string
+  board_label: string
+  is_st: boolean
+  pool_rank: number
+  rank: number
+  max_similarity: number | null
+  avg_similarity: number | null
+  sample_count: number
+  high_similarity_count: number
+  high_similarity_rate: number | null
+  band: string
+  band_rate: number | null
+  band_samples: number
+  band_lift: number | null
+  carry_known_count: number
+  carry_hit_count: number
+  carry_missing_count: number
+  carry_rate: number | null
+  close: number | null
+  change_percent: number | null
+  volume: number | null
+  turnover_rate: number | null
+  prediction_score: number
+  score_terms: PredictionScoreTerms
+}
+
+export interface PredictionBand {
+  band: string
+  sample_count: number
+  limit_up_count: number
+  limit_up_rate: number | null
+  baseline_rate: number | null
+  lift: number | null
+  pending_count: number
+}
+
+export interface PredictionPool {
+  pool_date: string
+  next_trade_date: string | null
+  pool_size: number
+  pool_total: number
+  pool_dates: string[]
+  sample_pool_size: number
+  skipped_samples: unknown[]
+  missing_bars: number
+  dirty_skipped: number
+  rows: PredictionRow[]
+  bands: PredictionBand[]
+  baseline_rate: number | null
+  calibrated: boolean
+  backtest_run_id: number | null
+  backtest_day_count: number
+  backtest_observation_count: number
+  min_band_observations: number
+  note: string
+  formula: string
+  disclaimer: string
 }

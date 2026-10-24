@@ -1,6 +1,11 @@
 import { ApiError, formatDetail, request } from './http'
 import type {
   AiReportListResponse,
+  BacktestLatest,
+  BacktestObservationPage,
+  BacktestRunPayload,
+  BacktestStartAck,
+  BacktestStatus,
   BoardState,
   DailyRankHistoryResponse,
   DailyRankPrepareAck,
@@ -17,6 +22,7 @@ import type {
   PicksListResponse,
   PicksSummary,
   PoolResponse,
+  PredictionPool,
   RealtimeStatus,
   RealtimeTop,
   ScanResponse,
@@ -134,6 +140,43 @@ export const api = {
 
   dailyRankRank: (date?: string) =>
     request<StartAck>(`/api/ai/daily-rank/rank${query({ date })}`, { method: 'POST' }),
+
+  startBacktest: (params: { start?: string; end?: string; max_days?: number } = {}) =>
+    request<BacktestStartAck>(
+      `/api/backtest/run${query({ start: params.start, end: params.end, max_days: params.max_days })}`,
+      { method: 'POST' },
+    ),
+
+  backtestStatus: () => request<BacktestStatus>('/api/backtest/status'),
+
+  backtestLatest: () => request<BacktestLatest>('/api/backtest/latest'),
+
+  backtestRun: (runId: number) => request<BacktestRunPayload>(`/api/backtest/runs/${runId}`),
+
+  backtestObservations: (params: {
+    run_id: number
+    band?: string
+    code?: string
+    limit?: number
+    offset?: number
+  }) =>
+    request<BacktestObservationPage>(
+      `/api/backtest/observations${query({
+        run_id: params.run_id,
+        band: params.band,
+        code: params.code,
+        limit: params.limit ?? 100,
+        offset: params.offset ?? 0,
+      })}`,
+    ),
+
+  deleteBacktest: (runId: number) =>
+    request<{ ok: boolean; run_id?: number; deleted?: number }>(`/api/backtest/runs/${runId}`, {
+      method: 'DELETE',
+    }),
+
+  predictionPool: (params: { date?: string; size?: number } = {}) =>
+    request<PredictionPool>(`/api/prediction/pool${query({ date: params.date, size: params.size })}`),
 
   exportText: async (params: ExportParams) => {
     if (import.meta.env.VITE_USE_MOCK === '1') {

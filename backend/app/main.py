@@ -66,9 +66,15 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         init_db()
+        from backend.app.core.database import session_scope
+        from backend.app.services import backtest_service
         from backend.app.services.retention import purge_excluded_boards
 
         purge_excluded_boards()
+        #: 上一进程若死在一轮回测里，那一行 status 会停在 running；启动时没有后台线程能
+        #: 替它收尾，就地记成 failed，免得回测页永远显示「正在回测」。
+        with session_scope() as session:
+            backtest_service.retire_stale_runs(session)
         start_scheduler()
         bootstrap_if_empty()
         yield

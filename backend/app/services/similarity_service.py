@@ -87,29 +87,39 @@ def _empty(code: str, name: str, dates: list[date], window: list[str] | None = N
 
 
 def similar_to(session, code: str, as_of: date, top: int) -> dict:
+    """单只股票对整池的相似度。
+
+    尺子按**整个样本池**拟合，剔自身只剔分数、不剔拟合——和首页榜、盘中榜同一条路。
+    反过来（先把自身样本剔掉再拟合）会让同一只票在同一天出现两个数：
+    榜上 26.3、详情页 20.53。那不是「更精确」，那是两把尺子。
+    """
     names = _names(session)
     dates, samples, skipped = limit_up_samples(session, as_of)
     window = build_three_day_window(load_bars(session, code, as_of), as_of, include_as_of_date=True)
     if not window.ok:
         raise LookupError("这只股票在这一天凑不齐三天行情")
     target_window = [bar.trade_date.isoformat() for bar in window.days]
-    comparable = [sample for sample in samples if sample["code"] != code]
     payload = _empty(code, names.get(code, ""), dates, target_window)
     payload["pool_size"] = len(samples)
     payload["skipped"] = skipped
-    if not comparable:
+    if not samples:
         return payload
     parts = score_components(
         np.asarray(window.vector, dtype=float),
-        np.asarray([sample["vector"] for sample in comparable], dtype=float),
+        np.asarray([sample["vector"] for sample in samples], dtype=float),
     )
-    order = sorted(
-        range(len(comparable)),
-        key=lambda index: (-float(parts["score"][0, index]), comparable[index]["code"]),
-    )
+    scores = parts["score"][0].astype(float).copy()
+    for index, sample in enumerate(samples):
+        if sample["code"] == code:
+            scores[index] = -1.0
+    order = [
+        index
+        for index in np.argsort(-scores)
+        if float(scores[index]) >= 0.0
+    ]
     matches = []
     for index in order[:top]:
-        sample = comparable[index]
+        sample = samples[int(index)]
         matches.append(
             {
                 "code": sample["code"],

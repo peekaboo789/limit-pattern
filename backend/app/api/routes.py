@@ -13,7 +13,7 @@ from backend.app.core.clock import today
 from backend.app.core.config import exports_dir, public_settings, update_settings
 from backend.app.services.export_service import content_disposition, render_export, save_copy
 from backend.app.core.database import session_scope
-from backend.app.models.tables import CalcBar, DailyQuote, Stock
+from backend.app.models.tables import BacktestRun, CalcBar, DailyQuote, Stock
 from backend.app.core.constants import REALTIME_TOP_N_MAX, REALTIME_TOP_N_MIN
 from backend.app.providers.markets import classify, is_in_scope, normalize_code, reject_reason
 from backend.app.services.intraday_watch import watcher
@@ -46,6 +46,8 @@ from backend.app.services.quality_service import (
     run_checks,
 )
 from backend.app.services.retention import quote_dates
+from backend.app.services import backtest_service
+from backend.app.services import prediction_service
 from backend.app.services.similarity_service import pool_dates, scan_market, similar_to
 from backend.app.services.summary_service import generate_summary, get_summary, list_summaries
 from backend.app.services.sync_service import start_sync, status
@@ -681,3 +683,123 @@ def quality_purge(start: str | None = None, end: str | None = None, confirm: boo
             end=_parse_day(end, default_latest=False) if end else None,
             confirm=bool(confirm),
         )
+
+
+# --- 回测与概率层（档2）------------------------------------------------------
+
+
+def _day_or_none(value: str | None) -> date | None:
+    return None if not value else _parse_day(value, default_latest=False)
+
+
+@router.post("/backtest/run")
+def backtest_run(
+    start: str | None = None,
+    end: str | None = None,
+    split_ratio: float = Query(0.5, ge=0.1, le=0.9),
+    max_days: int | None = Query(None, ge=1, le=60),
+) -> dict:
+    """起一轮回测。区间不给就吃库里全部已同步行情，长任务在后台线程里跑。
+
+    校验在起线程之前做完：区间反了、库里没行情这些要**当场**回答，
+    不该变成一个跑完才说的后台错误。一天等于一轮全市场打分，`max_days` 用来先跑短一段。
+    """
+    try:
+        return backtest_service.start(
+            start_date=_day_or_none(start),
+            end_date=_day_or_none(end),
+            split_ratio=split_ratio,
+            max_days=max_days,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/backtest/status")
+def backtest_status() -> dict:
+    """后台那一轮跑到哪了。真正的账在 `/backtest/latest`，这里只是进度。"""
+    return backtest_service.status()
+
+
+@router.get("/backtest/latest")
+def backtest_latest() -> dict:
+    """最近一次**已完成**的回测 + 概率列那份底表。
+
+    没跑过时 `run` 是 null、`probability.rates` 是空表——不是 0% 发生率，
+    页面据此把整列显示成「—」。
+    """
+    with session_scope() as session:
+        run = backtest_service.latest_done_run(session)
+        return {
+            "run": None if run is None else backtest_service.run_payload(run),
+            "probability": backtest_service.probability_table(session),
+            "runs": backtest_service.list_runs(session, limit=20),
+            "disclaimer": backtest_service.BACKTEST_DISCLAIMER,
+        }
+
+
+@router.get("/backtest/runs")
+def backtest_runs(limit: int = Query(20, ge=1, le=100)) -> dict:
+    """回测台账，含 `running` 与 `failed` 那几行——跑砸了也要数得出砸过几次。"""
+    with session_scope() as session:
+        return {"items": backtest_service.list_runs(session, limit=limit)}
+
+
+@router.get("/backtest/runs/{run_id}")
+def backtest_run_detail(run_id: int) -> dict:
+    with session_scope() as session:
+        run = session.get(BacktestRun, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"没有第 {run_id} 次回测")
+        return backtest_service.run_payload(run)
+
+
+@router.get("/backtest/observations")
+def backtest_observations(
+    run_id: int = Query(..., ge=1),
+    band: str | None = None,
+    code: str | None = None,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """明细分页。`band` 用档位标签（`90~100` 那种），不是中文说法。"""
+    with session_scope() as session:
+        if session.get(BacktestRun, run_id) is None:
+            raise HTTPException(status_code=404, detail=f"没有第 {run_id} 次回测")
+        return backtest_service.observation_page(
+            session,
+            run_id,
+            band=band or None,
+            code=(normalize_code(code) or None) if code else None,
+            limit=limit,
+            offset=offset,
+        )
+
+
+@router.delete("/backtest/runs/{run_id}")
+def backtest_run_delete(run_id: int) -> dict:
+    """删一轮回测账与明细。派生数据，随时能重跑；原始行情一根都不碰。"""
+    with session_scope() as session:
+        result = backtest_service.delete_run(session, run_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("reason") or "删除失败")
+    return result
+
+
+@router.get("/prediction/pool")
+def prediction_pool(date: str | None = None, size: int = Query(200, ge=1, le=1000)) -> dict:
+    """次日预测池：当日未涨停、按三项历史证据排序的那批股票。
+
+    榜是现算的，不吃任何缓存：这一页要给的是「截至今天」的排序，
+    缓存一份昨天的榜等于把昨天的答案挂在今日页上。
+    """
+    day = _day_or_none(date)
+    if day is not None and day > today():
+        raise HTTPException(status_code=400, detail="不能查询未来的日期")
+    try:
+        with session_scope() as session:
+            return prediction_service.build_pool(session, as_of=day, pool_size=size)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -12,8 +12,10 @@ const items = [
   { name: 'realtime', label: '盘中监控', to: '/realtime' },
   { name: 'similarity', label: '个股相似度', to: '/similarity' },
   { name: 'pool', label: '涨停池', to: '/pool' },
+  { name: 'prediction', label: '次日预测池', to: '/prediction' },
   { name: 'ai-rank', label: '每日 AI 固定榜', to: '/ai-rank' },
   { name: 'summaries', label: '每日总结', to: '/summaries' },
+  { name: 'backtest', label: '历史回测', to: '/backtest' },
   { name: 'settings', label: '设置', to: '/settings' },
 ]
 

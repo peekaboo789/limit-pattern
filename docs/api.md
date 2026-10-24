@@ -14,7 +14,7 @@
 | GET | `/api/kline?code=&days=30` | 日 K。正式行情优先，缺的日期用补拉的计算 K 线补上。不会返回今天之后的 K 线 |
 | GET | `/api/similarity?code=&date=&top=20` | 这一只和涨停池的对比 |
 | GET | `/api/scan?date=&top=50&min_score=0` | 全市场和涨停池对比后的排行 |
-| GET | `/api/realtime/top?metric=&top_n=` | 盘中监控的榜。榜前 N 只每 2 秒随请求重算，全市场每 120 秒由后台线程跑一轮。`metric` 不认识回 422，`top_n` 超出范围回 422 |
+| GET | `/api/realtime/top?metric=&top_n=` | 盘中监控的榜。榜前 N 只每 2 秒随请求重算，全市场每 120 秒由后台线程跑一轮。`metric` 不认识回 422，`top_n` 超出范围回 422。每行带 `similarity_band`、`next_day_rate_percent`、`next_day_rate_samples`，整份回包带 `probability`（底表，见「历史回测与次日预测池」） |
 | GET | `/api/realtime/status` | 刷新节奏与口径，不触发扫描：`status`（`live` / `warming` / `unavailable`）、`phase`、`in_session`、`refresh_seconds`、`full_rounds`、`fast_rounds`、`window_mode`、`morning_freeze`、`source`、`error`。`phase` 只有 `pre_open` / `morning` / `frozen` 三个值，11:30 起算 `frozen` |
 | GET | `/api/realtime/intraday-watch` | 涨幅报警榜的整份状态：池子、每只今天的涨幅与近 3 分钟跳升、报过哪些、还没确认哪些。只读最近一轮的采样结果，不在请求里跑网络轮次 |
 | POST | `/api/realtime/intraday-watch/ack?stock_code=&tier=` | 点「知道了」。两个参数都不给就是全部确认；`tier` 给错档位回 422。确认只作用在今天这一天的账上 |
@@ -33,6 +33,14 @@
 | POST | `/api/ai/daily-rank/rank?date=` | 排出前 20 名：这一页唯一会花钱的接口。没有备好的输入回 409，没配网关回 400 |
 | GET | `/api/ai/daily-rank/status` | 只问「在不在跑」，不碰库——页面上 2 秒一拍读的就是这个 |
 | GET | `/api/ai/daily-rank/history?limit=15` | 最近排过的几份榜。`limit` 1 到 60 |
+| POST | `/api/backtest/run?start=&end=&split_ratio=&max_days=` | 起一轮回测（后台线程）。不传区间吃库里全部已同步行情；`split_ratio` 0.1 到 0.9；`max_days` 1 到 60，用来先跑短一段。区间反了回 422，区间里没行情回 404。回 `task_id`、`already_running`、`days_total`、`running`、`progress`、`message`、`run_id` |
+| GET | `/api/backtest/status` | 后台那一轮跑到哪了：`running`、`progress`、`phase`、`message`、`task_id`、`days_done`、`days_total`、`current_date`、`error`、`run_id`。不碰库 |
+| GET | `/api/backtest/latest` | 最近一次**已完成**的回测（`run`，没有是 null）、概率列底表（`probability`）、最近 20 行台账（`runs`）、`disclaimer` |
+| GET | `/api/backtest/runs?limit=20` | 回测台账，含 `running` / `failed` 的行。`limit` 1 到 100 |
+| GET | `/api/backtest/runs/{run_id}` | 某一轮的完整账：分档、校准、泄漏自检、逐日、参数。没有回 404 |
+| GET | `/api/backtest/observations?run_id=&band=&code=&limit=&offset=` | 观测明细分页。`band` 用 `90~100` 这种标签；`limit` 1 到 1000（服务端再夹到 `OBSERVATION_PAGE_MAX`） |
+| DELETE | `/api/backtest/runs/{run_id}` | 删一轮账与它的明细。派生数据，不碰原始行情。没有回 404 |
+| GET | `/api/prediction/pool?date=&size=200` | 次日预测池：当日未涨停、按形态/连板/档位三项历史证据排序。`date` 不传取库里最近交易日，未来日期回 400，没行情回 404。`size` 1 到 1000 |
 | GET | `/api/quality/summary` | 质量账表的总账：error / warning 各多少条、十四项检查各多少条、最晚记到哪天、上次检查时刻，加上「能不能删」（`purge`）与十四项检查的名字、中文说法、error/warning 归属（`checks`） |
 | POST | `/api/quality/check?start=&end=&max_days=` | 跑一遍十四项检查。**只写账表，一个行情字段都不改**。不传区间就查库里现存的那段日期 |
 | GET | `/api/quality/errors?date=&severity=&check=&limit=200` | 账目明细。`severity` 只能是 `error` / `warning`，`check` 用检查项的名字（`ohlc_check` 那种），给错都回 422 |
@@ -79,6 +87,64 @@
 `POST /api/realtime/intraday-watch/ack` 回 `ok`、`acked`（真被确认掉的条数）、`remaining`（还剩几条没确认）、`pinning`、`pending_pin_codes`，并回显 `trade_date`、`stock_code`、`tier`。写库失败时 `ok` 是 `false` 并带 `error`，不是 HTTP 错误——页面上要显示「这句没记上」，不能显示成「没有报警了」。确认之后内存里那份状态就地换掉，下一次读到的 `pinning` 就是刚变化的那个事实；桌面置顶线程最迟 `poll_seconds` 之后跟着放开。
 
 去重键是「交易日 + 代码 + 档位」，有数据库唯一约束兜底：同一只股票同一档一天只记第一次触发，之后价格再怎么动都不重复报。
+
+## 历史回测与次日预测池
+
+回测回答的是「相似度落在某一档的股票，下一个交易日真的涨停的比例是多少」。它扫的是库里已经发生过的行情，一天等于一轮全市场打分，所以区间越长越慢。跑成的账留在 `backtest_runs` 与 `backtest_observations`，盘中榜的概率列和预测池的档位项都读同一份账。
+
+### 一轮回测怎么跑
+
+`POST /api/backtest/run` 先校验（区间反了 422、库里没行情 404），然后在后台线程里逐日重算样本池、逐日给当天全市场打分、再取下一交易日的涨停标签。启动前先落一行 `status=running` 的占位，跑成改成 `done`，跑砸改成 `failed` 并在 `error` 写下原因、`note` 写成「跑砸了：…」。这一行不会被事务回滚掉，所以「砸过几次」数得出来。进程在跑的时候退出，下一次启动会把残下的 `running` 行记成 failed（「进程重启，这一轮没有跑完」），不会永远挂着「正在回测」。
+
+同一时刻只跑一轮：已经有一轮在跑时再 POST，回的是那一轮的 `task_id` 和 `already_running: true`，不起第二个线程、不重复扫。
+
+分档边界固定为 `90~100`、`80~90`、`70~80`、`60~70`、`<60`（`core/constants.py`，页面从回包读，不各写一份）。每一档给 `sample_count`（**已经有结果**的观测数）、`limit_up_count`、`limit_up_rate`、`baseline_rate`、`lift`、`pending_count`。区间最后一天没有下一交易日，那些观测的 `next_limit_up` 是 null，进 `pending_count`——把没揭晓的当成没涨停，等于用未来的空白压低历史发生率。一档一条有结果的观测都没有时 `limit_up_rate` 是 null（页面显示「—」），不是 0%。
+
+`split_ratio` 按**交易日**切前后两段：前半段拟合「档 → 发生率」，后半段检验。不切观测是因为同一天的行情互相高度相关。检验段给 `brier`、`log_loss`、`ece`（越小越好）、等宽分箱 `bins`，以及按档位口径的 `band_checks`（`band`、`predicted`、`observed`、`count`）。有结果的交易日不足 2 天、或观测不足 20 条时 `available` 是 false、`reason` 写明差在哪，指标是 null 不是 0。
+
+`leakage` 是四条结构判据加三条抽验重算：形态窗口最后一天不晚于评估日、窗口不碰标签日、标签日严格晚于评估日、涨停样本窗口严格早于涨停日；抽验走首页那条 `similar_to` 重算，分数必须和落库一致（差 ≤ 0.01）。样本池条数不同时只登记、不判红（回测不补拉、剔 error 样本，和首页那条路本来就有这两处刻意的差别），条数一致而分数不一致才算尺子漂了。
+
+### 概率列与档位底表
+
+`GET /api/backtest/latest` 的 `probability` 就是盘中榜那一列的底表：
+
+| 字段 | 是什么 |
+| --- | --- |
+| `rates` | 每个档位标签一项：`percent`（百分数）、`samples`、`lift`。这一档没有发生率、或观测数不足 `MIN_BAND_OBSERVATIONS`（50）条时 `percent` 是 null |
+| `floors` | 四个档位边界 |
+| `run_id`、`start_date`、`end_date`、`day_count`、`observation_count`、`baseline_percent` | 这份数来自哪一轮回测 |
+| `min_band_observations` | 门槛（50） |
+| `note` | 一句人话：来自第几次回测、哪个区间、哪个基准，哪几档因样本不足留空 |
+
+一轮榜的所有行从同一次 `probability_table` 取值，不逐行查库——不然读到一半有人跑完新回测，榜上前半是旧发生率、后半是新发生率。整张表读不到已完成的回测时 `rates` 是空对象、`run_id` 是 null、`note` 说「概率列整列留空（不是 0%）」。跑过回测但一档统计都没落下来（那几天建不出涨停样本池）也照样留空，并在 `note` 里说清是哪一轮。
+
+`/api/realtime/top` 每行的 `next_day_rate_percent` 是「这一行最高相似度所在档」的次日实际涨停率，`next_day_rate_samples` 是那一档的观测数。三种留空分开算但结果一样：档位观测不够门槛、这一档在回测里没出现过、整张底表是空的——都是 null，页面画成「—」。`0.00%` 是一个有内容的结论（这一档历史上从没涨停过），不能拿来冒充「不知道」。
+
+### 次日预测池
+
+`GET /api/prediction/pool` 是纯读加现算，不写库：候选是基准日「还没涨停」的全市场，按三项历史证据加权排序。
+
+1. `shape`：当日最高相似度（0~100）。权重 0.5。
+2. `carry`：与它最像的那批涨停样本，在涨停之后第二个交易日继续涨停的比例，按相似度加权（90 分的样本比 65 分的说话更响）。权重 0.3。
+3. `band`：档位历史发生率相对全样本基准的倍数，按 `PREDICTION_LIFT_CAP`（2 倍）封顶，再折成 0~100。权重 0.2。
+
+缺了的项（没有回测、没有可用连板样本）把权重摊给其余项，不回一个 0。每行的 `score_terms` 给三个原值，`prediction_score` 是加权后的分。
+
+连板证据有唯一一道未来信息闸门：样本涨停日的下一交易日必须**严格早于**基准日。等于或晚于基准日的一律不查。已知后果也写在回包里：样本池只有三个交易日，基准日当天涨停的那批样本永远进不了连板统计，`carry_known_count` 为 0 的行照实显示。
+
+回包字段：
+
+| 字段 | 是什么 |
+| --- | --- |
+| `pool_date`、`next_trade_date` | 挑选日与预测目标日。目标日先问交易日历；日历可能比行情新（当天刚收盘、行情还没同步），这时日期说得出、结果仍只用已经发生的行情 |
+| `pool_size`、`pool_total`、`pool_dates`、`sample_pool_size` | 取了几名、当日参与打分多少只、样本池的交易日、样本池条数 |
+| `skipped_samples`、`missing_bars`、`dirty_skipped` | 建不出窗口的样本（最多 20 条）、凑不齐三日窗口的候选数、被 error 脏行挡掉的候选数 |
+| `rows[]` | `stock_code`、`stock_name`、`board`、`board_label`、`is_st`、`pool_rank`、`rank`、`max_similarity`、`avg_similarity`、`sample_count`、`high_similarity_count`、`high_similarity_rate`、`band`、`band_rate`、`band_samples`、`band_lift`、`carry_known_count`、`carry_hit_count`、`carry_missing_count`、`carry_rate`、`close`、`change_percent`、`volume`、`turnover_rate`、`prediction_score`、`score_terms`。取不到的数是 null，不是 0 |
+| `bands[]` | 档位底表，和 `probability` 同一份口径 |
+| `baseline_rate`、`calibrated`、`backtest_run_id`、`backtest_day_count`、`backtest_observation_count`、`min_band_observations` | 这一页吃的回测账。没跑过回测时 `calibrated` 是 false、`backtest_run_id` 是 null |
+| `note`、`formula`、`disclaimer` | 这一页凭什么、怎么合成分、免责声明原文 |
+
+预测分是历史统计的加权，不是涨停概率，也不是收益预测。这一页不给「建议买入」。
 
 ## 数据质量闸门
 

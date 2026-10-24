@@ -32,6 +32,7 @@ from backend.app.core.logging import get_logger
 from backend.app.models.tables import CalcBar, DailyQuote, Stock
 from backend.app.providers.markets import BOARD_LABELS, classify, is_in_scope
 from backend.app.providers.router import _module, normalize_source, order_for
+from backend.app.services.backtest_service import probability_for, probability_table
 from backend.app.services.history_backfill import load_bars_bulk
 from backend.app.services.intraday_capture import (
     capture_header,
@@ -570,6 +571,17 @@ def scan(
         )
     rows.sort(key=lambda item: (-(item["score"] or 0.0), item["code"]))
 
+    #: 概率列。整张底表一次读一次，榜上每一行从同一份取值——一轮榜不能一半是旧回测、
+    #: 一半是新回测。给不出就是 None，页面显示「—」，不是 0%。
+    #: 循环里的临时变量不能叫 `samples`：那正是上面那份涨停样本池，一旦被一个 int 顶掉，
+    #: 后面 `len(samples)` 就是在数一个数。
+    table = probability_table(session)
+    for row in rows:
+        band, percent, band_samples = probability_for(table, row["score"])
+        row["similarity_band"] = band
+        row["next_day_rate_percent"] = percent
+        row["next_day_rate_samples"] = band_samples
+
     if realtime:
         note = (
             f"盘中快照来自 {source}，样本池是截至 {base_date} 的 {len(dates)} 个交易日涨停；"
@@ -612,6 +624,7 @@ def scan(
         "pending_count": sum(1 for row in rows if not row["is_limit_up"]),
         "note": note,
         "disclaimer": DISCLAIMER,
+        "probability": table,
         "rows": rows,
     }
 

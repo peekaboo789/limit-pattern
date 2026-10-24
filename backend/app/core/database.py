@@ -134,6 +134,23 @@ def upgrade_existing_tables(engine=None) -> list[str]:
             "stock_name": "VARCHAR(32)",
             "fired_at": "VARCHAR(32)",
         },
+        # 回测那两张表建得早、字段少。旧库里它们必然是空的（此前没有任何写入方），
+        # 补齐列只是为了让 `create_all` 跳过已存在表时不会读不到字段。
+        "backtest_runs": {
+            "day_count": "INTEGER",
+            "observation_count": "INTEGER",
+            "baseline_rate": "FLOAT",
+            "note": "VARCHAR(200)",
+            "error": "VARCHAR(500)",
+            "parameters": "JSON",
+        },
+        "backtest_observations": {
+            "stock_name": "VARCHAR(32)",
+            "avg_similarity": "FLOAT",
+            "sample_count": "INTEGER",
+            "high_similarity_count": "INTEGER",
+            "next_change_percent": "FLOAT",
+        },
     }
     with engine.begin() as conn:
         for table, columns in expected.items():

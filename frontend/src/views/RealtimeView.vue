@@ -48,6 +48,19 @@ function gapOf(row: RealtimeRow): string {
   return formatGap(row.to_limit_percent)
 }
 
+/** 次日涨停率：`null` 是「这一档给不出」，画成「—」，不是 0%。 */
+function rateOf(row: RealtimeRow): string {
+  return row.next_day_rate_percent == null ? '—' : `${row.next_day_rate_percent.toFixed(2)}%`
+}
+
+function rateHint(row: RealtimeRow): string {
+  if (!row.next_day_rate_samples) return ''
+  const floor = snapshot.value?.probability?.min_band_observations ?? 50
+  return row.next_day_rate_samples < floor
+    ? `样本 ${row.next_day_rate_samples} · 不足 ${floor}`
+    : `样本 ${row.next_day_rate_samples}`
+}
+
 function evidenceText(pick: AiPick): string {
   const evidence = pick.evidence
   const formula = evidence.formula
@@ -154,6 +167,7 @@ onUnmounted(() => {
           <div><span class="muted">上一次快刷</span> <b>{{ formatDateTime(top?.fast_round_at) }}</b><span v-if="top?.fast_round_seconds_ago != null" class="muted"> · {{ top.fast_round_seconds_ago }} 秒前</span></div>
           <div><span class="muted">全市场轮次 / 快刷轮次</span> <b>{{ top?.full_rounds ?? 0 }} / {{ top?.fast_rounds ?? 0 }}</b></div>
           <div><span class="muted">样本池</span> <b>{{ snapshot?.pool_size ?? 0 }} 条 · 截至 {{ snapshot?.base_date || '—' }}</b></div>
+          <div><span class="muted">概率来源</span> <b>{{ snapshot ? (snapshot.probability?.run_id ? `第 ${snapshot.probability.run_id} 次回测` : '没有已完成回测') : '—' }}</b></div>
         </div>
       </div>
     </div>
@@ -362,6 +376,7 @@ onUnmounted(() => {
             <th class="right">平均相似</th>
             <th class="right">高相似/样本</th>
             <th>档位</th>
+            <th class="right">次日涨停率</th>
             <th>最相似样本</th>
             <th></th>
           </tr>
@@ -384,6 +399,10 @@ onUnmounted(() => {
             <td class="right">{{ formatScore(row.avg_score) }}</td>
             <td class="right">{{ row.high_score_count }}/{{ row.sample_count }}</td>
             <td><span class="tag">{{ row.band }}</span></td>
+            <td class="right">
+              <b>{{ rateOf(row) }}</b>
+              <div class="hint">{{ rateHint(row) }}</div>
+            </td>
             <td>
               <span v-if="row.best_match">{{ row.best_match.name }} {{ row.best_match.limit_date }}</span>
               <span v-else>—</span>
@@ -403,6 +422,7 @@ onUnmounted(() => {
 
   <section v-if="snapshot" class="card">
     <div class="card-head"><h2>这一榜的口径</h2></div>
+    <p class="hint">{{ snapshot.probability?.note }}</p>
     <p class="hint">{{ snapshot.disclaimer }}</p>
   </section>
 </template>
