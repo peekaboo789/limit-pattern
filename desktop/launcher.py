@@ -7,6 +7,7 @@ pywebview（WebView2）打开窗口。关闭窗口缩到托盘，托盘提供「
 同一 Windows 会话只允许一个实例。日志写到 ``LP_DATA_DIR/logs/launcher.log``。
 服务就绪后再起一条 ``desktop.watch_pin`` 线程盯「盘中涨幅报警榜」：判据全在后端，这一层只把
 后端说的「该置顶」落到窗口上（置顶 + 标题带待确认条数 + 托盘通知），退出时把置顶和标题交回去。
+跑的是回退应用（``desktop.stub_app``，没有报警榜接口）时这条线程不起。
 
 应用选择：
 
@@ -673,6 +674,16 @@ def stop_tray(state: AppState) -> None:
         logger.exception("停止托盘失败")
 
 
+def should_start_watch_pin(source: str) -> bool:
+    """只有真实后端才起置顶线程。
+
+    回退应用（`desktop.stub_app`）没有 `GET /api/realtime/intraday-watch` 这一档接口：
+    起了就是每 3 秒一条 404，日志里全是「读状态失败」，看着像行情出了问题，
+    其实缺的是整个后端。这里说清一句，比让线程空转诚实。
+    """
+    return source == "backend"
+
+
 def start_watch_pin(state: AppState) -> None:
     """起报警置顶线程。浏览器模式没有窗口可摞，这一层仍然照跑——那时只剩托盘那一句提醒。"""
     pin = WatchPin(state, base_url=state.url, base_title=APP_TITLE)
@@ -932,7 +943,7 @@ def _serve_and_open(args: argparse.Namespace, data_dir: Path, state: AppState) -
     static_dir, static_kind = resolve_static_dir()
     os.environ["LP_STATIC_DIR"] = str(static_dir)
     logger.info("静态目录（%s）%s", static_kind, static_dir)
-    app, _source = load_app(static_dir)
+    app, source = load_app(static_dir)
     preferred = args.port if args.port and args.port > 0 else DEFAULT_PORT
     sock, port = bind_server_socket(DEFAULT_HOST, preferred)
     if port != preferred:
@@ -954,7 +965,10 @@ def _serve_and_open(args: argparse.Namespace, data_dir: Path, state: AppState) -
         verify_gui_imports()
     if args.smoke:
         return 0
-    start_watch_pin(state)
+    if should_start_watch_pin(source):
+        start_watch_pin(state)
+    else:
+        logger.info("涨幅报警置顶线程不起：这一趟跑的是回退应用，没有报警榜接口可读")
     launch_ui(state, args.open_browser)
     return 0
 

@@ -475,6 +475,24 @@ def test_request_quit_releases_the_pin_before_destroying_the_window():
     stop_watch_pin(state)  # 再收一次也不炸
 
 
+def test_watch_pin_only_starts_for_the_real_backend():
+    """回退应用没有报警榜接口：起了就是每 3 秒一条读失败，日志看着像行情坏了。"""
+    from desktop.launcher import should_start_watch_pin
+
+    assert should_start_watch_pin("backend") is True
+    assert should_start_watch_pin("stub") is False
+
+
+def test_the_fallback_app_really_lacks_the_endpoint():
+    """上一条的理由要自己验一次：真去问回退应用，它确实答 404。"""
+    from fastapi.testclient import TestClient
+
+    from desktop.stub_app import create_app
+
+    client = TestClient(create_app())
+    assert client.get(ENDPOINT).status_code == 404
+
+
 def test_endpoint_path_matches_where_the_backend_mounts_it():
     """桌面层拼的那个 URL 必须就是后端挂出来的那个：路由改名时这里先红，而不是运行时静默失联。"""
     routes = (ROOT / "backend" / "app" / "api" / "routes.py").read_text(encoding="utf-8")
