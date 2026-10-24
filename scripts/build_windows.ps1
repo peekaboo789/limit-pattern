@@ -1,4 +1,6 @@
-# Build the LimitPattern Windows green build (onedir zip) and, if it succeeds, a onefile exe.
+﻿# Build the LimitPattern Windows green build (onedir zip) and, if it succeeds, a onefile exe.
+# 本文件带 UTF-8 BOM：正文里有中文（注释与 -notmatch 的字面量），Windows PowerShell 5.1 没有 BOM 就按系统
+# ANSI（中文机器是 GBK）解码，会在解析阶段就炸出 UnexpectedToken；pwsh 7 带不带都能读，所以补 BOM 两边通吃。
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 # PyInstaller 的 spec 会打印中文。不设这个，Windows 控制台 cp1252 会把打包打崩。
@@ -104,7 +106,9 @@ $process.Refresh()
 Write-Host "smoke exit code $($process.ExitCode)"
 $logPath = Join-Path $smokeData "logs\launcher.log"
 if (Test-Path $logPath) {
-    Get-Content $logPath -Tail 200
+    # 日志是 UTF-8 写的。Windows PowerShell 5.1 的 Get-Content 不点名编码就按系统 ANSI（这台机器是 GBK）读，
+    # 中文全糊；pwsh 7 默认 UTF-8 才看不出来。点名编码，两种 shell 才是同一份读数。
+    Get-Content $logPath -Tail 200 -Encoding UTF8
 }
 if ($process.ExitCode -ne 0) {
     throw "smoke failed with exit code $($process.ExitCode)"
@@ -112,7 +116,7 @@ if ($process.ExitCode -ne 0) {
 if (-not (Test-Path $logPath)) {
     throw "smoke log was not written"
 }
-$smokeLog = Get-Content $logPath -Raw
+$smokeLog = Get-Content $logPath -Raw -Encoding UTF8
 if ($smokeLog -notmatch "应用来源=backend") {
     throw "smoke did not start the real backend"
 }
