@@ -47,8 +47,13 @@ from backend.app.services.quality_service import (
 )
 from backend.app.services.retention import quote_dates
 from backend.app.services import backtest_service
+from backend.app.services import data_job
+from backend.app.services import data_service
+from backend.app.services import match_service
+from backend.app.services import pattern_service
 from backend.app.services import prediction_service
-from backend.app.services.similarity_service import pool_dates, scan_market, similar_to
+from backend.app.services.feature_service import skip_page
+from backend.app.services.similarity_service import DISCLAIMER, pool_dates, scan_market, similar_to
 from backend.app.services.summary_service import generate_summary, get_summary, list_summaries
 from backend.app.services.sync_service import start_sync, status
 
@@ -803,3 +808,230 @@ def prediction_pool(date: str | None = None, size: int = Query(200, ge=1, le=100
             return prediction_service.build_pool(session, as_of=day, pool_size=size)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# --- 特征·样本·匹配·训练落库与重建（档3）-------------------------------------
+
+#: 四个重建入口共用的错误翻译。区间反了是 422，库里没行情/区间无覆盖是 404，
+#: 槽位被占是 409；三句话都在 detail 里说完，不留「服务器内部错误」。
+#: 意外异常不在这里拦——那一类该带栈进日志并回 500，包装成 422 会把 bug 说成用户输错。
+def _run_job(action) -> dict:
+    try:
+        return action()
+    except data_job.JobBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _codes(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    picked: list[str] = []
+    for item in str(value).replace("，", ",").split(","):
+        text = item.strip()
+        if text:
+            picked.append(_code(text))
+    if not picked:
+        raise HTTPException(status_code=422, detail="代码列表是空的")
+    return picked
+
+
+@router.get("/data/status")
+def data_status() -> dict:
+    """数据管理页的概况：库里各类派生数据到底多少行、覆盖哪几天、闸门跑没跑。"""
+    with session_scope() as session:
+        return data_service.status(session)
+
+
+@router.get("/data/job")
+def data_job_state() -> dict:
+    """后台重建任务跑到哪了。进度靠轮询这里，不靠重进页面。"""
+    with session_scope() as session:
+        return data_service.job_result(session)
+
+
+@router.post("/data/rebuild-features")
+def data_rebuild_features(start: str | None = None, end: str | None = None, codes: str | None = None) -> dict:
+    """重算单日特征。区间留空吃库里全部已同步交易日。"""
+    low, high, picked = _day_or_none(start), _day_or_none(end), _codes(codes)
+    return _run_job(lambda: data_service.start_features(low, high, picked))
+
+
+@router.post("/data/rebuild-patterns")
+def data_rebuild_patterns(start: str | None = None, end: str | None = None) -> dict:
+    """重建涨停样本库。留空只重建样本池该覆盖的那几天。"""
+    low, high = _day_or_none(start), _day_or_none(end)
+    return _run_job(lambda: data_service.start_patterns(low, high))
+
+
+@router.post("/data/scan-market")
+def data_scan_market(start: str | None = None, end: str | None = None) -> dict:
+    """全市场匹配扫描并落库明细。留空只扫最新一个交易日。"""
+    low, high = _day_or_none(start), _day_or_none(end)
+    return _run_job(lambda: data_service.start_scan(low, high))
+
+
+@router.post("/data/build-training")
+def data_build_training(start: str | None = None, end: str | None = None, codes: str | None = None) -> dict:
+    """构造训练宽表。跑之前应当先跑一次质量检查：闸门吃的是账表里的 error。"""
+    low, high, picked = _day_or_none(start), _day_or_none(end), _codes(codes)
+    return _run_job(lambda: data_service.start_training(low, high, picked))
+
+
+@router.get("/data/skips")
+def data_skips(
+    stage: str | None = None,
+    reason: str | None = None,
+    date: str | None = None,
+    limit: int = Query(200, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """跳过账分页：哪一天哪只股票在哪个阶段因为什么没进库。"""
+    day = _day_or_none(date)
+    with session_scope() as session:
+        return skip_page(session, stage=stage or None, reason=reason or None, day=day, limit=limit, offset=offset)
+
+
+@router.get("/patterns/overview")
+def patterns_overview(date: str | None = None) -> dict:
+    """涨停形态页：样本池这几天库里存了哪些样本。读库不现算，见 `pattern_service.overview`。"""
+    day = _parse_day(date, default_latest=True)
+    with session_scope() as session:
+        if day not in quote_dates(session):
+            raise HTTPException(status_code=404, detail="这一天没有行情")
+        return pattern_service.overview(session, day)
+
+
+@router.get("/patterns/top")
+def patterns_top(date: str | None = None, limit: int = Query(50, ge=1, le=500)) -> dict:
+    """样本池这几天库里已落库的样本清单，按涨停日、代码排，只给概要字段。
+
+    这一条与 `/patterns/overview` 读同一张表，只是换了个分页口径：
+    页面首屏要一张能滚的表，不要一次把三天的向量都拖回来。
+    """
+    day = _parse_day(date, default_latest=True)
+    with session_scope() as session:
+        dates, rows = pattern_service.pool_patterns(session, day)
+        names = pattern_service.stock_names(session)
+        items = [pattern_service.pattern_to_dict(row, names) for row in rows][: int(limit)]
+        return {
+            "trade_date": day.isoformat(),
+            "pool_dates": [item.isoformat() for item in dates],
+            "sample_total": len(rows),
+            "items": items,
+            "disclaimer": DISCLAIMER,
+        }
+
+
+@router.get("/patterns/{code}")
+def pattern_detail(code: str, with_details: bool = True) -> dict:
+    """一只股票保留窗口里的涨停样本，带三日明细与向量尾部那七项聚合。"""
+    normalized = _code(code)
+    with session_scope() as session:
+        payload = pattern_service.samples_for_code(session, normalized, with_details=with_details)
+    if not payload["samples"]:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{normalized} 在保留窗口里没有落库的涨停样本，先在数据管理页重建涨停样本",
+        )
+    return payload
+
+
+@router.get("/matches/summary")
+def matches_summary(
+    date: str | None = None,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """某一天落库汇总的分页，按最高相似度排。"""
+    day = _parse_day(date, default_latest=True)
+    with session_scope() as session:
+        if day not in quote_dates(session):
+            raise HTTPException(status_code=404, detail="这一天没有行情")
+        return match_service.summary_page(session, day, limit=limit, offset=offset)
+
+
+@router.get("/matches/export")
+def matches_export(
+    date: str | None = None,
+    code: str | None = None,
+    top: int = Query(200, ge=1, le=1000),
+):
+    """匹配明细 CSV。`top` 是按最高相似度取前几只，不是前几行。"""
+    day = _parse_day(date, default_latest=True)
+    normalized = _code(code) if code else None
+    with session_scope() as session:
+        if day not in quote_dates(session):
+            raise HTTPException(status_code=404, detail="这一天没有行情")
+        text, rows, truncated = match_service.export_csv(session, day, top_targets=top, code=normalized)
+    suffix = f"_{normalized}" if normalized else ""
+    note = "_截断" if truncated else ""
+    filename = f"matches_{day.isoformat()}{suffix}{note}.csv"
+    body = text.encode("utf-8-sig")
+    try:
+        save_copy(filename, body)
+    except OSError:
+        pass
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": content_disposition(filename),
+            "X-Export-Rows": str(rows),
+            "X-Export-Truncated": "1" if truncated else "0",
+        },
+    )
+
+
+@router.get("/matches/compare")
+def matches_compare(
+    code: str,
+    sample_code: str,
+    date: str | None = None,
+    sample_date: str | None = None,
+) -> dict:
+    """左右对比：目标当天的三日窗口与那条涨停样本落库的三日窗口，逐字段差值。
+
+    `sample_date` 必填到具体涨停日：同一只股票一周里可以涨停三次，
+    只给代码会拿到不知道哪一天的窗口，页面上那两个数也就不是一对。
+    """
+    target = _code(code)
+    sample = _code(sample_code)
+    day = _parse_day(date, default_latest=True)
+    limit_day = _parse_day(sample_date, default_latest=False)
+    try:
+        with session_scope() as session:
+            return match_service.compare_with_sample(session, target, day, sample, limit_day)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/matches/{code}")
+def matches_detail(code: str, date: str | None = None) -> dict:
+    """一只股票某一天库里的匹配明细。没落库时回 `ok: false` 并说清为什么。
+
+    GET 只读库、不现算：这一页展示的必须和上一轮扫描落下去的是同一份数。
+    要重算那一只，用 `POST /api/matches/{code}`。
+    """
+    normalized = _code(code)
+    day = _parse_day(date, default_latest=True)
+    with session_scope() as session:
+        if day not in quote_dates(session):
+            raise HTTPException(status_code=404, detail="这一天没有行情")
+        return match_service.stored_matches(session, normalized, day)
+
+
+@router.post("/matches/{code}")
+def matches_recompute(code: str, date: str | None = None) -> dict:
+    """现算一只股票的匹配明细并落库（与全市场扫描共用 `score_day`）。"""
+    normalized = _code(code)
+    day = _parse_day(date, default_latest=True)
+    with session_scope() as session:
+        if day not in quote_dates(session):
+            raise HTTPException(status_code=404, detail="这一天没有行情")
+        return match_service.match_target(session, normalized, day)

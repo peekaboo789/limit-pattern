@@ -7,22 +7,32 @@ import type {
   BacktestStartAck,
   BacktestStatus,
   BoardState,
+  CompareResponse,
   DailyRankHistoryResponse,
   DailyRankPrepareAck,
   DailyRankRunnerStatus,
   DailyRankState,
+  DataJobAck,
+  DataJobState,
+  DataStatus,
   ExportParams,
   Health,
   IntradayWatchAck,
   IntradayWatchState,
   KlineResponse,
   LimitUpsResponse,
+  MatchSummaryPage,
+  PatternDetailResponse,
+  PatternOverview,
   PickHistoryResponse,
   PicksCheckResponse,
   PicksListResponse,
   PicksSummary,
   PoolResponse,
   PredictionPool,
+  QualityErrorPage,
+  QualityRunResult,
+  QualitySummary,
   RealtimeStatus,
   RealtimeTop,
   ScanResponse,
@@ -30,7 +40,9 @@ import type {
   SettingsUpdate,
   SimilarityResponse,
   SingleState,
+  SkipPage,
   StartAck,
+  StoredMatchesResponse,
   SummaryDocument,
   SummaryListResponse,
   SyncStatus,
@@ -177,6 +189,108 @@ export const api = {
 
   predictionPool: (params: { date?: string; size?: number } = {}) =>
     request<PredictionPool>(`/api/prediction/pool${query({ date: params.date, size: params.size })}`),
+
+  dataStatus: () => request<DataStatus>('/api/data/status'),
+
+  dataJob: () => request<DataJobState>('/api/data/job'),
+
+  rebuildFeatures: (params: { start?: string; end?: string; codes?: string } = {}) =>
+    request<DataJobAck>(`/api/data/rebuild-features${query(params)}`, { method: 'POST' }),
+
+  rebuildPatterns: (params: { start?: string; end?: string } = {}) =>
+    request<DataJobAck>(`/api/data/rebuild-patterns${query(params)}`, { method: 'POST' }),
+
+  scanMarket: (params: { start?: string; end?: string } = {}) =>
+    request<DataJobAck>(`/api/data/scan-market${query(params)}`, { method: 'POST' }),
+
+  buildTraining: (params: { start?: string; end?: string; codes?: string } = {}) =>
+    request<DataJobAck>(`/api/data/build-training${query(params)}`, { method: 'POST' }),
+
+  dataSkips: (params: { stage?: string; reason?: string; date?: string; limit?: number; offset?: number } = {}) =>
+    request<SkipPage>(
+      `/api/data/skips${query({
+        stage: params.stage,
+        reason: params.reason,
+        date: params.date,
+        limit: params.limit ?? 200,
+        offset: params.offset ?? 0,
+      })}`,
+    ),
+
+  qualitySummary: () => request<QualitySummary>('/api/quality/summary'),
+
+  runQualityCheck: (params: { start?: string; end?: string; max_days?: number } = {}) =>
+    request<QualityRunResult>(`/api/quality/check${query(params)}`, { method: 'POST' }),
+
+  qualityErrors: (params: { date?: string; severity?: string; check?: string; limit?: number } = {}) =>
+    request<QualityErrorPage>(
+      `/api/quality/errors${query({
+        date: params.date,
+        severity: params.severity,
+        check: params.check,
+        limit: params.limit ?? 200,
+      })}`,
+    ),
+
+  patternsOverview: (date?: string) =>
+    request<PatternOverview>(`/api/patterns/overview${query({ date })}`),
+
+  patternDetail: (code: string, withDetails = true) =>
+    request<PatternDetailResponse>(`/api/patterns/${code}${query({ with_details: withDetails ? 'true' : undefined })}`),
+
+  matchesSummary: (params: { date?: string; limit?: number; offset?: number } = {}) =>
+    request<MatchSummaryPage>(
+      `/api/matches/summary${query({
+        date: params.date,
+        limit: params.limit ?? 100,
+        offset: params.offset ?? 0,
+      })}`,
+    ),
+
+  storedMatches: (code: string, date?: string) =>
+    request<StoredMatchesResponse>(`/api/matches/${code}${query({ date })}`),
+
+  recomputeMatches: (code: string, date?: string) =>
+    request<StoredMatchesResponse>(`/api/matches/${code}${query({ date })}`, { method: 'POST' }),
+
+  compareMatch: (params: { code: string; sample_code: string; date?: string; sample_date: string }) =>
+    request<CompareResponse>(
+      `/api/matches/compare${query({
+        code: params.code,
+        sample_code: params.sample_code,
+        date: params.date,
+        sample_date: params.sample_date,
+      })}`,
+    ),
+
+  exportMatchesCsv: async (params: { date?: string; code?: string; top?: number } = {}) => {
+    const response = await fetch(
+      `/api/matches/export${query({ date: params.date, code: params.code, top: params.top })}`,
+    )
+    const blob = await response.blob()
+    if (!response.ok) {
+      const raw = await blob.text()
+      let detail = raw.trim() || `导出失败（${response.status}）`
+      try {
+        const parsed = JSON.parse(raw) as { detail?: unknown }
+        if (parsed && typeof parsed === 'object' && 'detail' in parsed) detail = formatDetail(parsed.detail)
+      } catch {
+        // 失败响应有时是纯文本，而不是 {"detail": "..."}。
+      }
+      throw new ApiError(response.status, detail)
+    }
+    const text = await blob.text()
+    const filename =
+      filenameFromDisposition(response.headers.get('Content-Disposition')) ??
+      `matches-${params.date ?? 'unknown'}${params.code ? `-${params.code}` : ''}.csv`
+    return {
+      filename,
+      text,
+      blob,
+      rows: Number(response.headers.get('X-Export-Rows') ?? 0),
+      truncated: response.headers.get('X-Export-Truncated') === '1',
+    }
+  },
 
   exportText: async (params: ExportParams) => {
     if (import.meta.env.VITE_USE_MOCK === '1') {

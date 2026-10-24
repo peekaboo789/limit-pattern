@@ -184,6 +184,15 @@ def build_messages(bundle: dict, *, task: str = TASK_BOARD, limit: int = RECOMME
         if limit > 1
         else "这一只股票的证据：\n"
     )
+    market = bundle.get("market_high_similarity") or {}
+    if market.get("high_rate_percent") is not None:
+        #: 市场级那一句只说数与出处，不加解释：它没有逐行落进 `ai_evidence._FIELD_DOC`，
+        #: 写多了就成了第二处口径。没跑过扫描时这一句整条不出现，不写「0%」。
+        user += (
+            f"当天全市场落库匹配汇总 {market.get('targets')} 只里，"
+            f"相似度不低于 {market.get('high_threshold')} 的样本占比 "
+            f"{market.get('high_rate_percent')}%（出处 match_summaries）。\n"
+        )
     rows = [ai_evidence.prompt_row_of(row) for row in bundle["rows"]]
     user += json.dumps(rows, ensure_ascii=False)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

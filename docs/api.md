@@ -45,6 +45,21 @@
 | POST | `/api/quality/check?start=&end=&max_days=` | 跑一遍十四项检查。**只写账表，一个行情字段都不改**。不传区间就查库里现存的那段日期 |
 | GET | `/api/quality/errors?date=&severity=&check=&limit=200` | 账目明细。`severity` 只能是 `error` / `warning`，`check` 用检查项的名字（`ohlc_check` 那种），给错都回 422 |
 | POST | `/api/quality/purge?start=&end=&confirm=` | 删掉 error 级日线与它们的下游。**默认只算不删**（`dry_run=true`），要真删必须带 `confirm=true` |
+| GET | `/api/data/status` | 数据管理页概况：七张表各多少行、四类派生数据按日覆盖多少、样本池日期、质量账计数、训练统计、跳过账分阶段行数、当前任务 |
+| GET | `/api/data/job` | 后台重建任务的进度与记账。页面每 2 秒轮询这一条，不靠重进页面刷新 |
+| POST | `/api/data/rebuild-features?start=&end=&codes=` | 重算单日特征。区间留空吃库里全部已同步交易日；`codes` 是逗号分隔的 6 位代码 |
+| POST | `/api/data/rebuild-patterns?start=&end=` | 重建涨停样本库。留空只重建样本池该覆盖的那 3 个交易日 |
+| POST | `/api/data/scan-market?start=&end=` | 全市场匹配扫描，明细与汇总一起落库。留空只扫最新一个交易日 |
+| POST | `/api/data/build-training?start=&end=&codes=` | 构造训练宽表。闸门吃的是账表里的 error，跑之前先跑一遍 `POST /api/quality/check` |
+| GET | `/api/data/skips?stage=&reason=&date=&limit=200&offset=0` | 跳过账分页：哪一天哪只股票在哪个阶段因为什么没进库。`limit` 1 到 2000 |
+| GET | `/api/patterns/overview?date=` | 涨停形态页：样本池这几天库里存了哪些样本、各天被闸门跳过了什么。只读库，不现算 |
+| GET | `/api/patterns/top?date=&limit=50` | 样本池已落库的样本清单，按涨停日、代码排，只给概要字段。`limit` 1 到 500 |
+| GET | `/api/patterns/{code}?with_details=true` | 这一只股票在保留窗口里落库的涨停样本，带三日明细与向量尾部那 7 项聚合。一条都没有回 404 |
+| GET | `/api/matches/summary?date=&limit=100&offset=0` | 某一天落库汇总的分页，按最高相似度排。`limit` 1 到 1000 |
+| GET | `/api/matches/{code}?date=` | 这一只股票某一天**库里**的匹配明细。没落库回 `ok: false` 并说清为什么，不偷偷现算 |
+| POST | `/api/matches/{code}?date=` | 现算这一只的匹配明细并落库，与全市场扫描共用同一把尺子 |
+| GET | `/api/matches/compare?code=&sample_code=&date=&sample_date=` | 左右对比：目标当天的三日窗口与那条涨停样本落库的三日窗口，逐字段差值。`sample_date` 必填 |
+| GET | `/api/matches/export?date=&code=&top=200` | 匹配明细 CSV。`top` 是按最高相似度取前几只，不是前几行 |
 | GET | `/api/summaries` | 已保存的每日总结目录 |
 | GET | `/api/summaries/{date}` | 某一天的总结 JSON |
 | POST | `/api/summaries/{date}/generate` | 重新生成。没配 AI 时写统计版；配了则加上解读。模型失败时仍返回统计版，并带 `ai_error` |
@@ -200,3 +215,95 @@
 
 删完在同一趟里复查**一遍**，新暴露的 error 放进 `newly_exposed` 报出来，然后停手。中间那根被抽掉之后，后面那根的
 `pre_close` 就接不上了，那是删除动作造出来的缺口、不是原因；照着它再删一轮会顺着时间轴把历史啃穿。第二轮交给下一次同步或人工判断。
+
+## 派生数据的四条重建线
+
+「派生数据可以删、原始行情才是红线」在这一节落地成四个后台任务：单日特征、涨停样本库、全市场匹配、训练宽表。
+四个都不读网络，只吃库里已有的日线与补拉来的计算 K 线，跑砸了重跑一次就行。
+
+`POST /api/data/rebuild-features`、`/rebuild-patterns`、`/scan-market`、`/build-training` 形状一样：起线程、回
+`{"task_id": "...", "label": "全市场匹配扫描", "days_total": 5, "running": true, "progress": 0, "message": "...", "error": ""}`，
+进度靠轮询 `GET /api/data/job`。区间留空时各任务覆盖面不同，写死在 `data_service.DEFAULT_DAY_SCOPE`：特征与训练吃库里
+**全部**已同步交易日（装了两周历史的库要能整段重算，而不是只重算最新那天），样本只重建涨停池那 3 个交易日，
+扫描只扫最新一个交易日。
+
+日期必须在请求还活着的时候定下来。「区间里没有已同步的交易日」这种话一旦落到后台线程，页面上就只剩一句「失败」；
+所以 `data_service._days_for` 先在校验用的那一眼里把日期挑完。空库回 404「库里还没有行情，先执行同步」，
+区间反了或区间里没有交易日也当场报错（422 / 404），连线程都不起。
+
+槽位只有一个。这些活都在写 SQLite，两个请求一起把写锁撞成 `database is locked` 的话两边都 500、用户完全不知道发生了什么；
+所以现在第二个任务直接 409，消息里写清是谁在占用这个槽位（「后端任务「重建涨停样本」正在运行，请等它跑完」）。
+`GET /api/data/status` 里的 `running_job` 给的就是这个名字。
+
+`GET /api/data/job` 的 `result` 是这一轮的记账，`counts` 是任务跑完之后**重新数库**得到的行数。两份都要给：
+记账里的 `stock_count`、`pool_size`、`universe_count` 是单日快照，区间任务加不出总量（三天加出来的「样本池 180 条」
+没人认得），而页面上那句「这一轮之后库里有多少行」必须由库里数。哪些键跨天累加、哪些键保持最后一轮取值，
+登记在 `ADDITIVE_KEYS` / `SNAPSHOT_KEYS` 两张表里，不靠 `if key in (...)` 那种写一处漏一处的判断。
+
+`GET /api/data/status` 是数据管理页的概况：七张表各多少行（`counts`）、样本/特征/汇总/训练四条按日覆盖曲线
+（`patterns_by_date` 那一类，同一个 `_group_count` 出的数）、样本池日期（`pool_dates`）、质量账（`quality`）、
+训练统计（`training`）、跳过账分阶段行数（`skips.by_stage`）。缺就是 0，没跑过就是空——「今天有几条样本」读的是
+`limit_up_patterns`，不是现算的涨停池，否则用户点下重建之后数字变了，等于页面之前报的是一个不存在的数。
+
+### 闸门怎么挡样本，挡了多少在哪看
+
+`build_patterns` 对每一只当日涨停的股票问一次 `blocked_codes(session, day)`：涨停当天自己命中 error，
+或它那三天形态窗口里坐着被抽掉的一根，就不建样本，往 `skipped_records` 记一行 `stage="pattern"`。
+两种原因分开记账，说法由 `pattern_service.REASON_LABELS` 一份说了算，页面上直接读 `reason_labels`：
+`insufficient_window` 是「算不了」（库里凑不齐涨停前三根 K 线），`data_quality_error` 是「算得出但不该用」。
+注意 error 挡的是**双向**的：脏行自己那天的样本建不成，后面任何一天的窗口里含它也一样建不成。
+
+`GET /api/patterns/overview` 的 `days[].skipped` 就是这几天各挡了多少，明细去 `GET /api/data/skips`：
+可按 `stage`（`feature` / `pattern` / `match` / `training`）、`reason`、`date` 筛，`limit` 1 到 2000。
+训练宽表那一条线还有第三种记账：`quality_passed` 为 false 的行**照样落库**、带着 `reason`，
+因为「被闸门挡过」本身是训练时要知道的事；它进的是 `blocked_rows`，不是消失。
+
+## 涨停形态样本与匹配明细
+
+`GET /api/patterns/overview?date=` 读的是 `limit_up_patterns`，不是现算的涨停池——这两份数据在库里可以不一致
+（样本没重建、当天有 error 被挡、行情不足三天），而页面要展示的正是「库里有的那一版」。回包给
+`trade_date`、`pool_dates`、`pool_is_current`（样本池跟当前涨停池对不对得上，对不上页面就提示先重建）、`sample_total`、
+`days[]`（每天 `limit_date` / `count` / `skipped` / `items`）、`feature_names`、`aggregate_names`、`dimension`（67）、
+`reason_labels`、`disclaimer`。`date` 落在没有行情的一天回 404「这一天没有行情」，不是回一张空表。
+
+`GET /api/patterns/{code}` 给这一只股票在保留窗口里落库的全部样本，按涨停日倒序，带三日明细与向量尾部那 7 项聚合
+（`aggregates`）——页面上「三日涨幅、量能趋势」那几个数要能指回向量里的维度，而不是前端再算一遍。
+
+打分只有一把尺子：`backtest_service.score_day`。全市场扫描、单只现算、回测逐日重算、预测池的证据行都调它，
+差异只在 `only_codes` 和 `top_matches` 传什么。所以「页面上看到的分」和「回测里统计的分」不存在两套算法。
+
+- `GET /api/matches/{code}` 只读库、不现算：这一页展示的必须和上一轮扫描落下去的是同一份数。库里没落过回
+  `ok: false`，`reason` 说清是没扫描还是那天没行情。
+- `POST /api/matches/{code}` 现算那一只并落库。
+- 两条的失败回包键与成功回包逐项对齐（`items` / `summary` / `pool_dates` / `pool_size` / `skipped_samples` 都在），
+  页面只需要按 `ok` 分支，不用为「读库没读到」和「现算没算出」写两套兜底。
+- `GET /api/matches/compare` 的 `sample_date` 必填到具体涨停日：同一只股票一周里可以涨停三次，只给代码会拿到
+  不知道哪一天的窗口，页面上那两个数也就不是一对。
+- `GET /api/matches/export` 的 `top` 是按最高相似度取前**几只**，不是前几行；截断时 `X-Export-Truncated: 1`，
+  文件名尾巴带 `_截断`。正文是 UTF-8 BOM（Excel 直接双击不花屏）。下载头里 `filename=` 那段必须是纯 ASCII——
+  中文写进去会让响应头编不出 latin-1，整个导出接口 500，页面上点「导出 CSV」只得到一个服务器错；
+  真名字走 `filename*=UTF-8''…`。
+
+相似度分项里，成交额那一维**不参与总分**（总分是形态 0.6 + 量能 0.25 + 量比 0.15），只单独出格子。
+两边这一组维度一个数都没有时（新浪那一路 `amount` 整列为空，三个成交额特征只能补 0），零向量对零向量会被
+`score_matrix` 读成满分 100——那不是「成交额很像」，那是没数据，所以算法层标成 NaN、出口处
+`similarity.percent()` 换成 `null`。NaN 不能带出这一层：`json.dumps` 会把它写成裸的 `NaN`，
+浏览器 `response.json()` 当场解析失败，整个页面变成空白而不是一格空值。
+
+## 时间只有一个挂钟
+
+全项目只认东八区（`core/clock.py` 里 `SHANGHAI = UTC+8`，不读系统时区）。写进**不带时区**的列
+（`created_at`、`updated_at` 那一类）时统一用 `clock.now_naive()`，存的是东八区墙上时间。
+存 UTC 的话，回测列表那一批「生成于」一律早八小时，而数据管理页那格「上次质量检查」跟它差一天——
+两种挂钟住在同一张表里，页面就只能挑一个错。带偏移的字段（`last_quality_at`、`last_cleanup_at`）
+是设置里的 ISO 字符串，末尾带 `+08:00`，跟库里的裸时间是两套读法，前端按字符串原样显示。
+
+## 这批接口的页面接线状态
+
+`/api/data/*` 落在「数据管理」页（`/data`）：概况卡、四个重建按钮、2 秒一拍的进度、每日覆盖表、质量闸门账、跳过账。
+`/api/patterns/overview` 与 `/api/patterns/{code}` 落在「涨停形态样本」页（`/patterns`）。
+`/api/matches/{code}`（读库与重算）、`/api/matches/compare`、`/api/matches/export` 落在「个股相似度」页——
+那一页下面多了一块「库里落库明细」，选中左侧样本时右侧多一块「逐日对比」。
+
+两条还没有消费方：`GET /api/patterns/top`（接口通、有测试，页面上首屏读的是 `overview`）与
+`GET /api/matches/summary`（某一天全市场汇总的分页）。后者是股票详情页与列表页要用的那一份，排在路线图的档 6。

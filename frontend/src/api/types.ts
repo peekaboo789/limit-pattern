@@ -1084,3 +1084,300 @@ export interface PredictionPool {
   formula: string
   disclaimer: string
 }
+
+/** 档3：涨停样本库、匹配明细与数据管理。 */
+
+export interface PatternSample {
+  code: string
+  name: string
+  limit_date: string
+  window: string[]
+  dimension: number
+  close?: number | null
+  change_percent?: number | null
+  limit_up_percent?: number | null
+  is_limit_up?: boolean | null
+  days?: PatternDay[]
+  vector?: number[]
+  aggregates?: Record<string, number> | null
+}
+
+/** 样本落库的一天：原始行情 + 那 20 项单日形态特征。缺值保持 null。 */
+export interface PatternDay {
+  trade_date: string
+  quote: {
+    trade_date: string
+    change_percent: number | null
+    open: number | null
+    high: number | null
+    low: number | null
+    close: number | null
+    pre_close: number | null
+    volume: number | null
+    amount: number | null
+    turnover_rate: number | null
+  }
+  features: Record<string, number | null>
+}
+
+export interface PatternOverview {
+  trade_date: string
+  pool_dates: string[]
+  pool_is_current: boolean
+  sample_total: number
+  days: {
+    limit_date: string
+    count: number
+    skipped: Record<string, number>
+    items: PatternSample[]
+  }[]
+  feature_names: string[]
+  aggregate_names: string[]
+  dimension: number
+  reason_labels: Record<string, string>
+  disclaimer: string
+}
+
+export interface PatternDetailResponse {
+  code: string
+  name: string
+  samples: PatternSample[]
+  feature_names: string[]
+  disclaimer: string
+}
+
+export interface MatchSummaryRow {
+  code: string
+  name: string
+  sample_count: number
+  high_similarity_count: number
+  high_similarity_rate: number | null
+  max_similarity: number | null
+  avg_similarity: number | null
+  band: string
+  pool_dates: string[]
+  pool_size: number
+  created_at: string
+}
+
+export interface MatchSummaryPage {
+  trade_date: string
+  total: number
+  items: MatchSummaryRow[]
+}
+
+export interface StoredMatchItem {
+  rank: number
+  code: string
+  name: string
+  limit_date: string
+  score: number
+  band: string
+  shape_score: number | null
+  volume_score: number | null
+  volume_pct_score: number | null
+  amount_score: number | null
+  window: string[]
+}
+
+/** GET /api/matches/{code}。`ok: false` 时 `reason`/`detail` 说清为什么没有明细。 */
+export interface StoredMatchesResponse {
+  ok: boolean
+  reason: string
+  detail: string
+  disclaimer: string
+  trade_date: string
+  stock_code: string
+  stock_name: string
+  pool_dates: string[]
+  pool_size: number
+  summary: MatchSummaryRow | null
+  items: StoredMatchItem[]
+  written?: { match_count: number; summary_count: number; target_count: number }
+  skipped_samples?: { code: string; name: string; limit_date: string; reason: string }[]
+}
+
+export interface CompareDifference {
+  day: string
+  field: string
+  group: string
+  target: number | null
+  sample: number | null
+  difference: number | null
+}
+
+export interface CompareResponse {
+  target: {
+    code: string
+    name: string
+    as_of_date: string
+    days: PatternDay[]
+    aggregates: Record<string, number>
+  }
+  sample: {
+    code: string
+    name: string
+    as_of_date: string
+    days: PatternDay[]
+    aggregates: Record<string, number> | null
+  }
+  differences: CompareDifference[]
+  score: number | null
+  disclaimer: string
+}
+
+export interface DataJobResult {
+  job: string
+  label?: string
+  start?: string
+  end?: string
+  days?: string[]
+  date_range?: string[]
+  feature_count?: number
+  pattern_count?: number
+  match_count?: number
+  summary_count?: number
+  target_count?: number
+  training_count?: number
+  training_blocked?: number
+  limit_up_count?: number
+  universe_count?: number
+  stock_count?: number
+  pool_size?: number
+  warmup_from?: string
+  skipped?: Record<string, number>
+  skipped_total?: number
+}
+
+export interface DataJobState {
+  running: boolean
+  kind: string
+  label: string
+  labels: Record<string, string>
+  progress: number
+  step: string
+  message: string
+  error: string
+  started_at: string
+  finished_at: string
+  result: DataJobResult | null
+  counts?: DataCounts
+}
+
+export interface DataCounts {
+  daily_quotes: number
+  calc_bars: number
+  daily_features: number
+  limit_up_patterns: number
+  pattern_matches: number
+  match_summaries: number
+  stock_training_rows: number
+}
+
+export interface DataStatus {
+  earliest_trade_date: string
+  latest_trade_date: string
+  trade_day_count: number
+  retention_trading_days: number
+  compare_window_days: number
+  match_top_n: number
+  counts: DataCounts
+  pool_dates: string[]
+  patterns_by_date: Record<string, number>
+  features_by_date: Record<string, number>
+  matches_by_date: Record<string, number>
+  training_by_date: Record<string, number>
+  quality: {
+    errors: number
+    warnings: number
+    total: number
+    by_check: Record<string, number>
+    latest_date: string
+    last_quality_at: string
+  }
+  training: {
+    rows: number
+    blocked_rows: number
+    earliest_label_date: string
+    latest_label_date: string
+    reason_labels: Record<string, string>
+  }
+  skips: { total: number; by_stage: Record<string, number> }
+  running_job: string
+  job: DataJobState
+}
+
+export interface DataJobAck {
+  task_id: string
+  label: string
+  days_total: number
+  running: boolean
+  progress: number
+  message: string
+  error: string
+}
+
+export interface SkipPage {
+  total: number
+  by_reason: Record<string, number>
+  items: {
+    trade_date: string
+    stock_code: string
+    stage: string
+    reason: string
+    detail: string
+  }[]
+}
+
+/** 数据质量闸门（档1 的接口，页面在数据管理里）。 */
+
+export interface QualityCheckMeta {
+  check: string
+  label: string
+  severity: string
+}
+
+export interface QualityPurgeCondition {
+  error_pairs: number
+  days: string[]
+  codes: number
+  checks: string[]
+}
+
+export interface QualitySummary {
+  errors: number
+  warnings: number
+  total: number
+  by_check: Record<string, number>
+  latest_date: string
+  last_quality_at: string
+  purge: QualityPurgeCondition
+  checks: QualityCheckMeta[]
+}
+
+export interface QualityRunResult {
+  ok: boolean
+  scanned_days: number
+  scanned_rows: number
+  written: number
+  existing: number
+  errors: number
+  warnings: number
+  by_check: Record<string, number>
+  skipped_checks: { check: string; reason: string }[]
+  range: { start: string; end: string }
+  ran_at: string
+}
+
+export interface QualityErrorPage {
+  items: {
+    id: number
+    trade_date: string
+    stock_code: string
+    check: string
+    check_label: string
+    severity: string
+    detail: string
+  }[]
+  count: number
+}

@@ -11,8 +11,10 @@ from backend.app.models.tables import (
     DailyQuote,
     DataQualityError,
     LimitUpPattern,
+    MatchSummary,
     PatternMatch,
     SkippedRecord,
+    StockTrainingRow,
     TradingDay,
 )
 from datetime import datetime
@@ -41,6 +43,8 @@ def purge_excluded_boards() -> dict:
             CalcBar.stock_code,
             DailyFeature.stock_code,
             LimitUpPattern.stock_code,
+            MatchSummary.target_code,
+            StockTrainingRow.stock_code,
             SkippedRecord.stock_code,
             DataQualityError.stock_code,
         ):
@@ -56,7 +60,12 @@ def purge_excluded_boards() -> dict:
 
 
 def _delete_codes(session, codes: list[str]) -> dict[str, int]:
-    from backend.app.models.tables import PatternMatch, Stock
+    from backend.app.models.tables import (
+        MatchSummary,
+        PatternMatch,
+        Stock,
+        StockTrainingRow,
+    )
 
     deleted = {
         "daily_quotes": 0,
@@ -64,6 +73,8 @@ def _delete_codes(session, codes: list[str]) -> dict[str, int]:
         "daily_features": 0,
         "limit_up_patterns": 0,
         "pattern_matches": 0,
+        "match_summaries": 0,
+        "stock_training_rows": 0,
         "skipped_records": 0,
         "data_quality_errors": 0,
         "stocks": 0,
@@ -76,6 +87,8 @@ def _delete_codes(session, codes: list[str]) -> dict[str, int]:
         deleted["limit_up_patterns"] += session.query(LimitUpPattern).filter(LimitUpPattern.stock_code.in_(chunk)).delete(synchronize_session=False)
         deleted["pattern_matches"] += session.query(PatternMatch).filter(PatternMatch.target_code.in_(chunk)).delete(synchronize_session=False)
         deleted["pattern_matches"] += session.query(PatternMatch).filter(PatternMatch.sample_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["match_summaries"] += session.query(MatchSummary).filter(MatchSummary.target_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["stock_training_rows"] += session.query(StockTrainingRow).filter(StockTrainingRow.stock_code.in_(chunk)).delete(synchronize_session=False)
         deleted["skipped_records"] += session.query(SkippedRecord).filter(SkippedRecord.stock_code.in_(chunk)).delete(synchronize_session=False)
         deleted["data_quality_errors"] += session.query(DataQualityError).filter(DataQualityError.stock_code.in_(chunk)).delete(synchronize_session=False)
         deleted["stocks"] += session.query(Stock).filter(Stock.code.in_(chunk)).delete(synchronize_session=False)
@@ -107,7 +120,16 @@ def purge_expired() -> dict:
                 "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < cutoff).delete(synchronize_session=False),
                 "daily_features": session.query(DailyFeature).filter(DailyFeature.trade_date < cutoff).delete(synchronize_session=False),
                 "limit_up_patterns": session.query(LimitUpPattern).filter(LimitUpPattern.limit_up_date < cutoff).delete(synchronize_session=False),
-                "pattern_matches": session.query(PatternMatch).filter(PatternMatch.target_date < cutoff).delete(synchronize_session=False),
+                # 目标日在窗口外的一律删；引用的样本日已经被删掉的也删——
+                # 留下一条指向不存在样本的明细，页面上点它就只能报「样本找不到」。
+                "pattern_matches": session.query(PatternMatch).filter(
+                    PatternMatch.target_date < cutoff
+                ).delete(synchronize_session=False)
+                + session.query(PatternMatch).filter(
+                    PatternMatch.sample_limit_date < cutoff
+                ).delete(synchronize_session=False),
+                "match_summaries": session.query(MatchSummary).filter(MatchSummary.target_date < cutoff).delete(synchronize_session=False),
+                "stock_training_rows": session.query(StockTrainingRow).filter(StockTrainingRow.label_date < cutoff).delete(synchronize_session=False),
                 "skipped_records": session.query(SkippedRecord).filter(SkippedRecord.trade_date < cutoff).delete(synchronize_session=False),
                 "data_quality_errors": session.query(DataQualityError).filter(DataQualityError.trade_date < cutoff).delete(synchronize_session=False),
                 "trading_days": session.query(TradingDay).filter(TradingDay.trade_date < cutoff).delete(synchronize_session=False),

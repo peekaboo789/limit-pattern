@@ -36,7 +36,7 @@ from backend.app.algorithms.calibration import (
     log_loss,
 )
 from backend.app.algorithms.features import build_three_day_window
-from backend.app.algorithms.similarity import band_of, score_components
+from backend.app.algorithms.similarity import band_of, percent, score_components
 from backend.app.core.clock import SHANGHAI
 from backend.app.core.constants import (
     BAND_HIGH,
@@ -125,6 +125,7 @@ def score_day(
     names: dict[str, str] | None = None,
     dirty: set[tuple[str, date]] | None = None,
     top_matches: int = 0,
+    only_codes: set[str] | None = None,
 ) -> dict:
     """按「截至 `day` 的已收盘涨停样本池」给当天全市场重算一遍相似度。
 
@@ -133,6 +134,10 @@ def score_day(
     脏行（error 级质量异常）无论出现在候选的窗口里还是样本的窗口里，都把那一条整体剔掉——
     用一个坏掉的收盘价算出来的分数不该参与分档统计。
     板块范围与生产路径一致（`is_in_scope`），否则榜上那批股票的概率列就不是同一群样本算出来的。
+
+    `only_codes` 把候选缩成指定的那几只：给单只股票现算并落库用的入口
+    （`match_service.match_target`），打分与池子构造一个字都不改。默认 None 时
+    行为与档2 完全一致。
     """
     dirty = dirty if dirty is not None else error_pairs(session, end=day)
     if bars_by_code is None:
@@ -149,6 +154,9 @@ def score_day(
         .all()
     )
     codes = sorted({code for code, _ in quotes if is_in_scope(code)})
+    if only_codes is not None:
+        wanted = {str(code) for code in only_codes}
+        codes = [code for code in codes if code in wanted]
     limit_up_on_day = {code for code, is_limit in quotes if is_limit}
 
     targets: list[tuple[str, list[float], list[str]]] = []
@@ -199,8 +207,15 @@ def score_day(
                     matches.append(
                         {
                             "code": matched["code"],
+                            "name": names.get(matched["code"], ""),
                             "limit_date": matched["limit_date"].isoformat(),
                             "score": _round(float(scores[column])),
+                            "shape_score": _round(float(parts["shape"][row_index, column])),
+                            "volume_score": _round(float(parts["volume"][row_index, column])),
+                            "volume_pct_score": _round(float(parts["volume_pct"][row_index, column])),
+                            "amount_score": percent(parts["amount"][row_index, column]),
+                            "window": list(matched.get("window") or []),
+                            "band": band_of(float(scores[column])),
                         }
                     )
             items.append(

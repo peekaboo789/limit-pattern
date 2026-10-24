@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime
 from urllib.parse import quote
 
@@ -197,5 +198,21 @@ def save_copy(filename: str, content: bytes) -> None:
 
 
 def content_disposition(filename: str) -> str:
+    """下载头。真名字走 `filename*`，`filename` 那段只是老浏览器的兜底，必须是纯 ASCII。
+
+    中文直接写进 `filename="…"` 会让响应头编不出 latin-1——整个导出接口 500，
+    页面上点「导出 CSV」只得到一个服务器错（`matches_…_截断.csv` 实测踩过）。
+    """
+    if not filename.isascii():
+        stem, dot, ext = filename.rpartition(".")
+        stem = re.sub(r"-{2,}", "-", "".join(_fallback_char(char) for char in stem))
+        filename_stem = stem.strip("-_") or "export"
+        fallback = f"{filename_stem}{dot}{ext}" if dot else filename_stem
+    else:
+        fallback = filename
     encoded = quote(filename, safe="")
-    return f"attachment; filename=\"{filename}\"; filename*=UTF-8''{encoded}"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+
+
+def _fallback_char(char: str) -> str:
+    return char if char.isascii() and char not in '"\\;' else "-"

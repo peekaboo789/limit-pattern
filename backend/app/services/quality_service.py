@@ -17,7 +17,7 @@ from statistics import median
 
 from sqlalchemy import func
 
-from backend.app.core.clock import today
+from backend.app.core.clock import now, today
 from backend.app.core.config import read_settings_file, stamp
 from backend.app.core.constants import (
     QUALITY_CHANGE_TOLERANCE_PERCENT,
@@ -170,7 +170,9 @@ class QualityRunner:
             days = days[-max_days:]
             start = days[0]
         skipped: list[dict] = []
-        ran_at = datetime.utcnow().isoformat(timespec="seconds")
+        #: 带偏移的东八区时刻，和保留清理那一格（`last_cleanup_at`）同一个写法：
+        #: 写 UTC 的话，数据管理页那行「上次质量检查」永远比实际早八小时。
+        ran_at = now().isoformat(timespec="seconds")
 
         rows_in_range = int(
             self.session.query(func.count(DailyQuote.id))

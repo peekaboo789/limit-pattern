@@ -15,6 +15,16 @@ def now() -> datetime:
     return datetime.now(SHANGHAI)
 
 
+def now_naive() -> datetime:
+    """写进不带时区的列（`created_at` 那一类）时用这个。
+
+    列里没有偏移，页面按浏览器本地时区（东八区）读它：存 UTC 的话，回测列表那一批
+    时间一律早八小时，而质量检查那一格和它差一天。全项目只认东八区挂钟，
+    存的时候就把时区摘掉，别让两种挂钟住在同一张表里。
+    """
+    return now().replace(tzinfo=None)
+
+
 def today() -> date:
     return now().date()
 

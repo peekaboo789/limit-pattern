@@ -7,8 +7,9 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
+from backend.app.core.clock import now_naive
 from backend.app.core.constants import AI_REPORT_MAX, AI_REPORT_RETENTION_DAYS
 from backend.app.models.tables import AiAnalysisReport
 
@@ -134,7 +135,8 @@ def list_reports(session, *, chain: str = "", limit: int = 20) -> dict:
 
 def trim(session) -> int:
     """按天数与条数两道各删一次。整榜那一条链路十分钟一份的话，90 天早就不止 1000 份。"""
-    deadline = datetime.utcnow() - timedelta(days=AI_REPORT_RETENTION_DAYS)
+    #: `created_at` 存的是东八区挂钟，裁剪的基准必须是同一个挂钟——用 UTC 会把保留期拉长八小时。
+    deadline = now_naive() - timedelta(days=AI_REPORT_RETENTION_DAYS)
     stale = [
         row.id
         for row in session.query(AiAnalysisReport).filter(AiAnalysisReport.created_at < deadline).all()

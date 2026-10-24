@@ -1,15 +1,20 @@
 """给大模型看的证据行。原则只有一条：写进字段里的每个数字都能在库里追到出处。
 
-老工程里有三项证据在这里被砍掉了，因为这一版程序没有能让它们有数的原料，
+老工程里有一项证据在这里被砍掉了，因为这一版程序没有能让它有数的原料，
 留个永远为 null 的字段等于教模型猜：
 
-* 连板延续率（要匹配明细落库，那是档3 的活）
 * 本地证据分（三项加权的那个合成分，本来也不给模型看）
 
-「相似度档位的次日发生率」这一项已经在档2 接回来了：它吃 `backtest_service` 落下的
+「相似度档位的次日发生率」在档2 接回来了：它吃 `backtest_service` 落下的
 那份分档账，与盘中榜的概率列、预测页的档位项是同一条记录。没有回测时这一项是 null，
 评分模型的历史成功率那一项退回吃 `ai_pick_results` 的对账账本，并在 `history_source`
 里说清这一行到底吃的是哪一个——两套出处不混成一个数。
+
+「匹配样本的连板延续率」在档3 接回来了，而且**不重算第二遍**：吃的就是
+`prediction_service.carry_evidence`——次日预测页那一列的同一个函数、同一个基准日，
+两处各算一遍迟早会漂。它的原料是 `pattern_matches` 里落库的那批匹配明细
+（`match_service.matches_by_code`），所以这一项的有无跟着「这一天跑没跑过全市场扫描」：
+没跑过时整项是 null，页面上那两页同时都不给这个数。
 
 `ai_pick_results` 那份账确实也是「过去发生的频率」，只是分母是它自己推荐过的那些行，
 不是全市场，所以它只当退路。`_FIELD_DOC` 里把两个数各自的出处都写清了。
@@ -22,6 +27,8 @@ from datetime import date
 from backend.app.algorithms.features import compute_day_features
 from backend.app.core.constants import EVIDENCE_ROW_LIMIT, MIN_BAND_OBSERVATIONS, TEXT_LIMIT
 from backend.app.services import ai_picks
+from backend.app.services import match_service
+from backend.app.services import prediction_service
 from backend.app.services.history_backfill import load_bars_bulk
 from backend.app.services.score_model import (
     FORMULA_TEXT,
@@ -62,6 +69,10 @@ _FIELD_DOC = (
     "similarity_band 最高相似度落的那个数值区间；"
     "band_next_day_rate_percent 同一相似度档在最近一次**已完成回测**里的次日实际涨停发生率（百分数），"
     f"band_next_day_samples 那一档的观测条数——不足 {MIN_BAND_OBSERVATIONS} 条时这两个数都不给，因为那一档还是噪声；"
+    "carry_match_count 这一天的库里为它存了几条最相似涨停样本；"
+    "carry_next_day_rate_percent 这些样本**涨停次日又涨停**的相似度加权比率（百分数），与次日预测页那一列同一个函数算的；"
+    "carry_known 其中能追到次日行情的条数，carry_missing 追不到的条数（次日晚于基准日或那天没行情）；"
+    "这一组数只有在今天跑过全市场匹配扫描并且明细落了库时才有值，没跑过时整项为 null；"
     "ai_history 它过去被本系统大模型推荐后的对账账本（推过几次、定判几次、命中率、历史总分），"
     "从没被推荐过时整项为 null；"
     "indicator_scores 评分模型那七个输入指标的原值；formula 本系统按公式算好的综合评分那份账，"
@@ -123,6 +134,40 @@ def features_at(session, codes: list[str], day: date | None) -> dict[str, dict]:
     return found
 
 
+def carry_overview(session, codes: list[str], base_day: date | None) -> tuple[dict[str, dict], dict]:
+    """每只股票库里 Top 匹配样本的「次日又涨停」比率。
+
+    这里不自己数：算式在 `prediction_service.carry_evidence` 里，次日预测页那一列吃的
+    是同一个函数与同一个基准日。两处各写一遍迟早会漂出两个连板率，
+    而模型看到的那个数字必须能在预测页上找到同一个值。
+
+    原料是 `pattern_matches`（`match_service.matches_by_code`），**读库不现算**：
+    盘后再敲一次现算，样本池可能已经多了一天，模型引用的就成了当天看不到的数。
+    基准日那天没跑过全市场扫描时这里什么都没有，返回空表并说清是哪一种空。
+    """
+    picked = [code for code in codes if code]
+    if base_day is None or not picked:
+        return {}, {"source": "no_base_date", "targets": 0, "rows": 0}
+    matches = match_service.matches_by_code(session, base_day, picked)
+    if not matches:
+        return {}, {"source": "no_stored_matches", "targets": 0, "rows": 0}
+    evidence = prediction_service.carry_evidence(session, matches, base_day)
+    rows: dict[str, dict] = {}
+    for code, item in evidence.items():
+        rows[code] = {
+            "carry_match_count": len(matches.get(code) or []),
+            "carry_next_day_rate_percent": item.weighted_rate_percent,
+            "carry_known": item.known,
+            "carry_missing": item.missing,
+        }
+    return rows, {
+        "source": "pattern_matches",
+        "targets": len(rows),
+        "rows": sum(len(value) for value in matches.values()),
+        "base_date": base_day.isoformat(),
+    }
+
+
 def build_evidence(session, board: dict, *, row_limit: int = DEFAULT_ROW_LIMIT) -> dict:
     """把一份榜折成给模型看的证据行。
 
@@ -134,6 +179,7 @@ def build_evidence(session, board: dict, *, row_limit: int = DEFAULT_ROW_LIMIT) 
     codes = [str(row.get("code") or "") for row in rows if row.get("code")]
     features = features_at(session, codes, base_day)
     history = ai_picks.history_overview(session, codes)
+    carry, carry_meta = carry_overview(session, codes, base_day)
     #: 概率列那份底表跟着榜一起进来：整列留空的原因只写在这一处，页面和提示词读同一句。
     probability = board.get("probability") or {}
     built: list[dict] = []
@@ -145,6 +191,9 @@ def build_evidence(session, board: dict, *, row_limit: int = DEFAULT_ROW_LIMIT) 
             missing_similarity += 1
             continue
         item_history = history.get(code)
+        #: 连板那一组数缺失时保持 null：把「这一天没落库明细」写成 0% 连板率，
+        #: 模型会读成「它的样本第二天都不跟」，那是凭空造出来的反证。
+        item_carry = carry.get(code) or {}
         #: 历史成功率那一项的出处：有回测档位发生率就用它（和榜上那一列同一个数），
         #: 没有就退回这只股票自己的 AI 推荐账。两套数不能混着给，所以把用了哪个也落进账里。
         band_samples = int(row.get("next_day_rate_samples") or 0)
@@ -185,6 +234,10 @@ def build_evidence(session, board: dict, *, row_limit: int = DEFAULT_ROW_LIMIT) 
                 "band_next_day_rate_percent": band_rate,
                 "band_next_day_samples": band_samples or None,
                 "best_match": row.get("best_match"),
+                "carry_match_count": item_carry.get("carry_match_count"),
+                "carry_next_day_rate_percent": item_carry.get("carry_next_day_rate_percent"),
+                "carry_known": item_carry.get("carry_known"),
+                "carry_missing": item_carry.get("carry_missing"),
                 "ai_history": item_history,
                 "indicator_scores": indicators,
                 "formula": formula,
@@ -212,6 +265,17 @@ def build_evidence(session, board: dict, *, row_limit: int = DEFAULT_ROW_LIMIT) 
         "probability_run_id": probability.get("run_id"),
         "probability_note": str(probability.get("note") or ""),
         "band_rate_rows": sum(1 for item in kept if item["band_next_day_rate_percent"] is not None),
+        "carry_rows": sum(1 for item in kept if item["carry_next_day_rate_percent"] is not None),
+        "carry_source": carry_meta.get("source", ""),
+        "carry_meta": carry_meta,
+        #: 市场级的那一个数：当天落库汇总里高相似（阈值见 `high_threshold`）样本占比。
+        #: 它不进每一行（每行都重复同一个数只会让模型以为是个股指标），
+        #: 由 `ai_analysis_service` 拼在提示词抬头那一句里，出处是 `match_summaries`。
+        "market_high_similarity": (
+            match_service.high_similarity_share(session, base_day)
+            if base_day is not None
+            else {"targets": 0, "high_rate_percent": None, "source": "no_base_date"}
+        ),
     }
 
 
@@ -237,6 +301,7 @@ def evidence_line(row: dict) -> str:
         f"/{row.get('sample_count') if row.get('sample_count') is not None else '—'}",
         f"距涨停 {row.get('to_limit_percent') if row.get('to_limit_percent') is not None else '—'}%",
         f"档内次日 {row.get('band_next_day_rate_percent') if row.get('band_next_day_rate_percent') is not None else '—'}%",
+        f"样本连板 {row.get('carry_next_day_rate_percent') if row.get('carry_next_day_rate_percent') is not None else '—'}%",
         f"综合 {formula.get('composite_score') if formula.get('has_signal') else '—'}",
     ]
     history = row.get("ai_history")
@@ -254,6 +319,7 @@ __all__ = [
     "NO_INVENTION_RULE",
     "ROLE_PREAMBLE",
     "build_evidence",
+    "carry_overview",
     "evidence_line",
     "features_at",
     "prompt_row_of",

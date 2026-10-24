@@ -51,6 +51,12 @@ ST_MAIN_BOARD_RATIO_RELAXED_DATE = date(2026, 7, 6)
 
 TOP_N_DEFAULT = 10
 MATCH_INSERT_BATCH = 20_000
+#: 每只股票落库的匹配明细条数。老工程把目标×样本的**全部**对子都写进库
+#: （实测一轮 1,558,980 行），这里改成只留前 20 条：页面要看的是「最像的那几只」，
+#: 连板证据取的是前 20 条（`EVIDENCE_MATCH_LIMIT`），两边都用得到这 20 行；
+#: 而全池汇总另有 `match_summaries` 一行，不靠从几十万行里重算。
+#: 一轮全市场扫描的行数因此约等于「当日候选数 × 20」，保留窗口见 retention。
+MATCH_TOP_N = 20
 
 # 向量检索：样本 × 目标达到这个数才尝试 faiss，两边都是精确检索
 FAISS_PAIR_THRESHOLD = 50_000

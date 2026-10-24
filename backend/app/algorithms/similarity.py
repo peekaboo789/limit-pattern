@@ -172,8 +172,26 @@ def score_components(targets: np.ndarray, samples: np.ndarray) -> dict[str, np.n
         sample_matrix[:, amount_cols],
         weights=full_weights[amount_cols],
     )
+    #: 两边这一组维度一个数都没有（新浪那一路 `amount` 整列为空，三个成交额特征只能补 0）时，
+    #: 零向量对零向量会被 `score_matrix` 读成满分 100。那不是「成交额很像」，那是没数据，
+    #: 所以标成 NaN，由 `percent` 在出算法层之前换成 None。总分不吃 amount（见 COMPONENT_WEIGHTS），
+    #: 受影响的只有「成交额分」那一列和导出 CSV 的那一格。
+    if not np.any(target_matrix[:, amount_cols]) and not np.any(sample_matrix[:, amount_cols]):
+        amount = np.full_like(amount, math.nan)
     parts["amount"] = amount
     return parts
+
+
+def percent(value) -> float | None:
+    """分项分数出栈的唯一口径：算不了就是 None，不是 0，也不是 100。
+
+    NaN 不能带出这一层——`json.dumps` 会把它写成裸的 `NaN`，浏览器那句
+    `response.json()` 当场解析失败，整个页面变成空白而不是一格空值。
+    """
+    number = float(value)
+    if math.isnan(number):
+        return None
+    return round(number, 2)
 
 
 def group_slices() -> dict[str, list[int]]:

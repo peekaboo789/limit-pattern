@@ -1,6 +1,8 @@
 import AiRankView from '@/views/AiRankView.vue'
 import BacktestView from '@/views/BacktestView.vue'
+import DataView from '@/views/DataView.vue'
 import OverviewView from '@/views/OverviewView.vue'
+import PatternsView from '@/views/PatternsView.vue'
 import PoolView from '@/views/PoolView.vue'
 import PredictionView from '@/views/PredictionView.vue'
 import RealtimeView from '@/views/RealtimeView.vue'
@@ -23,6 +25,8 @@ export const router = createRouter({
     { path: '/ai-rank', name: 'ai-rank', component: AiRankView, meta: { title: '每日 AI 固定榜' } },
     { path: '/summaries', name: 'summaries', component: SummaryView, meta: { title: '每日总结' } },
     { path: '/backtest', name: 'backtest', component: BacktestView, meta: { title: '历史回测' } },
+    { path: '/patterns', name: 'patterns', component: PatternsView, meta: { title: '涨停形态样本' } },
+    { path: '/data', name: 'data', component: DataView, meta: { title: '数据管理' } },
     { path: '/settings', name: 'settings', component: SettingsView, meta: { title: '设置' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

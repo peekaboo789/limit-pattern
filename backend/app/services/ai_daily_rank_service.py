@@ -661,7 +661,8 @@ def persist_outcome(session, outcome: dict) -> dict:
             source="daily_rank",
         )
     # 90 天以外的固定榜整行删掉：那一天的输入有 100 行证据，留着只会把库撑大。
-    deadline = datetime.utcnow() - timedelta(days=DAILY_RANK_RETENTION_DAYS)
+    # 拿日期比日期：`trade_date` 是 Date 列，跟 datetime 比会退化成字符串比较。
+    deadline = clock.today() - timedelta(days=DAILY_RANK_RETENTION_DAYS)
     stale = session.query(AiDailyRankBoard).filter(AiDailyRankBoard.trade_date < deadline).all()
     for stale_row in stale:
         session.delete(stale_row)

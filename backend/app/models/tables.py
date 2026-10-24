@@ -18,11 +18,17 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
+from backend.app.core.clock import now_naive
 from backend.app.core.database import Base
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    """东八区挂钟（摘掉时区再进那列 `DateTime`）。
+
+    这半行决定了页面上所有「生成于/创建于」是不是同一个时刻：写 UTC 的话，
+    回测列表那一批时间看起来永远早八小时。
+    """
+    return now_naive()
 
 
 class Stock(Base):
@@ -131,6 +137,35 @@ class PatternMatch(Base):
     sample_limit_date: Mapped[date] = mapped_column(Date)
     similarity_score: Mapped[float] = mapped_column(Float)
     score_breakdown: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MatchSummary(Base):
+    """一只股票某一天对**整个样本池**的汇总：几条样本、平均分、最高分、落哪一档。
+
+    这张表存在的理由是 `pattern_matches` 只留每只股票的前 `MATCH_TOP_N` 条：
+    平均分与样本条数要吃的是全池，从截断后的那 20 条重算会得到
+    「只在最像的 20 条里的平均分」——那是另一件事，不能顶着同一个名字。
+    写这张表的和写那 20 行的是同一次 `score_day`，所以两边的数必然出自同一把尺子。
+    """
+
+    __tablename__ = "match_summaries"
+    __table_args__ = (UniqueConstraint("target_code", "target_date", name="uq_match_summary"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    target_code: Mapped[str] = mapped_column(String(6), index=True)
+    target_date: Mapped[date] = mapped_column(Date, index=True)
+    #: 这一轮实际参与比对的样本条数（已剔掉它自己那些条）
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    high_similarity_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: 全池平均分。池子为空时是 None，不是 0 分。
+    avg_similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    band: Mapped[str] = mapped_column(String(16), default="")
+    #: 这一轮用的池子覆盖哪几个交易日、样本表里一共几条。
+    #: 有这两个数才答得出「页面上这 40 条样本是从哪几天来的」。
+    pool_dates: Mapped[list] = mapped_column(JSON, default=list)
+    pool_size: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
 class SkippedRecord(Base):

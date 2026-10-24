@@ -7,7 +7,7 @@ from datetime import date
 import numpy as np
 
 from backend.app.algorithms.features import build_three_day_window
-from backend.app.algorithms.similarity import score_components
+from backend.app.algorithms.similarity import percent, score_components
 from backend.app.core.constants import COMPARE_WINDOW_TRADING_DAYS
 from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import BOARD_LABELS, classify, is_in_scope
@@ -129,7 +129,7 @@ def similar_to(session, code: str, as_of: date, top: int) -> dict:
                 "shape_score": _round(parts["shape"][0, index]),
                 "volume_score": _round(parts["volume"][0, index]),
                 "volume_pct_score": _round(parts["volume_pct"][0, index]),
-                "other_scores": {"amount": _round(parts["amount"][0, index])},
+                "other_scores": {"amount": percent(parts["amount"][0, index])},
                 "window": sample["window"],
             }
         )

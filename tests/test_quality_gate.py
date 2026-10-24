@@ -198,7 +198,8 @@ def test_summary_exposes_all_fourteen_checks(client):
         run_checks(session, start=days[0], end=days[-1], names=names)
         payload = counts(session)
     assert set(payload["by_check"]) == set(CHECK_NAMES)
-    assert payload["last_quality_at"]
+    #: 那一格是给人对着表看的，必须带东八区偏移：写成 UTC，页面永远早八小时。
+    assert payload["last_quality_at"].endswith("+08:00"), payload["last_quality_at"]
     assert payload["errors"] == 0
 
 

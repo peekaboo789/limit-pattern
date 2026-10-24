@@ -16,6 +16,8 @@ const items = [
   { name: 'ai-rank', label: '每日 AI 固定榜', to: '/ai-rank' },
   { name: 'summaries', label: '每日总结', to: '/summaries' },
   { name: 'backtest', label: '历史回测', to: '/backtest' },
+  { name: 'patterns', label: '涨停形态样本', to: '/patterns' },
+  { name: 'data', label: '数据管理', to: '/data' },
   { name: 'settings', label: '设置', to: '/settings' },
 ]
 
