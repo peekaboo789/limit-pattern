@@ -499,7 +499,7 @@ def test_build_pool_excludes_today_limit_ups_and_says_no_backtest(client, no_bac
     assert ordered == sorted(ordered, reverse=True)
     # 这组夹具里池子那几条涨停的次日都早于基准日，所以连板证据查得到——
     # 恰好证明上面「档位项退场」不是把所有项都退场了。缺项时的权重摊法由
-    # `test_composite_score_reweights_missing_terms` 单独盯着。
+    # `test_prediction_weighted_score_reweights_missing_terms` 单独盯着。
     assert any(row["carry_rate"] is not None for row in report["rows"])
     for row in report["rows"]:
         if row["carry_rate"] is not None:
@@ -525,15 +525,15 @@ def test_build_pool_uses_band_lift_after_a_run(client):
     assert str(MIN_BAND_OBSERVATIONS) in report["note"] or label == ""
 
 
-def test_composite_score_reweights_missing_terms():
-    score, terms = prediction_service.composite_score(shape=80.0, carry=None, band_lift=None)
+def test_prediction_weighted_score_reweights_missing_terms():
+    score, terms = prediction_service.prediction_weighted_score(shape=80.0, carry=None, band_lift=None)
     assert score == pytest.approx(80.0) and terms["band"] is None
-    score, terms = prediction_service.composite_score(shape=80.0, carry=50.0, band_lift=None)
+    score, terms = prediction_service.prediction_weighted_score(shape=80.0, carry=50.0, band_lift=None)
     assert terms == {"shape": 80.0, "carry": 50.0, "band": None}
     assert score == pytest.approx(round((0.5 * 80 + 0.3 * 50) / 0.8, 2))
     # lift 封顶：3 倍和 2 倍给一样的项分，再高多半是几十条样本抖出来的。
-    capped = prediction_service.composite_score(shape=50.0, carry=None, band_lift=3.0)
-    at_cap = prediction_service.composite_score(shape=50.0, carry=None, band_lift=2.0)
+    capped = prediction_service.prediction_weighted_score(shape=50.0, carry=None, band_lift=3.0)
+    at_cap = prediction_service.prediction_weighted_score(shape=50.0, carry=None, band_lift=2.0)
     assert capped[0] == at_cap[0] and capped[1]["band"] == 100.0
 
 
@@ -769,3 +769,133 @@ def test_ai_evidence_reads_the_band_rate_from_the_board(client):
     assert full["band_rate_rows"] == len(matched)
     assert "档内次日 41.5%" in ai_evidence.evidence_line(matched[0])
 
+
+
+
+def test_the_pools_composite_column_is_just_score_of_of_the_indicators_it_shows(client):
+    """预测池那一列「综合评分」必须等于同一行那五项的 `score_of`，不许是第三套算法。
+
+    行上同时给 `indicator_scores` 与 `formula`：把前者喂回全app唯一那个算式，
+    出来的分必须和后者一字不差；形态那一项吃的就是行上「最高相似」那一列，
+    页面上两列摆在一起要能互相对上。
+    """
+    from backend.app.services import score_model
+
+    _seed()
+    with session_scope() as session:
+        report = prediction_service.build_pool(session)
+    assert report["rows"]
+    for row in report["rows"]:
+        indicators = row["indicator_scores"]
+        formula = row["formula"]
+        assert indicators["similarity_score"] == pytest.approx(row["max_similarity"])
+        assert indicators["pattern_match_rate"] == score_model.pattern_match_rate(
+            row["high_similarity_count"], row["sample_count"]
+        )
+        again = score_model.score_of(indicators)
+        for key in ("composite_score", "weighted", "risk_penalty", "level", "has_signal"):
+            assert formula[key] == again[key], (row["stock_code"], key, formula[key], again[key])
+        assert formula["contributions"] == again["contributions"]
+
+
+def test_the_composite_column_moves_with_the_rows_own_inputs(client):
+    """这一列不是常数、也不是那个加权分：把行自己的原料换掉，分必须跟着动。
+
+    两头都验：行上真有贡献的那几项各自压到 0，分必须掉下来；把形态分换成行上那个
+    加权分，分也得变——后者就是「拿预测加权分冒充综合评分」那种坏法。
+    风险扣分那段不放在这里验：池里多的是本来不扣分的行，把 `risk_score` 去掉当然
+    一动不动，档位本身由 `backend/tests/test_core_rules.py` 盯着。
+    """
+    _seed()
+    with session_scope() as session:
+        report = prediction_service.build_pool(session)
+    row = next((item for item in report["rows"] if item["formula"]["has_signal"]), None)
+    assert row is not None, "整池没有一行有信号，这条判据成了空话"
+    baseline = row["formula"]["composite_score"]
+    assert baseline != row["prediction_score"]
+
+    from backend.app.services import score_model
+
+    indicators = row["indicator_scores"]
+    contributions = row["formula"]["contributions"]
+    live = [
+        field
+        for key, field in score_model.INDICATOR_OF_ITEM.items()
+        if contributions.get(key) and float(indicators.get(field) or 0.0) > 0.0
+    ]
+    assert live, "这一行五项全无贡献，换原料也验不出东西"
+    for field in live:
+        dropped = score_model.score_of(dict(indicators, **{field: 0.0}))["composite_score"]
+        assert dropped < baseline, (field, dropped, baseline)
+
+    as_weighted = dict(indicators, similarity_score=row["prediction_score"])
+    moved = score_model.score_of(as_weighted)["composite_score"]
+    assert moved != baseline, "行上的形态分换成加权分，综合评分一动不动"
+
+
+def test_only_row_scoring_builds_indicators_and_the_formula():
+    """一行的综合评分只在 `row_scoring` 那一处装配：两个页面各自调一次就等于迟早漂。"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "backend" / "app" / "services"
+    helper = (root / "row_scoring.py").read_text(encoding="utf-8")
+    assert "build_indicators(" in helper and "formula_for(" in helper
+    for name in ("ai_evidence.py", "prediction_service.py"):
+        text = (root / name).read_text(encoding="utf-8")
+        for banned in ("build_indicators(", "formula_for(", "score_of("):
+            assert banned not in text, f"{name} 里还自己调了 {banned}"
+
+
+def test_the_predict_pool_page_states_both_sentences(client):
+    """页脚那一句要同时讲清两个分数：加权分怎么排名次、综合评分是什么算式。
+
+    综合评分那段不许这一页自己抄一遍——它必须与 `score_model.formula_text()` 逐字相同，
+    对比窗口一改也跟着一起改。
+    """
+    from backend.app.services import score_model
+
+    days = _seed()
+    with session_scope() as session:
+        report = prediction_service.build_pool(session)
+    sentence = score_model.formula_text()
+    assert sentence in report["formula"]
+    assert "预测加权分" in report["formula"] and "名次按它排" in report["formula"]
+    assert "不是涨停概率" in report["formula"]
+    # 那句话跟着设置走这件事由 `test_the_scoring_wording_follows_the_compare_window_setting`
+    # 盯着（改窗口要等重算任务，这里不重跑一遍）。
+    assert "样本池取对比窗口那" in report["formula"]
+
+
+def test_the_predict_pool_hands_the_band_rate_over_in_percent(client):
+    """回测那一侧的档位发生率是小数，`row_scoring` 只认百分数：换算只许在池子这里做一次。
+
+    换算漏了不会报错——行上的历史成功率变成 0.415，五项加权里那一档几乎归零，
+    预测池的综合评分从此永远吃不到回测账，页面上一个数字都不提醒。
+    """
+    _seed()
+    with session_scope() as session:
+        label = prediction_service.build_pool(session)["rows"][0]["band"]
+    assert label, "池子第一行连档位都没有，注入对照无从做起"
+    original = prediction_service.band_stats
+    prediction_service.band_stats = lambda session: (
+        {
+            label: {
+                "band": label,
+                "sample_count": 600,
+                "limit_up_count": 249,
+                "limit_up_rate": 0.415,
+                "baseline_rate": 0.23,
+                "lift": 1.8,
+                "pending_count": 0,
+            }
+        },
+        None,
+    )
+    try:
+        with session_scope() as session:
+            report = prediction_service.build_pool(session)
+    finally:
+        prediction_service.band_stats = original
+    row = next(item for item in report["rows"] if item["band"] == label)
+    assert row["history_source"] == "band_rate"
+    assert row["indicator_scores"]["history_limit_up_rate"] == pytest.approx(41.5)

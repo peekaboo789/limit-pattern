@@ -453,6 +453,7 @@ export interface FormulaBlock {
   missing_items: string[]
   weight_total: number
   has_signal: boolean
+  history_source?: string | null
   model_gap?: number | null
   model_score?: number | null
 }
@@ -1101,6 +1102,10 @@ export interface PredictionRow {
   turnover_rate: number | null
   prediction_score: number
   score_terms: PredictionScoreTerms
+  /** 综合评分那一列：全app只有 `score_model.score_of` 这一个算式，不参与排序。 */
+  formula: FormulaBlock
+  indicator_scores: IndicatorScores
+  history_source: string | null
 }
 
 export interface PredictionBand {

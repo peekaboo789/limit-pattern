@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from datetime import date
 
-from backend.app.algorithms.features import compute_day_features
 from backend.app.core.config import compare_window_days
 from backend.app.core.constants import (
     EVIDENCE_ROW_LIMIT,
@@ -35,13 +34,12 @@ from backend.app.core.constants import (
 from backend.app.services import ai_picks
 from backend.app.services import match_service
 from backend.app.services import prediction_service
-from backend.app.services.history_backfill import load_bars_bulk
+from backend.app.services import row_scoring
+from backend.app.services.row_scoring import features_at
 from backend.app.services.score_model import (
     formula_text,
     prompt_rubric,
     ROLE_PREAMBLE,
-    build_indicators,
-    formula_for,
     with_gap,
 )
 
@@ -141,20 +139,6 @@ def _as_day(value) -> date | None:
         return None
 
 
-def features_at(session, codes: list[str], day: date | None) -> dict[str, dict]:
-    """那一天那一根的日线特征。那一天没有行情（停牌、或盘中还没落库）就整只不给，
-    不拿更早那根冒充——冒充出来的分是昨天的分，榜上写的价是今天的价。"""
-    if day is None or not codes:
-        return {}
-    grouped = load_bars_bulk(session, day, codes=codes)
-    found: dict[str, dict] = {}
-    for code, bars in grouped.items():
-        if not bars or bars[-1].trade_date != day:
-            continue
-        found[code] = compute_day_features(bars)
-    return found
-
-
 def indicator_day_of(board: dict) -> tuple[date | None, str]:
     """指标该取哪一天的行情，以及为什么。
 
@@ -239,26 +223,19 @@ def build_evidence(session, board: dict, *, row_limit: int = DEFAULT_ROW_LIMIT) 
         #: 连板那一组数缺失时保持 null：把「这一天没落库明细」写成 0% 连板率，
         #: 模型会读成「它的样本第二天都不跟」，那是凭空造出来的反证。
         item_carry = carry.get(code) or {}
-        #: 历史成功率那一项的出处：有回测档位发生率就用它（和榜上那一列同一个数），
-        #: 没有就退回这只股票自己的 AI 推荐账。两套数不能混着给，所以把用了哪个也落进账里。
-        band_samples = int(row.get("next_day_rate_samples") or 0)
-        band_rate = row.get("next_day_rate_percent")
-        if band_rate is None or band_samples < MIN_BAND_OBSERVATIONS:
-            band_rate = None
-        history_rate = band_rate
-        history_source = "band_rate" if history_rate is not None else None
-        if history_rate is None and item_history:
-            history_rate = item_history.get("hit_rate_percent")
-            history_source = "ai_pick_ledger" if history_rate is not None else None
-        indicators = build_indicators(
+        #: 一行的综合评分只在 `row_scoring.score_row` 那一处算：预测池那一列走的是同一个函数，
+        #: 同一只股票同一天在两个页面上不许出现两个「综合评分」。
+        scored = row_scoring.score_row(
             similarity=max_similarity,
             high_count=row.get("high_score_count"),
             sample_count=row.get("sample_count"),
             features=features.get(code),
-            history_rate_percent=history_rate,
+            band_rate_percent=row.get("next_day_rate_percent"),
+            band_samples=int(row.get("next_day_rate_samples") or 0),
+            ledger_rate_percent=(item_history or {}).get("hit_rate_percent"),
         )
-        formula = formula_for(indicators)
-        formula["history_source"] = history_source
+        indicators = scored["indicators"]
+        formula = scored["formula"]
         built.append(
             {
                 "stock_code": code,
@@ -276,8 +253,8 @@ def build_evidence(session, board: dict, *, row_limit: int = DEFAULT_ROW_LIMIT) 
                 "sample_count": row.get("sample_count"),
                 "band": _text(row.get("band")),
                 "similarity_band": _text(row.get("similarity_band")),
-                "band_next_day_rate_percent": band_rate,
-                "band_next_day_samples": band_samples or None,
+                "band_next_day_rate_percent": scored["band_next_day_rate_percent"],
+                "band_next_day_samples": scored["band_next_day_samples"],
                 "best_match": row.get("best_match"),
                 "carry_match_count": item_carry.get("carry_match_count"),
                 "carry_next_day_rate_percent": item_carry.get("carry_next_day_rate_percent"),

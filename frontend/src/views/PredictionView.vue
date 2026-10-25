@@ -158,8 +158,9 @@ onMounted(() => {
               <th>档位</th>
               <th class="right">档内次日</th>
               <th class="right">连板延续</th>
-              <th class="right">综合分</th>
+              <th class="right">预测加权分</th>
               <th>三项</th>
+              <th class="right">综合评分</th>
               <th></th>
             </tr>
           </thead>
@@ -189,6 +190,10 @@ onMounted(() => {
               </td>
               <td class="right"><b>{{ formatScore(row.prediction_score) }}</b></td>
               <td class="hint">{{ termsText(row) }}</td>
+              <td class="right">
+                <b>{{ row.formula.has_signal ? formatScore(row.formula.composite_score) : '—' }}</b>
+                <div class="hint">{{ row.formula.has_signal ? row.formula.level : '' }}</div>
+              </td>
               <td>
                 <button class="btn btn-ghost" type="button" @click="open(row)">对比</button>
               </td>

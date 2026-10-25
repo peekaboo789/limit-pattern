@@ -14,6 +14,13 @@
 * 档位发生率原样读最近一次**已完成**回测的分档表，观测数不足 `MIN_BAND_OBSERVATIONS` 的档
   不参与打分（该项退场，权重摊给其余项，页面写明原因）。
 
+**这一页有两列分数，只有一个叫综合评分。**
+名次按下面那三项历史证据的加权排（`prediction_score`，页面列名「预测加权分」）——它是预测语义的排序，
+吃的是相似案例后来怎么样了。另有一列「综合评分」，是 `score_model.score_of` 那个全app唯一的算式
+（形态/技术/量能/资金/历史成功率五项加权，再扣风险），由 `row_scoring.score_row` 现算，
+与盘中监控、AI 榜、个股详情上的同一个数一字不差。**它不参与排序**，只是让这一页也能看到
+「这只股票按本系统那把尺子打几分」。谁以后想把加权分也叫「综合」，先问一遍这句话还成不成立。
+
 三项证据（都归一到 0~100 再加权）：
 
 1. `shape` = 当日最高相似度（0~100）——形态像不像。
@@ -49,10 +56,23 @@ from backend.app.core.constants import (
 from backend.app.core.logging import get_logger
 from backend.app.models.tables import DailyQuote, Stock, TradingDay
 from backend.app.providers.markets import BOARD_LABELS, classify
+from backend.app.services import ai_picks
+from backend.app.services import row_scoring
 from backend.app.services.backtest_service import band_stats, score_day
 from backend.app.services.retention import quote_dates
+from backend.app.services.score_model import formula_text
 
 logger = get_logger("prediction")
+
+
+def prediction_formula() -> str:
+    """这一页底部那一句口径：两个分数各讲一遍，综合评分那段现读 `score_model` 生成。
+
+    综合评分那五项的权重、风险扣分与等级线都在 `formula_text()` 里，这里不许抄一份；
+    对比窗口一改，这句话跟着变。
+    """
+    return f"{PREDICTION_FORMULA} 综合评分（同一行的另一列，不参与排序）：{formula_text()}"
+
 
 #: 每只股票取前 K 个匹配样本作连板证据。榜上的 `matches` 就带这几条，
 #: 不再回库里捞第二遍——捞第二遍等于承认这把尺子算出来的邻居不可信。
@@ -92,8 +112,13 @@ class CarryEvidence:
         return round(self.hit_weight / self.weight * 100.0, 2)
 
 
-def composite_score(*, shape: float, carry: float | None, band_lift: float | None) -> tuple[float, dict[str, float | None]]:
-    """三证据加权，缺失项的权重摊给其余项（全缺时分数就等于形态分本身）。"""
+def prediction_weighted_score(*, shape: float, carry: float | None, band_lift: float | None) -> tuple[float, dict[str, float | None]]:
+    """预测加权分：三证据加权，缺失项的权重摊给其余项（全缺时分数就等于形态分本身）。
+
+    它**不是综合评分**。全app只有一个综合评分算式，就是 `score_model.score_of`，
+    这一页那一列由 `row_scoring.score_row` 现算、不参与排序；这里只是把历史证据
+    折成一个用来排名次的数，所以名字里不许再出现「综合」。
+    """
     band_term = (
         round(min(float(band_lift), PREDICTION_LIFT_CAP) / PREDICTION_LIFT_CAP * 100.0, 2)
         if band_lift is not None
@@ -228,6 +253,11 @@ def build_pool(session, *, as_of: date | None = None, pool_size: int = DEFAULT_P
         pool_date,
     )
     bands, run = band_stats(session)
+    #: 综合评分那一列的原料：基准日那一根的日线特征，和这只股票自己的 AI 推荐账。
+    #: 取法与盘中/AI 那条链路逐字一致（同一个 `row_scoring`），否则同一只股票
+    #: 同一天会在两个页面上顶着同一个名字给出两个数。
+    day_features = row_scoring.features_at(session, codes, pool_date)
+    ledger = ai_picks.history_overview(session, codes)
 
     rows: list[dict] = []
     for index, item in enumerate(pool, start=1):
@@ -245,10 +275,22 @@ def build_pool(session, *, as_of: date | None = None, pool_size: int = DEFAULT_P
             if band_rate is not None and run is not None and float(run.baseline_rate or 0.0) > 0
             else None
         )
-        score, terms = composite_score(
+        score, terms = prediction_weighted_score(
             shape=item["max_similarity"] or 0.0,
             carry=carry.weighted_rate_percent,
             band_lift=band_lift,
+        )
+        #: 综合评分那一列：档位发生率在回测侧是小数，`row_scoring` 只认百分数，这里换一次单位。
+        #: 名次**不跟这一列排**（还是按上面那个加权分），它给的是「同一只股票在盘中榜上
+        #: 那个综合评分是多少」，两处不许各算一套。
+        scored_row = row_scoring.score_row(
+            similarity=item["max_similarity"],
+            high_count=item["high_similarity_count"],
+            sample_count=item["sample_count"],
+            features=day_features.get(item["code"]),
+            band_rate_percent=None if band_rate is None else round(band_rate * 100.0, 6),
+            band_samples=samples,
+            ledger_rate_percent=(ledger.get(item["code"]) or {}).get("hit_rate_percent"),
         )
         quote = quotes.get(item["code"], {})
         _exchange, board = classify(item["code"])
@@ -280,6 +322,9 @@ def build_pool(session, *, as_of: date | None = None, pool_size: int = DEFAULT_P
                 "turnover_rate": quote.get("turnover_rate"),
                 "prediction_score": score,
                 "score_terms": terms,
+                "indicator_scores": scored_row["indicators"],
+                "formula": scored_row["formula"],
+                "history_source": scored_row["history_source"],
             }
         )
 
@@ -330,7 +375,7 @@ def build_pool(session, *, as_of: date | None = None, pool_size: int = DEFAULT_P
             pool_total=pool_total,
             next_trade_date=next_trade_date,
         ),
-        "formula": PREDICTION_FORMULA,
+        "formula": prediction_formula(),
         "disclaimer": PREDICTION_DISCLAIMER_TEXT,
     }
 
@@ -427,5 +472,6 @@ __all__ = [
     "CarryEvidence",
     "build_pool",
     "carry_evidence",
-    "composite_score",
+    "prediction_formula",
+    "prediction_weighted_score",
 ]

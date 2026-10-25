@@ -146,13 +146,17 @@
 
 ### 次日预测池
 
-`GET /api/prediction/pool` 是纯读加现算，不写库：候选是基准日「还没涨停」的全市场，按三项历史证据加权排序。
+`GET /api/prediction/pool` 是纯读加现算，不写库：候选是基准日「还没涨停」的全市场。这一页有**两列分数**——名次按「预测加权分」排，旁边那一列「综合评分」不参与排序，只回答「同一只股票在盘中榜上是几分」。
+
+排名次的那一列由三项历史证据加权：
 
 1. `shape`：当日最高相似度（0~100）。权重 0.5。
 2. `carry`：与它最像的那批涨停样本，在涨停之后第二个交易日继续涨停的比例，按相似度加权（90 分的样本比 65 分的说话更响）。权重 0.3。
 3. `band`：档位历史发生率相对全样本基准的倍数，按 `PREDICTION_LIFT_CAP`（2 倍）封顶，再折成 0~100。权重 0.2。
 
 缺了的项（没有回测、没有可用连板样本）把权重摊给其余项，不回一个 0。每行的 `score_terms` 给三个原值，`prediction_score` 是加权后的分。
+
+旁边那一列走的是全app唯一那把尺子：`score_model.score_of`，五项是形态、技术、量能、资金、历史成功率，`row_scoring.score_row` 装配（盘中榜、AI 证据、每日固定榜同一处）。历史成功率那一项先吃回测档位发生率，那一档观测不够门槛时退回这只股票自己的 AI 推荐账，两个都用不上时留空——用了哪个写在 `history_source` 里（`band_rate` / `ai_pick_ledger` / null）。回测那侧的发生率是小数，`row_scoring` 只认百分数，换算只在池子这一处做一次。
 
 连板证据有唯一一道未来信息闸门：样本涨停日的下一交易日必须**严格早于**基准日。等于或晚于基准日的一律不查。已知后果也写在回包里：样本池只覆盖对比窗口那几个交易日，基准日当天涨停的那批样本永远进不了连板统计，`carry_known_count` 为 0 的行照实显示。
 
@@ -163,10 +167,10 @@
 | `pool_date`、`next_trade_date` | 挑选日与预测目标日。目标日先问交易日历；日历可能比行情新（当天刚收盘、行情还没同步），这时日期说得出、结果仍只用已经发生的行情 |
 | `pool_size`、`pool_total`、`pool_dates`、`sample_pool_size` | 取了几名、当日参与打分多少只、样本池的交易日、样本池条数 |
 | `skipped_samples`、`missing_bars`、`dirty_skipped` | 建不出窗口的样本（最多 20 条）、凑不齐三日窗口的候选数、被 error 脏行挡掉的候选数 |
-| `rows[]` | `stock_code`、`stock_name`、`board`、`board_label`、`is_st`、`pool_rank`、`rank`、`max_similarity`、`avg_similarity`、`sample_count`、`high_similarity_count`、`high_similarity_rate`、`band`、`band_rate`、`band_samples`、`band_lift`、`carry_known_count`、`carry_hit_count`、`carry_missing_count`、`carry_rate`、`close`、`change_percent`、`volume`、`turnover_rate`、`prediction_score`、`score_terms`。取不到的数是 null，不是 0 |
+| `rows[]` | `stock_code`、`stock_name`、`board`、`board_label`、`is_st`、`pool_rank`、`rank`、`max_similarity`、`avg_similarity`、`sample_count`、`high_similarity_count`、`high_similarity_rate`、`band`、`band_rate`、`band_samples`、`band_lift`、`carry_known_count`、`carry_hit_count`、`carry_missing_count`、`carry_rate`、`close`、`change_percent`、`volume`、`turnover_rate`、`prediction_score`、`score_terms`。综合评分那一列的原料与结果也在行上：`indicator_scores`（喂给 `score_of` 的那五项）、`formula`（`score_of` 的原样回包，含 `composite_score`、`level`、`contributions`、`missing_items`、`has_signal`）、`history_source`。取不到的数是 null，不是 0 |
 | `bands[]` | 档位底表，和 `probability` 同一份口径 |
 | `baseline_rate`、`calibrated`、`backtest_run_id`、`backtest_day_count`、`backtest_observation_count`、`min_band_observations` | 这一页吃的回测账。没跑过回测时 `calibrated` 是 false、`backtest_run_id` 是 null |
-| `note`、`formula`、`disclaimer` | 这一页凭什么、怎么合成分、免责声明原文 |
+| `note`、`formula`、`disclaimer` | 这一页凭什么、免责声明原文。`formula` 两句一起给：前一句讲「预测加权分」怎么算、名次按它排，后一句原样抄 `score_model.formula_text()`（改对比窗口它也跟着变，这一页不许自己抄一份权重） |
 
 预测分是历史统计的加权，不是涨停概率，也不是收益预测。这一页不给「建议买入」。
 
@@ -282,6 +286,13 @@
 
 打分只有一把尺子：`backtest_service.score_day`。全市场扫描、单只现算、回测逐日重算、预测池的证据行都调它，
 差异只在 `only_codes` 和 `top_matches` 传什么。所以「页面上看到的分」和「回测里统计的分」不存在两套算法。
+
+这把尺子量的是**相似度**；把相似度连同技术、量能、资金、历史成功率折成「综合评分」的是另一处，全app只有一处：
+`row_scoring.score_row` → `score_model.score_of`（见「次日预测池」）。两个名字各管一层，谁都不冒充谁。
+
+同一只股票同一天在两个页面上的综合评分**可以不一样**，这不是漂移：盘中榜那一路的样本池是回测那条口径（挡未来信息、
+挡 error 脏行），预测池与扫描那一路吃的是对比窗口现算的样本池。原料里的「最高相似」本来就来自两个池子，
+分跟着不一样是自洽的结果。要对齐，得先把两条取样口径并成一条，而不是把分数强行写成同一个数。
 
 - `GET /api/matches/{code}` 只读库、不现算：这一页展示的必须和上一轮扫描落下去的是同一份数。库里没落过回
   `ok: false`，`reason` 说清是没扫描还是那天没行情。
