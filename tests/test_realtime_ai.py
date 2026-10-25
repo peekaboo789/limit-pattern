@@ -1097,6 +1097,13 @@ def test_the_scoring_wording_follows_the_compare_window_setting(ai_client):
     assert "那 5 个交易日" in formula_text(), "口径句还挂着旧窗口"
     assert indicator_labels()["pattern_match_rate"] == "近 5 日高相似占比"
 
+    # 固定榜页面上那句口径是 GET 现读的：那里没有别的渠道能看到窗口改了没。
+    prepared = client.post("/api/ai/daily-rank/prepare")
+    assert prepared.status_code == 200, prepared.text
+    daily_board = client.get("/api/ai/daily-rank").json()["board"]
+    assert daily_board is not None
+    assert "那 5 个交易日" in daily_board["formula"], daily_board["formula"]
+
     server = ai_client["configure"](sse_script(['{"picks":[]}']))
     client.post("/api/ai/analysis")
     report = wait_for(client, "/api/ai/analysis")["report"]
