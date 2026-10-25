@@ -1,6 +1,11 @@
 import { ApiError, formatDetail, request } from './http'
 import type {
   AiReportListResponse,
+  AiMemoryDays,
+  AiMemoryRunResult,
+  AiMemorySummary,
+  AiSourcePayload,
+  AiSourcesResponse,
   BacktestLatest,
   BacktestObservationPage,
   BacktestRunPayload,
@@ -74,6 +79,27 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+
+  aiSources: () => request<AiSourcesResponse>('/api/ai-sources'),
+
+  createAiSource: (body: AiSourcePayload) =>
+    request<AiSourcesResponse>('/api/ai-sources', { method: 'POST', body: JSON.stringify(body) }),
+
+  updateAiSource: (id: string, body: AiSourcePayload) =>
+    request<AiSourcesResponse>(`/api/ai-sources/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+
+  deleteAiSource: (id: string) =>
+    request<AiSourcesResponse>(`/api/ai-sources/${id}`, { method: 'DELETE' }),
+
+  activateAiSource: (id: string) =>
+    request<AiSourcesResponse>(`/api/ai-sources/${id}/active`, { method: 'PUT' }),
+
+  aiMemorySummary: () => request<AiMemorySummary>('/api/ai-memory/summary'),
+
+  aiMemoryDays: () => request<AiMemoryDays>('/api/ai-memory/days'),
+
+  runAiMemory: (date?: string) =>
+    request<AiMemoryRunResult>(`/api/ai-memory/run${query({ date })}`, { method: 'POST' }),
 
   startSync: () => request<SyncTask>('/api/sync', { method: 'POST' }),
 

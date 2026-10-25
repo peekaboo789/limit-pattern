@@ -440,7 +440,7 @@ def rank_now(session, *, trade_date: str, on_progress: Callable[[int, int], None
     model = ai_gateway.model_name()
     if not ai_gateway.ai_ready():
         return failed_outcome(
-            "没有配置外部大模型：接口地址、模型名、密钥三项要在设置页填齐。这一次一分钱没花",
+            ai_gateway.not_configured_message(),
             request_sent=False, billed=False, model=model, trade_date=trade_date,
         )
     row = get_board(session, trade_date)
@@ -741,7 +741,7 @@ class DailyRankRunner:
 
     def start(self, trade_date: str) -> dict:
         if not ai_gateway.ai_ready():
-            raise ai_gateway.AiNotConfigured("没有配置外部大模型：接口地址、模型名、密钥三项要在设置页填齐")
+            raise ai_gateway.not_configured()
         started_at = _now_iso()
         with self._state_lock:
             if self._current is not None:

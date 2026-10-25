@@ -114,6 +114,17 @@ AI_REPORT_TTL_SECONDS = 600.0
 #: 页面轮询的间隔，也是「读数不靠重进页面」的那一拍。
 AI_POLL_SECONDS = 2.0
 
+# 多套大模型网关清单（`ai_sources.json`）
+#: 清单里最多能存几条自建网关。这一张表是整份重写的，条数没有上限的话
+#: 一次误操作存进上百条，页面既画不完也挑不出要点哪一条。
+AI_SOURCE_MAX = 20
+#: 名字的最长字数。名字是页面上认网关的唯一线索，也是日志里唯一允许出现的那一列。
+AI_SOURCE_NAME_MAX = 40
+
+# 每日 JSON 快照（模型记忆与误判库）
+#: 往前数连板时最多看多少个交易日。逐日查库里真有行的日子，窗口开大了纯属浪费。
+MEMORY_STREAK_LOOKBACK_DAYS = 15
+
 # 涨幅报警
 ALERT_POPUP_PERCENT = 3.0
 ALERT_PIN_PERCENT = 6.0

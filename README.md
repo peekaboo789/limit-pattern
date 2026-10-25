@@ -139,7 +139,7 @@ flowchart LR
 | 时间 | 做什么 |
 | --- | --- |
 | 10:00 | 把当时那份相似榜前 100 行备成当天 AI 固定榜的输入。只算本系统自己的数，一分钱不花、一次网关都不敲；那天不是交易日时会被「交易日必须是今天」那道闸挡回来，原因写进日志 |
-| 17:10 | 同步当天行情，写完接着清理过期明细、跑一遍十四项数据质量检查，并重写当天总结 |
+| 17:10 | 同步当天行情，写完接着清理过期明细、跑一遍十四项数据质量检查，然后对账并落当天的两份 JSON 快照（模型记忆与误判库，顺带回填上一交易日），最后重写当天总结。快照这一拍不敲网关，跑不成会在同步完成那句消息里说破，不会安静地变成 0 |
 | 17:40 | 再清理一次过期明细 |
 | 18:10 | 当天总结如果还没有，补写一份。同步仍在跑时跳过 |
 
@@ -177,7 +177,9 @@ flowchart LR
 | ✅ | 形态聚类：把样本池里已涨停的三日形态分成几组，组名由组内真实特征中位数生成；另算「这只股票今天的形态最像哪一组」 |
 | ✅ | 每日 AI 固定榜：每天上午 10:00 凑好那 100 行输入（一分钱不花）、页面上点一次才让模型排出前 20 名，第二天盘中就盯这几名。它不是按历史发生率挑的预测池，也不给涨停概率 |
 | ✅ | AI 深度分析：多条证据交给模型写结论，数字仍须能对回本地统计；整榜分析和单只直评都有，页面不给模型编的数留位置 |
-| ⏳ | 多个 AI 网关切换、行业题材、封板时间、Docker 镜像 |
+| ✅ | AI 网关清单：设置页可以存多套地址/模型/密钥并一键「设为当前」，整榜分析、单只直评、每日固定榜三条花钱链路一起跟着换；密钥只写不回显，地址打码，**切换本身不敲网关、一分钱不花** |
+| ✅ | 每日对账与模型记忆快照：收盘后自动跑一遍「对账 → 导当天 → 回填上一交易日」，把库里已有的东西渲染成 `model_memory/` 与 `failure_logs/` 一天两个 JSON；页面上看得见每条腿的结果、文件多大、哪天落的，缺的列直接说「本库没有这一列」，不填 0 |
+| ⏳ | 行业题材、封板时间、Docker 镜像 |
 
 聚类这一档三层都通了：`backend/app/algorithms/clustering.py` 在**与打分同一个加权空间**里做 KMeans、用轮廓系数挑分组数，组名来自组内样本真实特征的中位数加一张固定词表；`backend/app/services/cluster_service.py` 只吃 `limit_up_patterns` 里已落库的样本，归属那一路复用 `similarity.score_components`，全项目不产生第二把尺子；接口是 `/api/clusters/overview` 与 `/api/clusters/{code}`（见 `docs/api.md` 的「形态聚类与向量检索」一节），页面就是「形态聚类」那一页。向量检索另有 `algorithms/vector_index.py`：样本量大过 `FAISS_PAIR_THRESHOLD` 时走 faiss、否则走 numpy，两者都是精确检索、只换时间不换读数，所以这个开关既不在设置里也不在查询参数里。算不出来的时候它回 400 并报出缺几条样本、或回 200 带一句 `skipped_reason`，不给一个编出来的分组。
 
@@ -187,7 +189,11 @@ flowchart LR
 
 同一档里落库的那四条重建线共用一个后台槽位（`backend/app/services/data_job.py`）：一次只允许一个任务写 SQLite，撞车时页面拿到一句「谁在占用」而不是两边 500。样本、匹配、训练读的是闸门里的 **error** 级账目——warning 只记账不拦路，因为公开源常常只给量不给额，把「没有成交额」判成 error 等于把整个源判死。差的两块页面是消费方，不是接口：`GET /api/matches/summary`（某一天全市场汇总的分页）和 `GET /api/patterns/top` 已经有测试但页面上还没用上，股票详情页排在档 6。
 
-最后一行那四件是一件都没有：设置里只有单套地址、模型、密钥，没有可切换的网关清单；行业题材没有数据源，页面上那个「板块」是交易所板块（主板、创业板）不是行业；封板时间日线里给不出来，`first_limit_time` 永远是 null、涨停池那一列永远显示「—」；仓库里没有 Dockerfile，也没有 compose 文件。
+网关清单住在数据目录里的 `ai_sources.json`，**不是数据库表**：它没有行情外键、不该跟着日期重建，也不归 `purge` 那一路删。清单第一条是内置那行「设置页里那三项」，它是设置页三个输入框的别名而不是第四套配置，所以不给改、不给删、也不占那 20 个格子（页面上的 `N / 20` 读的是后端 `custom_count`，前端不自己数）。真正生效的那一家由 `ai_gateway.ai_config()` 解析，整榜、单股直评、每日固定榜三条付费路径都从这一个口取配置——不存在「切了源、只有某一条还在打老地址」的第二条路。没配齐时三条路回同一句缺了什么、并说清「这一次一分钱都没花」。写回的地址带 `***` 直接拒，免得页面把打码回显当真地址存进去、把真令牌换成星号。
+
+快照那一路（`backend/app/services/ai_memory_service.py`）只渲染不造数据：判据仍是 `ai_picks` 那一份，本库没有落过的列（涨停时间、封板次数、打开次数）在文件里**根本没有对应的键**而不是值为 0，这件事由跟着接口一起回的 `field_gaps` 说破，其中「有没有真落过」是现读库数出来的。每天导**两个**日子（当天加上一个交易日），因为只导当天会让上一天的 `next_day` 永远是空的、样本配不成对。某一条腿失败时回包给 `null` 而不是空对象，另外两条腿的结果照常带回，页面把 `errors` 显示出来——手动点的那一次和定时自动跑的那一拍调的是同一个函数。
+
+⏳ 那三件仍然一件都没有：行业题材没有数据源，页面上那个「板块」是交易所板块（主板、创业板）不是行业；封板时间日线里给不出来，`first_limit_time` 永远是 null、涨停池那一列永远显示「—」；仓库里没有 Dockerfile，也没有 compose 文件。
 
 ## 界面设计方向
 
@@ -254,7 +260,9 @@ flowchart LR
 
 数据区：保留交易日（3 到 30）、固定为 3 且不能改的对比窗口、四个数据源按钮（自动、东方财富、腾讯、新浪）、实际连上的源、上次同步、上次清理。
 
-AI 区：模型解读是算出来的状态，地址、模型和密钥都有才算启用。密钥只写入，不回显；留空表示不改。没配齐时总结仍会生成。
+AI 区：上半是**下一次请求真正用的那一家**（模型解读、生效网关、生效地址、生效模型四行读数），下半才是表单那三格。这两套可以不是同一家——生效那几行跟着网关清单走，那三格只改内置那条「设置页里那三项」。密钥只写入，不回显；留空表示不改。没配齐时总结仍会生成。
+
+大模型网关区是一张表：`N / 20 条 · 当前「…」` 的计数、名称、模型、打码后的地址、密钥有没有、三件套齐不齐，操作列是「设为当前 / 编辑 / 删除」，正在生效那行的删除是灰的，内置那行不给改不给删。加一条或换一条都不会敲网关，表下面写明了这一点；改完就地重读设置，上面那四行读数当场跟着变，不需要重进页面。编辑态不预填地址：回显是打码的，原样存回去等于把真令牌换成星号。
 
 ![设置：四个数据源](docs/images/settings.png)
 
@@ -299,6 +307,12 @@ AI 区：模型解读是算出来的状态，地址、模型和密钥都有才�
 再下面是散点图（每条样本一个点、每组一个菱形质心，只用来看着分不分得开，不参与任何计算）、分组数评估表（每一档的轮廓系数与采用与否），最后是目标股归属：填一个代码，表格列出每个形态组的组内均分、组内最高分、过高分线的条数和组内最像的几条样本，上面一句写着归进哪一组、领先次优组几分。分组数那格改了，这一整页就地重算，归属表跟着用同一个分组数。
 
 样本池不足四条时这一页拿到的是 400，页面上直接显示「只有 N 条…先在数据管理页重建涨停样本」；目标股凑不齐三天行情时归属那块显示后端给的那句原因，不给一个编出来的组。
+
+### 每日 AI 固定榜
+
+四块。「两段账」是那两条腿——`备好输入（不花钱）` 本系统自己算，`排出前 20 名（花钱）` 是全页唯一按 token 付钱的按钮，没配齐网关时它是灰的。「它的历史账」按判据日列出说过几条、命中几条、命中率多少，顶上那颗 `当场补一次对账` 只读库。
+
+「每日 JSON 快照」读的是 `model_memory/` 与 `failure_logs/` 两个目录：一天一行，写有没有模型记忆文件、多大、误判库多大、什么时候落的，目录路径和库里最新行情日摆在表下，字段缺口（本库没有的那些列）照接口回包原样列出来。`跑一遍对账与快照` 点下去跑的是收盘后那一拍同一个函数，回包里的三条读数（本轮定判几条 / 落了哪天 / 有没有回填上一交易日）就地并进这页的读数，不回头重 fetch；哪条腿没跑成就在告警里写哪条腿，另外两条腿的数照常留着。「备过的日子」是输入留档，只保留 90 天。
 
 ### 后续页面怎么排
 
@@ -361,7 +375,7 @@ npm run build
 | 项 | 默认 | 说明 |
 | --- | --- | --- |
 | 地址 | `127.0.0.1:8765` | 只绑本机。端口被占用时桌面程序会往后换 |
-| `LP_DATA_DIR` | Windows：`%LOCALAPPDATA%\LimitPattern`；其它：`~/.limit_pattern` | 里面有 `lp.db`、`settings.json`、`summaries/`、`exports/`、`logs/` |
+| `LP_DATA_DIR` | Windows：`%LOCALAPPDATA%\LimitPattern`；其它：`~/.limit_pattern` | 里面有 `lp.db`、`settings.json`、`ai_sources.json`、`summaries/`、`exports/`、`model_memory/`、`failure_logs/`、`logs/` |
 | `LP_STATIC_DIR` | 仓库里的 `frontend/dist` | 有 `index.html` 才挂网页 |
 | `LP_SCHEDULER` | 开启 | 设为 `0` 关闭 10:00、17:10、17:40、18:10 |
 | `LP_AUTO_SYNC` | 开启 | 设为 `0` 时，空库启动也不自动同步 |
@@ -371,13 +385,14 @@ npm run build
 | 数据源 | `auto` | 也可指定 `eastmoney`、`tencent`、`sina`。`auto` 遇到 5xx 或限流会逐只换下一个源 |
 | `EXCLUDED_BOARDS` | `star` | 默认剔除科创板。设成空字符串才重新纳入。设置页显示当前范围 |
 | AI 地址 / 模型 / 密钥 | 空 | 没填齐仍写统计总结。密钥不回显 |
+| AI 网关清单 | 只有内置那行 | 最多 20 条，存在 `ai_sources.json`；`active_id` 决定下一次请求真正打哪一家。名称最长 40 字，密钥不回显，切换不敲网关 |
 
 环境变量示例在 `.env.example`。密钥不要写进仓库。
 
 ## 目录结构
 
 ```
-backend/          接口、三个行情源、涨停判定、相似度、聚类与向量检索、总结、导出、质量闸门、四条重建线
+backend/          接口、三个行情源、涨停判定、相似度、聚类与向量检索、总结、导出、质量闸门、四条重建线、网关清单与每日快照
 frontend/         Vue 页面。构建产物在 frontend/dist
 desktop/          Windows 启动器、托盘、PyInstaller
 scripts/          打包脚本
@@ -392,6 +407,9 @@ requirements.txt  Python 依赖
 ```
 lp.db
 settings.json
+ai_sources.json
+model_memory/YYYY-MM-DD.json
+failure_logs/YYYY-MM-DD.json
 summaries/YYYY-MM-DD.json
 exports/*.txt
 logs/launcher.log
@@ -401,6 +419,6 @@ logs/launcher.log
 
 基址 `http://127.0.0.1:8765`。成功时直接返回 JSON。失败时 HTTP 4xx/5xx，正文是 `{"detail": "中文说明"}`。日期是 `YYYY-MM-DD`，股票代码是 6 位。
 
-常用路径：`/api/health`、`/api/settings`、`/api/sync`、`/api/sync/status`、`/api/limitups`、`/api/pool`、`/api/kline`、`/api/similarity`、`/api/scan`、`/api/summaries`、`/api/export`。质量那一组是 `/api/quality/summary`、`/api/quality/check`、`/api/quality/errors`、`/api/quality/purge`，四个都不敲任何上游。回测那一组是 `/api/backtest/run`、`/api/backtest/status`、`/api/backtest/latest`、`/api/backtest/runs`、`/api/backtest/runs/{id}`、`/api/backtest/observations`，删一轮用 `DELETE /api/backtest/runs/{id}`；预测池是 `/api/prediction/pool`。重建那一组是 `/api/data/status`、`/api/data/job`、`/api/data/rebuild-features`、`/api/data/rebuild-patterns`、`/api/data/scan-market`、`/api/data/build-training`、`/api/data/skips`，四个任务只写 SQLite、不读网络，槽位只有一个。样本那一组是 `/api/patterns/overview`、`/api/patterns/top`、`/api/patterns/{code}`；匹配那一组是 `/api/matches/summary`、`/api/matches/{code}`（GET 读库、POST 现算）、`/api/matches/compare`、`/api/matches/export`；聚类那一组是 `/api/clusters/overview`（分组）与 `/api/clusters/{code}`（目标股归属）。盘中那一组是 `/api/realtime/top`、`/api/realtime/status`、`/api/realtime/intraday-watch`、`/api/realtime/intraday-watch/ack`；AI 那一组是 `/api/ai/analysis`、`/api/ai/single/{code}`、`/api/ai/reports`、`/api/ai/picks*`、`/api/ai/daily-rank*`。AI 组里只有三颗按钮花钱：整榜分析、单股直评、每日固定榜的「排出名次」；其余 AI 路径和本系统所有行情路径都不敲网关。回测、预测池、质量四件、样本与匹配那两组、聚类那两条只读库里已经同步的行情与落库的样本，零成本。
+常用路径：`/api/health`、`/api/settings`、`/api/sync`、`/api/sync/status`、`/api/limitups`、`/api/pool`、`/api/kline`、`/api/similarity`、`/api/scan`、`/api/summaries`、`/api/export`。质量那一组是 `/api/quality/summary`、`/api/quality/check`、`/api/quality/errors`、`/api/quality/purge`，四个都不敲任何上游。回测那一组是 `/api/backtest/run`、`/api/backtest/status`、`/api/backtest/latest`、`/api/backtest/runs`、`/api/backtest/runs/{id}`、`/api/backtest/observations`，删一轮用 `DELETE /api/backtest/runs/{id}`；预测池是 `/api/prediction/pool`。重建那一组是 `/api/data/status`、`/api/data/job`、`/api/data/rebuild-features`、`/api/data/rebuild-patterns`、`/api/data/scan-market`、`/api/data/build-training`、`/api/data/skips`，四个任务只写 SQLite、不读网络，槽位只有一个。样本那一组是 `/api/patterns/overview`、`/api/patterns/top`、`/api/patterns/{code}`；匹配那一组是 `/api/matches/summary`、`/api/matches/{code}`（GET 读库、POST 现算）、`/api/matches/compare`、`/api/matches/export`；聚类那一组是 `/api/clusters/overview`（分组）与 `/api/clusters/{code}`（目标股归属）。盘中那一组是 `/api/realtime/top`、`/api/realtime/status`、`/api/realtime/intraday-watch`、`/api/realtime/intraday-watch/ack`；AI 那一组是 `/api/ai/analysis`、`/api/ai/single/{code}`、`/api/ai/reports`、`/api/ai/picks*`、`/api/ai/daily-rank*`；网关清单是 `/api/ai-sources` 和 `/api/ai-sources/{id}`、`/api/ai-sources/{id}/active`；每日快照是 `/api/ai-memory/summary`、`/api/ai-memory/days`、`/api/ai-memory/export`、`/api/ai-memory/run`。AI 组里只有三颗按钮花钱：整榜分析、单股直评、每日固定榜的「排出名次」；其余 AI 路径和本系统所有行情路径都不敲网关——**切换网关也只改一个文件里的指向，不发一次探活**。回测、预测池、质量四件、样本与匹配那两组、聚类那两条、网关清单与快照那两组只读库里已经同步的行情与落库的样本，零成本。
 
 每个路径的查询参数和字段见 [docs/api.md](docs/api.md)。

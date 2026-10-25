@@ -502,7 +502,11 @@ def test_gateway_scrubs_the_key_out_of_failures(ai_client):
 
 
 def test_unconfigured_ai_is_refused_before_any_request(ai_client):
-    """三项没配齐 = 一次请求都不发，也不是 500。"""
+    """三件套没配齐 = 一次请求都不发，也不是 500。
+
+    那句话必须点名「当前生效的是哪一条网关」并列出缺的哪几样：清单能切到自建那一条，
+    只说「去填设置页」会把人支到另一条网关上，补齐了照样 401。
+    """
     from backend.app.services import ai_gateway
 
     client = ai_client["client"]
@@ -511,7 +515,10 @@ def test_unconfigured_ai_is_refused_before_any_request(ai_client):
         ai_gateway.call_model([{"role": "user", "content": "x"}])
     refused = client.post("/api/ai/analysis")
     assert refused.status_code == 400
-    assert "没有配置" in refused.json()["detail"]
+    detail = refused.json()["detail"]
+    assert "设置页里那三项" in detail
+    assert "缺的是网关地址、模型名、密钥" in detail
+    assert "一分钱都没花" in detail
 
 
 # --- 盘中整榜分析 ------------------------------------------------------------

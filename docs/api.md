@@ -5,7 +5,7 @@
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | GET | `/api/health` | `status`、`version`、`data_date`、`data_source`、`active_source`、`exports_dir` |
-| GET | `/api/settings` | 保留天数、对比窗口、AI 是否启用、地址、模型、密钥是否已填、数据源（`auto` / `eastmoney` / `tencent` / `sina`）、实际使用的源、纳入范围 `market_scope`、`excluded_boards`、上次同步、上次清理 |
+| GET | `/api/settings` | 保留天数、对比窗口、AI 是否启用、地址、模型、密钥是否已填、数据源（`auto` / `eastmoney` / `tencent` / `sina`）、实际使用的源、纳入范围 `market_scope`、`excluded_boards`、上次同步、上次清理。另给 `ai_active_*`（id / 名称 / 打码地址 / 模型 / 密钥有没有）与 `ai_source_count`：那三格是**表单要编辑的**，`ai_active_*` 是**下一次请求真正用的**，两者可以不是同一家 |
 | PUT | `/api/settings` | 修改可写项。`ai_api_key` 只写入、不回显。对比窗口传了非 3 会 422 |
 | POST | `/api/sync` | 后台同步，返回 `{"task_id": "..."}` |
 | GET | `/api/sync/status` | `running`、`progress`（0–100）、`message`、`last_sync_at`、`last_sync_sources`（上一轮的出数来源账） |
@@ -33,6 +33,15 @@
 | POST | `/api/ai/daily-rank/rank?date=` | 排出前 20 名：这一页唯一会花钱的接口。没有备好的输入回 409，没配网关回 400 |
 | GET | `/api/ai/daily-rank/status` | 只问「在不在跑」，不碰库——页面上 2 秒一拍读的就是这个 |
 | GET | `/api/ai/daily-rank/history?limit=15` | 最近排过的几份榜。`limit` 1 到 60 |
+| GET | `/api/ai-sources` | 大模型网关清单：每条的名称、模型、**打码后的**地址、密钥有没有、是否 `complete`、哪一条 `active`，加 `file_path`、`max_sources`、`custom_count`（占格子的条数，内置那行不算）与「文件读坏了」那句话。密钥永不回传 |
+| POST | `/api/ai-sources` | 加一条网关（`name`/`base_url`/`model`/`api_key`）。**不会顺手把它设成当前**；超过 20 条、名称超 40 字、带 `***` 的地址都回 422 |
+| PUT | `/api/ai-sources/{source_id}` | 改一条，留空的列沿用原值；全留空 422。内置那条「设置页里那三项」不给改（422） |
+| DELETE | `/api/ai-sources/{source_id}` | 删一条。正在生效的那条要先切走（422），内置那条不给删（422） |
+| PUT | `/api/ai-sources/{source_id}/active` | 切换当前生效网关。当场生效、活过重启，整榜 / 单股直评 / 每日固定榜三条花钱链路一起跟着走。**这一步不敲网关** |
+| GET | `/api/ai-memory/summary` | 对账总账（判据日、定判数、命中率）+ 两份快照目录的现状与合计大小 + 这份快照自己的 `field_gaps`。只读库，零成本 |
+| GET | `/api/ai-memory/days` | `model_memory/` 与 `failure_logs/` 各自已经有哪些日子，带每个文件的字节数与落盘时刻 |
+| POST | `/api/ai-memory/export?date=` | 生成或重生成某一天的两份 JSON（临时文件 + rename）。多点一次只是重写同一天，不多出一份样本，也不碰别的日子。库里没行情 404，未来日期 400 |
+| POST | `/api/ai-memory/run?date=` | 手动跑收盘后那条闭环：对账 → 导当天 → 回填上一交易日。与每日流水线调的是同一个函数。失败不包成 500，半截状态原样回 `errors` |
 | POST | `/api/backtest/run?start=&end=&split_ratio=&max_days=` | 起一轮回测（后台线程）。不传区间吃库里全部已同步行情；`split_ratio` 0.1 到 0.9；`max_days` 1 到 60，用来先跑短一段。区间反了回 422，区间里没行情回 404。回 `task_id`、`already_running`、`days_total`、`running`、`progress`、`message`、`run_id` |
 | GET | `/api/backtest/status` | 后台那一轮跑到哪了：`running`、`progress`、`phase`、`message`、`task_id`、`days_done`、`days_total`、`current_date`、`error`、`run_id`。不碰库 |
 | GET | `/api/backtest/latest` | 最近一次**已完成**的回测（`run`，没有是 null）、概率列底表（`probability`）、最近 20 行台账（`runs`）、`disclaimer` |
@@ -329,6 +338,54 @@
 测试里那条逐元素比对判据配了这个负向控制。实测这一批数据上两种后端的距离最大差在 `4e-6` 量级
 （float32 转换那一档），换成欧氏分是 `5e-5` 分，落在两位小数与分档阈值边界之外。
 
+## 多套网关清单与「当前生效」
+
+清单落成一个 JSON 文件（`ai_sources.json`，跟 `settings.json` 同一个数据目录），**不是表**：
+它没有行情外键、不需要跟着日期重建，也不该被 `POST /api/quality/purge` 那一类删派生数据的动作碰到。
+`core/ai_sources.py` 是它唯一的读写口。
+
+清单第一条永远是内置那行 `SETTINGS_SOURCE_ID = "settings"`，显示名「设置页里那三项」——它不是复制来的第四套配置，
+而是**指向设置页那三个输入框的别名**。改那三格走 `PUT /api/settings`，改这一行走 `PUT /api/ai-sources/settings`，
+两边写的是同一份 `settings.json` 字段；这一行不给删、不给改（422），也永远数在 `max_sources` 之外。
+
+三条硬规矩：
+
+- **密钥只进不出**。`describe()` 里每行只有 `key_present` 布尔值，地址过 `mask_url_secret()`——尾段像令牌
+  （含数字）才打码成 `sk-***`，普通 `/v1` 结尾原样留着。写回时带 `***` 的地址直接 422，
+  免得页面把打码回显当成真地址存一遍，把真令牌换成星号。测试里这条配了负向控制：
+  `process_rate_limit_exceeded` 这种不含数字的尾段必须**不被**打码，否则「打码」等于「抹平一切」。
+- **切网关不敲网关**。`PUT /api/ai-sources/{id}/active` 只改文件里的 `active_id` 和内存缓存，
+  一次请求都不发。这一条是有意和老工程分开的：那边切源顺手发一次探活，等于替用户花一次 token。
+- **一处生效，三条链路共用**。整榜（`/api/ai/analysis`）、单股直评（`/api/ai/single/{code}`）、
+  每日固定榜（`/api/ai/daily-rank/rank`）都从 `ai_gateway.ai_config()` 拿配置，
+  而 `ai_config()` 先问 `active_source()`。所以「页面上切了源、只有某一条链路还在打老地址」这种事
+  没有第二条路可走。没配齐时三条路都回同一句 `not_configured_message()`，说清缺的是哪几项、
+  以及「这一次一分钱都没花」。
+
+`GET /api/settings` 因此回两套字段：`ai_base_url` / `ai_model` / `ai_api_key_set` 是表单那三格现在的值，
+`ai_active_*` 是下一次请求真正用的那一家。两者不一致时页面上必须都画出来——设置页上面四行读 `ai_active_*`，
+下面三格是表单，网关表格里内置那行的名称就是「设置页里那三项」。
+
+## 每日对账与模型记忆 JSON 快照
+
+`services/ai_memory_service.py` 只做两件事：**把库里已有的东西渲染成一天两个文件**，
+以及**跑一遍已有判据的对账**。它自己不产生任何判据、不敲任何网关。
+
+- 对账判据仍是 `ai_picks` 那一份（判据日 = 推荐日之后库里第一个交易日、`pending` 不进分母、
+  没什么可判时命中率是 `null`），这里不重写第二把尺子。
+- 落盘的日子是**两个**：当天，加上上一个交易日。只导当天会让上一天的 `next_day` 永远是空的——
+  样本配不成对，文件攒再多也攒不出「说过什么、后来对不对」。
+- 「只渲染，不造数据」是可验证的：本库从来没落过 `涨停时间 / 封板次数 / 打开次数` 这三列，
+  所以文件里**根本没有这三个键**，不是值为 0。这条由 `field_gaps` 跟着接口一起回，
+  并且缺口清单里凡是「这一列有没有真的落过」的判断都走 `_null_counts` 现读库，不是抄一段固定文案。
+- **没做成是 `null`，不是空对象**。`run_memory` 的回包先给 `reconcile` / `export_today` /
+  `export_previous` 留 `None`：页面读到 `{}` 会当成「跑了，0 条」，读到 `null` 才知道那一步根本没成。
+  某一条腿抛异常只进 `errors`，另外两条腿的结果照常带回——半截状态比整体失败有信息量，
+  所以 `POST /api/ai-memory/run` 不把它包成 500（`…/export` 只有导出这一条腿，失败了才包）。
+- 多点一次只是把同一天那两份重写一遍（临时文件 + `os.replace`），不会多出一份样本，也不会碰别的日子。
+- 每日流水线里挂钩的是同一个函数（`sync_service._memory_pass`），所以「手动点一次」和「等自动那一拍」
+  不是两套代码。
+
 ## 时间只有一个挂钟
 
 全项目只认东八区（`core/clock.py` 里 `SHANGHAI = UTC+8`，不读系统时区）。写进**不带时区**的列
@@ -345,6 +402,16 @@
 那一页下面多了一块「库里落库明细」，选中左侧样本时右侧多一块「逐日对比」。
 `/api/clusters/overview` 与 `/api/clusters/{code}` 落在「形态聚类」页（`/clusters`）：统计卡、组列表、组画像与成员、
 散点图、分组数评估、目标股归属。页面上的分组数下拉与 `k` 是一件事，改下拉就地重算，两处（分组表与归属表）吃同一个 `k`。
+
+`/api/ai-sources` 那五条落在「设置」页（`/settings`）的「大模型网关」这张表：计数、加一条、改一条、删一条、
+设为当前都在同一页就地重算，`submitGateway` 每次改完都 `await loadSettings()`，所以上面「AI 总结」那四行
+（生效网关 / 生效地址 / 生效模型 / 模型解读）跟着清单一起变，不需要重进页面。
+表里正在生效那行的「删除」按钮是灰的，绕过按钮直接 `DELETE` 也回 422——两道闸各挡各的，都在测试里。
+
+`/api/ai-memory/*` 那四条落在「每日 AI 固定榜」页（`/ai-rank`）的「每日 JSON 快照」这块：汇总读数、
+按日文件表、两个目录路径与库里最新行情日；「跑一遍对账与快照」把 `POST /api/ai-memory/run` 的回包
+（本轮定判 / 落某天 / 回填上一交易日三条读数与 `errors`）直接并进 store，不再回头 refetch 一遍——
+谁跑出这些数，谁把它们交出去。`onVisibility()` 那一拍也读 `loadAiMemory()`，切回标签页时读数是新的。
 
 两条还没有消费方：`GET /api/patterns/top`（接口通、有测试，页面上首屏读的是 `overview`）与
 `GET /api/matches/summary`（某一天全市场汇总的分页）。后者是股票详情页与列表页要用的那一份，排在路线图的档 6。

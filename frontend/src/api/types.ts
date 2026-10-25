@@ -16,6 +16,13 @@ export interface Settings {
   ai_base_url: string
   ai_model: string
   ai_api_key_set: boolean
+  /** 当前生效的那一条网关（清单里 id=settings 时就是上面三格）。 */
+  ai_active_id?: string
+  ai_active_name?: string
+  ai_active_base_url?: string
+  ai_active_model?: string
+  ai_active_key_present?: boolean
+  ai_source_count?: number
   data_source: string
   data_source_options?: string[]
   active_source?: string
@@ -1477,5 +1484,94 @@ export interface ClusterAssignmentOut {
   window: string[]
   skipped_reason: string | null
   high_band: number
+  disclaimer: string
+}
+
+// --- 档5：多套大模型网关清单（/api/ai-sources）---
+
+export interface AiSourceRow {
+  id: string
+  name: string
+  /** 已打码：写在路径里的那把 key 只会以 `sk-***` 的形状回来，原值只进不出。 */
+  base_url: string
+  model: string
+  key_present: boolean
+  active: boolean
+  /** 「设置页里那三项」那一条：改不了也删不了，只能切过去。 */
+  builtin: boolean
+  /** 地址、模型、密钥三项齐不齐——后端 `ai_ready()` 判的就是这一格。 */
+  complete: boolean
+}
+
+export interface AiSourcesResponse {
+  sources: AiSourceRow[]
+  active_id: string
+  active_name: string
+  file_path: string
+  max_sources: number
+  /** 能被删改的那几条的数量（内置那行不占 `max_sources`）。计数由后端出，页面不再自己 filter。 */
+  custom_count: number
+  name_max: number
+  note: string
+  disclaimer: string
+}
+
+export interface AiSourcePayload {
+  name?: string
+  base_url?: string
+  model?: string
+  api_key?: string
+}
+
+// --- 档5：每日 JSON 快照（/api/ai-memory）---
+
+export interface MemoryDayFile {
+  date: string
+  bytes: number
+  written_at: string
+}
+
+export interface MemoryDirectory {
+  dir: string
+  exists: boolean
+  days: MemoryDayFile[]
+  day_count: number
+  total_bytes: number
+}
+
+export interface AiMemoryDays {
+  model_memory: MemoryDirectory
+  failure_logs: MemoryDirectory
+}
+
+export interface AiMemoryExportResult {
+  trade_date: string
+  memory_file: string
+  memory_bytes: number
+  memory_samples: number
+  failure_file: string
+  failure_bytes: number
+  failure_cases: number
+  picks: number
+  error: string
+  export?: AiMemoryDays
+}
+
+export interface AiMemoryRunResult {
+  trade_date: string
+  reconcile: { judged: number; hits: number; misses: number; still_pending: number; checked_at: string } | null
+  export_today: AiMemoryExportResult | null
+  /** 库里上一个交易日还没有行情时是 null，不是空对象。 */
+  export_previous: AiMemoryExportResult | null
+  errors: string[]
+  export: AiMemoryDays
+  check: PicksSummary
+}
+
+export interface AiMemorySummary {
+  check: PicksSummary
+  export: AiMemoryDays
+  field_gaps: string[]
+  latest_quote_date: string | null
   disclaimer: string
 }

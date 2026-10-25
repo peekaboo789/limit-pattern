@@ -1,6 +1,8 @@
 """大模型网关。三条付费链路（盘中整榜、每日固定榜、单股直评）都走这一条路。
 
-设置里那三项（接口地址、模型名、密钥）就是全部配置，页面上没有第二处能改。
+用哪一家由 `core/ai_sources.py` 那张清单决定：设置页那三格是清单第一条，页面上自建的那几条
+是后面的，`active_id` 指到哪一条，这一层就敲哪一条。业务代码只问 `ai_config()` 要一套
+自洽的「地址 + 模型名 + 密钥」，不在这里再判一次「谁在用」。
 这里刻意不发 `max_tokens`：老工程实测推理型模型会把输出预算全花在思考上，
 带上 800 的回车只给回 200 字节的空正文，那种失败在页面上说不清楚。
 
@@ -16,7 +18,8 @@ from typing import Any, Callable
 
 import httpx
 
-from backend.app.core.config import read_settings_file, scrub_secrets
+from backend.app.core import ai_sources
+from backend.app.core.config import scrub_secrets
 from backend.app.core.constants import (
     AI_PROGRESS_STEP_CHARS,
     AI_RETRY_WAIT_LIMIT_SECONDS,
@@ -32,7 +35,31 @@ logger = get_logger("ai_gateway")
 
 
 class AiNotConfigured(RuntimeError):
-    """三项设置没配齐。这种失败一分钱都不会花，页面上要这么写。"""
+    """当前那一条网关的三件套没配齐。这种失败一分钱都不会花，页面上要这么写。"""
+
+
+#: 三件套在页面上的名字。缺哪一样就说哪一样，别让人去猜是地址还是钥匙。
+_CONFIG_LABELS = {"base_url": "网关地址", "model": "模型名", "api_key": "密钥"}
+
+
+def not_configured_message() -> str:
+    """「没配齐」那句唯一的一句话：当前是哪一条网关、缺的哪几样、这一趟花没花钱。
+
+    为什么不是一句固定的「三项要在设置页填齐」：清单里那十几条自建网关各有各的三件套，
+    用户可能正指着清单第三条——告诉他「去填设置页」会把他支到另一条网关上去，
+    补齐了照样 401。四条链路（整榜、直评、固定榜、每日总结）以前各写一份这句话，
+    现在都从这里读。
+    """
+    config = ai_config()
+    missing = [_CONFIG_LABELS[key] for key in _CONFIG_LABELS if not config.get(key)]
+    return (
+        f"当前生效的网关是「{config['source_name'] or '没起名的那一条'}」，"
+        f"缺的是{'、'.join(missing)}——补齐才敲得出去，这一次一分钱都没花"
+    )
+
+
+def not_configured() -> AiNotConfigured:
+    return AiNotConfigured(not_configured_message())
 
 
 class AiGatewayError(RuntimeError):
@@ -72,11 +99,19 @@ def carry(message: str, error: "AiGatewayError") -> "AiGatewayError":
 
 
 def ai_config() -> dict[str, str]:
-    settings = read_settings_file()
+    """当前生效那一条网关的三件套。
+
+    读的是 `ai_sources.resolve_config()`——设置页那三格与清单里自建的那十几条都从这
+    一只手出去，所以三条付费链路（整榜、单股直评、固定榜排名）跟着页面上「当前」那一条走，
+    这里不存在第二份「谁在用」的判断。
+    """
+    config = ai_sources.resolve_config()
     return {
-        "base_url": str(settings.get("ai_base_url") or "").strip().rstrip("/"),
-        "model": str(settings.get("ai_model") or "").strip(),
-        "api_key": str(settings.get("ai_api_key") or "").strip(),
+        "base_url": config["base_url"].rstrip("/"),
+        "model": config["model"],
+        "api_key": config["api_key"],
+        "source_id": config["source_id"],
+        "source_name": config["source_name"],
     }
 
 
@@ -103,6 +138,16 @@ def _headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
 
+def _scrub(text: object) -> str:
+    """把这一趟可能撞见凭据的文案抹干净。
+
+    名单里要给全：清单上那十几条网关各有一把钥匙，报错文案出自哪一条只有调用方清楚，
+    而「上游把请求 URL 原样回显」这种事不会挑那一条正在用的。收在这一个函数里，
+    三个调用点（HTTP 错误体、流式中途报错、重发日志）就不会各写一份名单。
+    """
+    return scrub_secrets(str(text or ""), keys=ai_sources.known_keys())
+
+
 def _usage_of(payload: dict) -> dict[str, Any]:
     """把上游的 usage 归成一个固定形状。上游没给的项留 null，不补 0。"""
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
@@ -120,7 +165,7 @@ def _usage_of(payload: dict) -> dict[str, Any]:
 
 
 def _failure(status: int, snippet: str) -> str:
-    text = scrub_secrets(snippet[:400]).strip()
+    text = _scrub(snippet[:400]).strip()
     return f"上游 HTTP {status}" + (f"：{text}" if text else "")
 
 
@@ -230,7 +275,7 @@ def _stream_attempt(config: dict[str, str], body: dict, timeout: httpx.Timeout,
                     error = chunk.get("error")
                     if error:
                         raise AiGatewayError(
-                            scrub_secrets(f"流式中途报错：{json.dumps(error, ensure_ascii=False)}")[:1000]
+                            _scrub(f"流式中途报错：{json.dumps(error, ensure_ascii=False)}")[:1000]
                         )
                     choices = chunk.get("choices") or []
                     if not choices:
@@ -291,7 +336,7 @@ def call_model(
     """
     config = ai_config()
     if not (config["base_url"] and config["model"] and config["api_key"]):
-        raise AiNotConfigured("没有配置外部大模型：接口地址、模型名、密钥三项要在设置页填齐")
+        raise not_configured()
     body: dict[str, Any] = {
         "model": config["model"],
         "temperature": 0.2,
@@ -334,7 +379,7 @@ def call_model(
                 ) from None
             logger.info(
                 "上游在做结论之前把这趟挡了回来（第 %s/%s 趟），等 %.0f 秒重发：%s",
-                attempts, AI_TRANSIENT_RETRY_ATTEMPTS, wait, scrub_secrets(str(error))[:160],
+                attempts, AI_TRANSIENT_RETRY_ATTEMPTS, wait, _scrub(str(error))[:160],
             )
             time.sleep(wait)
 

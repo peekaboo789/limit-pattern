@@ -421,6 +421,15 @@ def _run(task_id: str) -> None:
         except Exception as exc:
             quality_note = f"，质量检查没有跑成：{exc or type(exc).__name__}"
             logger.exception("质量检查没有跑成")
+        #: 收盘后那两步收尾（对账 + 每日 JSON 快照）排在同步之后：判据读的是判据日那天的
+        #: `is_limit_up`，那个数只有等今天的行情落了库才存在。这一步不敲网关、不花钱。
+        memory_note = ""
+        try:
+            _set(progress=95, phase="memory", message="正在对账并落每日快照")
+            memory_note = _memory_pass(saved)
+        except Exception as exc:
+            memory_note = f"，对账与快照没有跑成：{exc or type(exc).__name__}"
+            logger.exception("对账与每日快照没有跑成")
         summary_note = "，当日总结没有写成"
         try:
             _set(progress=96, phase="summary", message="正在写当日总结")
@@ -462,10 +471,42 @@ def _run(task_id: str) -> None:
             saved=saved,
             failed=failed,
             active_source=read_settings_file().get("active_source") or active,
-            message=f"同步完成：写入 {saved} 只，失败 {failed} 只{switch_note}{quality_note}{summary_note}",
+            message=f"同步完成：写入 {saved} 只，失败 {failed} 只{switch_note}{quality_note}{memory_note}{summary_note}",
         )
     except Exception as exc:
         _set(running=False, progress=0, message=str(exc) or "同步失败")
+
+
+def _memory_pass(saved: int) -> str:
+    """对账 + 落当天与上一个交易日的两份 JSON，回一句给同步消息用的人话。
+
+    为什么排在同步之后：判据读的是判据日那天的 `is_limit_up`，那个数只有等今天的行情
+    落了库才存在。为什么导**两个**日子：当天那份里的 `next_day` 必然是空的（第二天还没开盘），
+    等明天再重写今天这一份，配对样本才配得上对——只导当天，样本库会永远停在一半。
+    一条行情都没落库（非交易日、或源还没出数）就直接跳过：那天没有判据可对。
+    """
+    if saved <= 0:
+        return "，今天一条行情都没落库，对账与快照跳过"
+    from backend.app.services import ai_memory_service
+
+    with session_scope() as session:
+        day = ai_memory_service.latest_quote_date(session)
+        if day is None:
+            return "，库里没有行情日，对账与快照跳过"
+        result = ai_memory_service.run_memory(session, day)
+    if result["errors"]:
+        return f"，对账与快照有 {len(result['errors'])} 项没做成：{('；'.join(result['errors']))[:120]}"
+    today_export = result.get("export_today") or {}
+    previous = result.get("export_previous") or {}
+    return (
+        f"，已对账并落 {day.isoformat()} 的快照（样本 {today_export.get('memory_samples', 0)} 条、"
+        f"误判 {today_export.get('failure_cases', 0)} 条）"
+        + (
+            f"，回填 {previous.get('trade_date')}（样本 {previous.get('memory_samples', 0)} 条）"
+            if previous
+            else "，库里没有更早的行情日可回填"
+        )
+    )
 
 
 def _quality_pass(names: dict[str, str]) -> dict:

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from backend.app import __version__
+from backend.app.core import ai_sources
 from backend.app.core.clock import today
 from backend.app.core.config import exports_dir, public_settings, update_settings
 from backend.app.services.export_service import content_disposition, render_export, save_copy
@@ -20,6 +21,7 @@ from backend.app.services.intraday_watch import watcher
 from backend.app.services.intraday_watch_store import TIERS
 from backend.app.services.realtime_tracker import RANK_METRICS, tracker
 from backend.app.services import ai_picks
+from backend.app.services import ai_memory_service
 from backend.app.services.ai_analysis_service import (
     board_runner,
     board_selection,
@@ -1092,3 +1094,117 @@ def clusters_assignment(
                 session, normalized, day, k=k, top_members=top_members
             )
         )
+
+
+# --- 多套大模型网关清单（档5）------------------------------------------------
+#
+# 一套网关 = 地址 + 模型名 + 密钥三件一起才能用，所以这一组接口按「源」整块增删改切换，
+# 不把它拆成三个字段塞进 `PUT /settings`（那会拼出「地址换了、钥匙没换」这种每次 401 的盘）。
+# 这一档一次网关都不敲：校验全在本地，钱只有页面上点分析那一下才花。
+
+
+def _sources(action) -> dict:
+    """校验不过就是 422 并带上为什么；坏在磁盘上是 500，不假装已经存好了。"""
+    try:
+        return action()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"清单存不进去：{type(exc).__name__}: {exc}") from exc
+
+
+@router.get("/ai-sources")
+def ai_sources_list() -> dict:
+    """清单 + 当前生效的是哪一条 + 落盘位置 +「文件是不是坏了」那句话。地址已打码，密钥不在这里。"""
+    return ai_sources.describe()
+
+
+@router.post("/ai-sources")
+def ai_sources_create(body: dict) -> dict:
+    """新增一条网关。不会顺手把它设成当前生效的那条——加源和换源是两件事。"""
+    return _sources(lambda: ai_sources.create_source(body or {}))
+
+
+@router.put("/ai-sources/{source_id}")
+def ai_sources_update(source_id: str, body: dict) -> dict:
+    """编辑一条网关；留空的列沿用原值。全留空是 422，不是「悄悄写一个空串进去」。"""
+    return _sources(lambda: ai_sources.update_source(source_id, body or {}))
+
+
+@router.delete("/ai-sources/{source_id}")
+def ai_sources_delete(source_id: str) -> dict:
+    """删一条网关。正在用的那条要先切走再删。"""
+    return _sources(lambda: ai_sources.delete_source(source_id))
+
+
+@router.put("/ai-sources/{source_id}/active")
+def ai_sources_activate(source_id: str) -> dict:
+    """一键切换：当场生效、活过重启，三条花钱链路一起跟着走。"""
+    return _sources(lambda: ai_sources.set_active(source_id))
+
+
+# --- 每日 JSON 快照：模型记忆与误判库（档5）----------------------------------
+#
+# 这一组只有「读」和「手动重跑」两类动作，**一分钱不花**：对账读的是已落的
+# `ai_pick_results` 与 `daily_quotes`，快照只是把这两处渲染成一天一个文件。
+# 账本本身（逐条 hit/miss、单股历史）仍然只在 `/api/ai/picks*` 那一路出，
+# 这里不重写第二份判据。
+
+
+@router.get("/ai-memory/summary")
+def ai_memory_summary() -> dict:
+    """对账总账 + 两份目录现状 + 这份快照自己的字段缺口。
+
+    `field_gaps` 跟着接口一起回，是为了让页面就地写清「涨停时间 / 封板次数 / 换手率
+    这些为什么没有」，而不是让人以为样本库里真有。
+    """
+    with session_scope() as session:
+        return ai_memory_service.summary(session)
+
+
+@router.get("/ai-memory/days")
+def ai_memory_days() -> dict:
+    """两份目录各自已经有哪些日子（文件名就是日子，页面按它判断「今天还没导出」）。"""
+    return ai_memory_service.list_exported_days()
+
+
+@router.post("/ai-memory/export")
+def ai_memory_export(date: str | None = None) -> dict:
+    """生成（或重生成）某一天的 `model_memory/` 与 `failure_logs/` 两份 JSON。
+
+    多点一次只是把同一天的两份文件重写一遍（临时文件 + rename），
+    不会因为多点了一次就多出一份样本，也不会碰到别的日子。
+    """
+    with session_scope() as session:
+        #: 未来的日子由 `_parse_day` 那一道闸挡回 400，这里不重写第二份判断
+        day = _parse_day(date, default_latest=False) if date else ai_memory_service.latest_quote_date(session)
+        if day is None:
+            raise HTTPException(status_code=404, detail="库里一条行情都还没有：先同步，再导快照")
+        result = ai_memory_service.export_day(session, day)
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=str(result["error"]))
+        result["export"] = ai_memory_service.list_exported_days()
+        return result
+
+
+@router.post("/ai-memory/run")
+def ai_memory_run(date: str | None = None) -> dict:
+    """手动跑一遍收盘后那条闭环：对账 → 导出当天 → 回填上一个交易日。
+
+    调的就是每日流水线里那一个函数，所以「手动点一次」和「等自动那一拍」不是两套代码。
+    只点上面那个导出不行：「回填昨天」那一段存在于这一条里，而它才是把 `next_day` 填上、
+    让样本真正配成对的那一步。
+    与 `…/export` 不同，这里不把失败包成 500：半截状态（对账成功、导出失败）是有信息量的，
+    回包原样带出 `errors`，页面必须把它显示出来，不许只在控制台里留一行日志。
+    """
+    with session_scope() as session:
+        day = _parse_day(date, default_latest=False) if date else ai_memory_service.latest_quote_date(session)
+        if day is None:
+            raise HTTPException(
+                status_code=404, detail="库里一条行情都还没有：先同步，再跑对账与快照"
+            )
+        result = ai_memory_service.run_memory(session, day)
+        session.commit()
+        result["export"] = ai_memory_service.list_exported_days()
+        result["check"] = ai_picks.summary(session)
+        return result

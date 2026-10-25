@@ -71,6 +71,14 @@ export function formatDateTime(value: string | null | undefined): string {
   }).format(date)
 }
 
+/** 落盘文件大小只有这一把尺子：快照卡片和别处读同一份字节数都走它。 */
+export function formatBytes(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(2)} MB`
+}
+
 export function shortDate(iso: string): string {
   return iso.length >= 10 ? iso.slice(5) : iso
 }

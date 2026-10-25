@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import type { DailyRankPick } from '@/api/types'
+import type { DailyRankPick, MemoryDayFile } from '@/api/types'
 import { dailyRank, prepareFeed, refreshDailyRankNow, releaseDailyRank, retainDailyRank, runPicksCheck, startRanking } from '@/stores/dailyRank'
+import { aiMemory, loadAiMemory, runAiMemoryNow } from '@/stores/aiMemory'
 import { aiReady } from '@/stores/session'
-import { formatDateTime, formatGap, formatPct, formatPrice, formatScore, pctClass, spendShort, spendWord } from '@/utils/format'
+import { formatBytes, formatDateTime, formatGap, formatPct, formatPrice, formatScore, pctClass, spendShort, spendWord } from '@/utils/format'
 import { onMounted, onUnmounted, computed } from 'vue'
 
 const board = computed(() => dailyRank.state?.board ?? null)
@@ -59,11 +60,52 @@ function indicatorText(pick: DailyRankPick): string {
 }
 
 function onVisibility(): void {
-  if (document.visibilityState === 'visible') refreshDailyRankNow()
+  if (document.visibilityState === 'visible') {
+    refreshDailyRankNow()
+    void loadAiMemory()
+  }
 }
+
+/** 两份目录按日子并排：文件名就是日子，哪一天只落了一份，另一格画空。 */
+const snapshotRows = computed(() => {
+  const merged = new Map<string, { memory?: MemoryDayFile; failure?: MemoryDayFile }>()
+  for (const item of aiMemory.days?.model_memory.days ?? []) {
+    merged.set(item.date, { ...merged.get(item.date), memory: item })
+  }
+  for (const item of aiMemory.days?.failure_logs.days ?? []) {
+    merged.set(item.date, { ...merged.get(item.date), failure: item })
+  }
+  return [...merged.entries()]
+    .map(([date, row]) => ({ date, memory: row.memory, failure: row.failure }))
+    .sort((a, b) => (a.date < b.date ? 1 : -1))
+})
+
+const runLegs = computed(() => {
+  const run = aiMemory.lastRun
+  if (!run) return []
+  const legs: { label: string; value: string }[] = []
+  if (run.reconcile) {
+    legs.push({ label: '本轮定判', value: `${run.reconcile.judged} 条（中 ${run.reconcile.hits} / 不中 ${run.reconcile.misses} / 还待验证 ${run.reconcile.still_pending}）` })
+  } else {
+    legs.push({ label: '本轮定判', value: '这一趟没做成' })
+  }
+  legs.push({
+    label: `落 ${run.trade_date}`,
+    value: run.export_today
+      ? `样本 ${run.export_today.memory_samples} 条 · 误判 ${run.export_today.failure_cases} 条 · ${formatBytes(run.export_today.memory_bytes + run.export_today.failure_bytes)}`
+      : '没落盘',
+  })
+  const previous = run.export_previous
+  legs.push({
+    label: '回填上一交易日',
+    value: previous ? `${previous.trade_date}：样本 ${previous.memory_samples} 条 · 误判 ${previous.failure_cases} 条` : '库里没有更早的行情日',
+  })
+  return legs
+})
 
 onMounted(() => {
   retainDailyRank()
+  void loadAiMemory()
   document.addEventListener('visibilitychange', onVisibility)
 })
 
@@ -307,6 +349,70 @@ onUnmounted(() => {
       <p class="hint">{{ dailyRank.summary.disclaimer }}</p>
     </div>
     <div v-else class="empty">还没有对它说过的那些话对过账</div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>每日 JSON 快照</h2>
+      <div class="toolbar">
+        <span v-if="aiMemory.days" class="muted">
+          样本 {{ aiMemory.days.model_memory.day_count }} 天 · 误判 {{ aiMemory.days.failure_logs.day_count }} 天 · {{ formatBytes(aiMemory.days.model_memory.total_bytes + aiMemory.days.failure_logs.total_bytes) }}
+        </span>
+        <button class="btn btn-ghost" type="button" :disabled="aiMemory.running" @click="runAiMemoryNow">
+          {{ aiMemory.running ? '这一趟正在跑…' : '跑一遍对账与快照' }}
+        </button>
+      </div>
+    </div>
+
+    <p v-if="aiMemory.error" class="alert">{{ aiMemory.error }}</p>
+    <p v-else-if="aiMemory.note" class="hint">{{ aiMemory.note }}</p>
+
+    <div v-if="runLegs.length" class="chips" style="margin-bottom: 10px">
+      <span v-for="leg in runLegs" :key="leg.label" class="chip">{{ leg.label }} {{ leg.value }}</span>
+    </div>
+    <div v-if="aiMemory.lastRun?.errors.length" class="alert" style="margin-bottom: 10px">
+      <div v-for="(item, index) in aiMemory.lastRun.errors" :key="index">{{ item }}</div>
+    </div>
+
+    <div v-if="aiMemory.summary" class="table-wrap" style="max-height: 360px">
+      <table>
+        <thead>
+          <tr>
+            <th>日子</th>
+            <th>模型记忆</th>
+            <th class="right">大小</th>
+            <th>误判库</th>
+            <th class="right">大小</th>
+            <th class="right">落盘时刻</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="row in snapshotRows" :key="row.date">
+            <td>{{ row.date }}</td>
+            <td><span class="tag" :class="row.memory ? 'tag-hot' : 'type-weak'">{{ row.memory ? '有' : '没有' }}</span></td>
+            <td class="right">{{ row.memory ? formatBytes(row.memory.bytes) : '—' }}</td>
+            <td><span class="tag" :class="row.failure ? 'tag-hot' : 'type-weak'">{{ row.failure ? '有' : '没有' }}</span></td>
+            <td class="right">{{ row.failure ? formatBytes(row.failure.bytes) : '—' }}</td>
+            <td class="right">{{ formatDateTime(row.memory?.written_at || row.failure?.written_at) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="readonly" style="margin-top: 10px">
+        <div class="two">
+          <div>
+            <div><span class="muted">模型记忆目录</span> <b class="mono">{{ aiMemory.summary.export.model_memory.dir }}</b></div>
+            <div><span class="muted">误判库目录</span> <b class="mono">{{ aiMemory.summary.export.failure_logs.dir }}</b></div>
+          </div>
+          <div>
+            <div><span class="muted">库里最新行情日</span> <b>{{ aiMemory.summary.latest_quote_date || '还没有行情' }}</b></div>
+            <div><span class="muted">最新对账</span> <b>{{ formatDateTime(aiMemory.summary.check.check.last_checked_at) }}</b></div>
+          </div>
+        </div>
+      </div>
+      <div v-for="(gap, index) in aiMemory.summary.field_gaps" :key="index" class="hint">{{ gap }}</div>
+      <p class="hint">{{ aiMemory.summary.disclaimer }}</p>
+    </div>
+    <div v-else class="empty">快照读数一次都没拿到过</div>
   </section>
 
   <section class="card">

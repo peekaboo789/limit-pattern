@@ -315,7 +315,7 @@ def run_analysis(
     model = ai_gateway.model_name()
     if not ai_gateway.ai_ready():
         return failed_report(
-            "没有配置外部大模型：接口地址、模型名、密钥三项要在设置页填齐。这一次一分钱没花",
+            ai_gateway.not_configured_message(),
             model=model,
             request_sent=False,
             billed=False,
@@ -619,9 +619,7 @@ class AiAnalysisRunner:
     def start(self, key: str, board_provider: Callable[[], dict], *, selection: dict | None = None) -> dict:
         """抢占这一格的槽位并起线程。没配密钥直接抛 `AiNotConfigured`，一次请求都不发。"""
         if not ai_gateway.ai_ready():
-            raise ai_gateway.AiNotConfigured(
-                "没有配置外部大模型：接口地址、模型名、密钥三项要在设置页填齐"
-            )
+            raise ai_gateway.not_configured()
         started_at = _now_iso()
         with self._state_lock:
             if key in self._running:
