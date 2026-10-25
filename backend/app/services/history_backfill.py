@@ -8,6 +8,10 @@ from datetime import date, timedelta
 from backend.app.algorithms.features import Bar
 from backend.app.models.tables import CalcBar, DailyQuote
 
+#: 补拉往涨停日前看多少个自然日。清理补拉线时也按这个数往保留线前多留一截，
+#: 两边对不上，就会出现「同步补好、17:40 清理删掉、第二天页面上又跳过」的来回。
+BACKFILL_LOOKBACK_CALENDAR_DAYS = 21
+
 _LOCK = threading.Lock()
 _MEMORY: dict[tuple[str, date], dict] = {}
 
@@ -171,7 +175,7 @@ def ensure_prior_bars(session, code: str, limit_date: date, as_of: date) -> str 
     prior = [bar for bar in load_bars(session, code, cap) if bar.trade_date < limit_date]
     if len(prior) >= 3:
         return None
-    start = limit_date - timedelta(days=21)
+    start = limit_date - timedelta(days=BACKFILL_LOOKBACK_CALENDAR_DAYS)
     end = limit_date - timedelta(days=1)
     if end > as_of:
         end = as_of

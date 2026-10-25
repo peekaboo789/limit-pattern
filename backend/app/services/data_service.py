@@ -30,7 +30,14 @@ from backend.app.models.tables import (
     SkippedRecord,
     StockTrainingRow,
 )
-from backend.app.services import data_job, match_service, pattern_service, skip_labels, training_service
+from backend.app.services import (
+    data_job,
+    match_service,
+    pattern_service,
+    similarity_service,
+    skip_labels,
+    training_service,
+)
 from backend.app.services.feature_service import new_stats, public_stats, rebuild_features
 from backend.app.services.history_backfill import load_bars_bulk
 from backend.app.services.quality_service import counts as quality_counts
@@ -177,7 +184,8 @@ def start_window_refresh() -> dict | None:
 
     库里已有的扫描结果各自带着当时的 `pool_dates`，旧日子不动；只有最新一天
     是页面默认打开的那一天，它要是还挂着旧窗口，用户刚改完设置看到的仍是旧池子。
-    从没建过样本、也没扫过的库不起任务——那里没有旧东西要换。
+    从没建过样本、也没扫过的库只补拉新池子的涨停前历史：首页扫描只读库、不联网，
+    新纳入的老日子要是没人补，就会整天挂在「跳过」里。
     槽位被占（`JobBusy`）就不抢：设置照样生效，等那个任务跑完用户再点一次扫描。
     """
     with session_scope() as session:
@@ -189,12 +197,20 @@ def start_window_refresh() -> dict | None:
             select(func.count(MatchSummary.id)).where(MatchSummary.target_date == latest)
         )
         has_patterns = session.scalar(select(func.count(LimitUpPattern.id)))
-        if not has_scan and not has_patterns:
-            return None
+        rebuild = bool(has_scan or has_patterns)
         pool = days[-compare_window_days():]
     cache: dict = {}
 
     def work(session: Session, day: date, acc: dict) -> None:
+        acc["job"] = "window_refresh"
+        acc["start"] = pool[0].isoformat()
+        acc["end"] = latest.isoformat()
+        if not rebuild:
+            # 建样本那条路自己会补拉；没建过样本的库只补这一天的涨停前历史。
+            result = similarity_service.backfill_pool(session, latest, [day])
+            acc["backfill_checked"] = int(acc.get("backfill_checked") or 0) + result["checked"]
+            acc["backfill_failed"] = int(acc.get("backfill_failed") or 0) + len(result["failed"])
+            return
         cache.setdefault("bars", load_bars_bulk(session, latest))
         stats = new_stats("build_patterns", day, day)
         pattern_service.build_patterns(session, day, bars_by_code=cache["bars"], stats=stats)
@@ -203,6 +219,7 @@ def start_window_refresh() -> dict | None:
             scan = new_stats("scan_market", day, day)
             match_service.scan_and_store(session, day, stats=scan)
             _merge(acc, scan)
+        # `_merge` 会把单步的 job/start/end 盖上来：整个任务的名字与区间最后再落一次。
         acc["job"] = "window_refresh"
         acc["start"] = pool[0].isoformat()
         acc["end"] = latest.isoformat()

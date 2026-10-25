@@ -17,7 +17,7 @@ from backend.app.models.tables import (
     StockTrainingRow,
     TradingDay,
 )
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 
 def quote_dates(session, as_of=None) -> list:
@@ -95,6 +95,17 @@ def _delete_codes(session, codes: list[str]) -> dict[str, int]:
     return deleted
 
 
+def calc_cutoff(cutoff: date) -> date:
+    """补拉线的保留线：比正式行情的保留线再往前留一个补拉回看。
+
+    补拉线只为「保留窗口里的涨停日之前凑三根」而存在；保留线当天那只涨停票的
+    前三根本来就在保留线之前。跟正式行情同一条线删，删掉的恰是它们，下一轮又要补。
+    """
+    from backend.app.services.history_backfill import BACKFILL_LOOKBACK_CALENDAR_DAYS
+
+    return cutoff - timedelta(days=BACKFILL_LOOKBACK_CALENDAR_DAYS)
+
+
 def purge_expired() -> dict:
     """删掉保留窗口之前的行情和标签。总结表和 summaries/ 文件不动。"""
     excluded = purge_excluded_boards()
@@ -106,18 +117,18 @@ def purge_expired() -> dict:
             kept = []
             cutoff = None
         elif len(days) <= keep:
-            # 正式行情已经不多于保留天数。更早的补拉 K 线仍然要删掉。
+            # 正式行情已经不多于保留天数。保留窗口里用不上的更早补拉 K 线仍然要删掉。
             cutoff = days[0]
             deleted = {
                 "daily_quotes": 0,
-                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < cutoff).delete(synchronize_session=False),
+                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < calc_cutoff(cutoff)).delete(synchronize_session=False),
             }
             kept = [day.isoformat() for day in days]
         else:
             cutoff = days[-keep]
             deleted = {
                 "daily_quotes": session.query(DailyQuote).filter(DailyQuote.trade_date < cutoff).delete(synchronize_session=False),
-                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < cutoff).delete(synchronize_session=False),
+                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < calc_cutoff(cutoff)).delete(synchronize_session=False),
                 "daily_features": session.query(DailyFeature).filter(DailyFeature.trade_date < cutoff).delete(synchronize_session=False),
                 "limit_up_patterns": session.query(LimitUpPattern).filter(LimitUpPattern.limit_up_date < cutoff).delete(synchronize_session=False),
                 # 目标日在窗口外的一律删；引用的样本日已经被删掉的也删——

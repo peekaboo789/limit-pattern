@@ -9,6 +9,7 @@ import numpy as np
 from backend.app.algorithms.features import build_three_day_window
 from backend.app.algorithms.similarity import percent, score_components
 from backend.app.core.config import compare_window_days
+from backend.app.core.constants import MIN_LISTED_TRADING_DAYS
 from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import BOARD_LABELS, classify, is_in_scope
 from backend.app.services.history_backfill import ensure_prior_bars, load_bars
@@ -23,35 +24,54 @@ def pool_dates(session, as_of: date) -> list[date]:
     return days[-compare_window_days():]
 
 
-def limit_up_samples(session, as_of: date) -> tuple[list[date], list[dict], list[dict]]:
-    """截至 `as_of`（含）、对比窗口内的涨停样本。盘中要用它时必须传收盘日，别传当天。"""
-    dates = pool_dates(session, as_of)
-    if not dates:
-        return [], [], []
-    names = _names(session)
+def _pool_limit_ups(session, dates: list[date]) -> list:
     rows = (
         session.query(DailyQuote)
         .filter(DailyQuote.trade_date.in_(dates), DailyQuote.is_limit_up.is_(True))
         .all()
     )
+    return [row for row in rows if is_in_scope(row.stock_code)]
+
+
+def backfill_pool(session, as_of: date, days: list[date] | None = None) -> dict:
+    """给样本池里涨停前不足三根的票补拉历史。**只在写路径上调**：同步收尾、改窗口的重建任务。
+
+    读接口（首页扫描、相似度、盘中榜）不联网：同一个 GET 前后两次答案不该不一样，
+    补不到的票也不该每次打开页面、每一拍盘中轮询都再去敲一次行情源。
+    """
+    dates = days if days is not None else pool_dates(session, as_of)
+    failed: dict[str, str] = {}
+    checked = 0
+    for row in _pool_limit_ups(session, dates):
+        checked += 1
+        reason = ensure_prior_bars(session, row.stock_code, row.trade_date, as_of)
+        if reason:
+            failed[f"{row.stock_code}@{row.trade_date.isoformat()}"] = reason
+    return {"checked": checked, "failed": failed}
+
+
+def limit_up_samples(session, as_of: date) -> tuple[list[date], list[dict], list[dict]]:
+    """截至 `as_of`（含）、对比窗口内的涨停样本。盘中要用它时必须传收盘日，别传当天。
+
+    只读库：涨停前不够三根的票进 `skipped`，不在这里补拉（见 `backfill_pool`）。
+    """
+    dates = pool_dates(session, as_of)
+    if not dates:
+        return [], [], []
+    names = _names(session)
     samples: list[dict] = []
     skipped: list[dict] = []
-    for row in rows:
-        if not is_in_scope(row.stock_code):
-            continue
-        reason = ensure_prior_bars(session, row.stock_code, row.trade_date, as_of)
-        window = build_three_day_window(
-            load_bars(session, row.stock_code, min(row.trade_date, as_of)),
-            row.trade_date,
-            include_as_of_date=False,
-        )
+    for row in _pool_limit_ups(session, dates):
+        bars = load_bars(session, row.stock_code, min(row.trade_date, as_of))
+        window = build_three_day_window(bars, row.trade_date, include_as_of_date=False)
         if not window.ok:
+            prior = len([bar for bar in bars if bar.trade_date < row.trade_date])
             skipped.append(
                 {
                     "code": row.stock_code,
                     "name": names.get(row.stock_code, ""),
                     "limit_date": row.trade_date.isoformat(),
-                    "reason": reason or "凑不齐涨停前三根K线",
+                    "reason": f"涨停日之前只有 {prior} 根可用K线，需要 {MIN_LISTED_TRADING_DAYS} 根",
                 }
             )
             continue

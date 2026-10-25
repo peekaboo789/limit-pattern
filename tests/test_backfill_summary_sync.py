@@ -37,6 +37,18 @@ def test_missing_prior_bars_are_fetched_for_scoring_and_then_purged(client):
         return older + [future]
 
     set_fetcher(kline_fn=kline)
+    # 读接口只读库：补拉前打开首页，涨停前不够三根的那只列进「跳过」，一次行情源都不敲。
+    before = client.get("/api/scan", params={"date": official[-1].isoformat(), "top": 20}).json()
+    assert asked == [], "GET /api/scan 去敲了行情源"
+    assert [item["code"] for item in before["skipped"]] == ["600000"]
+    assert "只有 2 根" in before["skipped"][0]["reason"]
+    again = client.get("/api/similarity", params={"code": "000001", "date": official[-1].isoformat()})
+    assert again.status_code == 200 and asked == [], "GET /api/similarity 去敲了行情源"
+
+    # 补拉是写路径（同步收尾那一步）的事。
+    from backend.app.services.sync_service import _backfill_pass
+
+    assert _backfill_pass() == ""
     body = client.get("/api/scan", params={"date": official[-1].isoformat(), "top": 20}).json()
     assert body["skipped"] == []
     assert body["pool_size"] == 1
@@ -47,11 +59,25 @@ def test_missing_prior_bars_are_fetched_for_scoring_and_then_purged(client):
         assert session.query(DailyQuote).filter(DailyQuote.trade_date == days[0]).count() == 0
         assert session.query(CalcBar).filter(CalcBar.trade_date == days[0]).count() == 1
         assert session.query(CalcBar).filter(CalcBar.trade_date > official[-1]).count() == 0
-    from backend.app.services.retention import purge_expired
+    from datetime import timedelta
 
+    from backend.app.services.retention import calc_cutoff, purge_expired
+
+    # 一根远在补拉回看之外的老线：保留窗口里谁都用不上它，清理要删。
+    stale_day = calc_cutoff(official[0]) - timedelta(days=1)
+    with session_scope() as session:
+        session.add(CalcBar(stock_code="600000", trade_date=stale_day, open=1, high=1, low=1, close=1, pre_close=1, volume=1, amount=1, turnover_rate=1))
     purge_expired()
     with session_scope() as session:
-        assert session.query(CalcBar).filter(CalcBar.trade_date < official[0]).count() == 0
+        assert session.query(CalcBar).filter(CalcBar.trade_date < calc_cutoff(official[0])).count() == 0
+        kept = session.query(CalcBar).filter(CalcBar.trade_date < official[0]).count()
+    expected = len([item for item in older if item["trade_date"] < official[0]])
+    assert expected and kept == expected, f"清理把保留窗口里那只涨停票的涨停前三根删了：{kept}/{expected}"
+    # 清理之后首页照样凑得齐，也不再去敲行情源（盘后 17:40 清理在同步之后跑，删了就得等明天）。
+    asked.clear()
+    after = client.get("/api/scan", params={"date": official[-1].isoformat(), "top": 20}).json()
+    assert after["skipped"] == [] and after["pool_size"] == 1
+    assert asked == []
 
 
 def test_failed_backfill_is_marked_and_not_scored(client):
@@ -64,12 +90,16 @@ def test_failed_backfill_is_marked_and_not_scored(client):
         raise RuntimeError("上游没有响应")
 
     set_fetcher(kline_fn=kline)
+    from backend.app.services.sync_service import _backfill_pass
+
+    note = _backfill_pass()
+    assert "1 只涨停票补不齐" in note, note
     body = client.get("/api/similarity", params={"code": "000001", "date": official[-1].isoformat()}).json()
     assert body["pool_size"] == 0
     assert body["matches"] == []
     assert body["skipped"]
     assert body["skipped"][0]["code"] == "600000"
-    assert "补拉" in body["skipped"][0]["reason"]
+    assert "需要 3 根" in body["skipped"][0]["reason"]
 
 
 def test_sync_retries_and_writes_a_statistics_summary(client):
@@ -159,3 +189,39 @@ def test_scheduler_registers_prepare_and_summary(monkeypatch):
         assert "minute='0'" in str(prepare.trigger)
     finally:
         stop_scheduler()
+
+
+def test_widening_the_window_backfills_the_newly_pooled_days_off_the_read_path(client):
+    """没建过样本的库放宽对比窗口：新纳入那天的涨停前历史由后台任务补，首页 GET 仍旧不联网。"""
+    import time
+
+    days = weekdays(8)
+    official = days[-5:]
+    _save("600000", "浦发银行", "SSE", _series(official, limit_on={0}))
+    _save("000001", "平安银行", "SZSE", _series(official, limit_on=set(), start=8))
+    older = _series(days[:3], limit_on=set(), start=6)
+    asked = []
+
+    def kline(code, start, end):
+        asked.append(code)
+        return older
+
+    set_fetcher(kline_fn=kline)
+    params = {"date": official[-1].isoformat(), "top": 20}
+    assert client.get("/api/scan", params=params).json()["pool_size"] == 0
+
+    widened = client.put("/api/settings", json={"compare_window_trading_days": 5})
+    assert widened.status_code == 200, widened.text
+    assert widened.json()["window_refresh"] is not None, "没建过样本的库放宽窗口，新池子没人补拉"
+    deadline = time.monotonic() + 30
+    while client.get("/api/data/job").json()["running"]:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    state = client.get("/api/data/job").json()
+    assert state["error"] == "" and state["result"]["job"] == "window_refresh"
+    assert asked == ["600000"]
+
+    asked.clear()
+    body = client.get("/api/scan", params=params).json()
+    assert body["skipped"] == [] and body["pool_size"] == 1
+    assert asked == [], "补完之后的 GET 又去敲了行情源"

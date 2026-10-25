@@ -402,6 +402,7 @@ def _run(task_id: str) -> None:
         _set(progress=92, phase="cleanup", message="正在清理过期明细")
         purge_expired()
         _refresh_limit_counts()
+        backfill_note = _backfill_pass()
         if not _OVERRIDE:
             try:
                 _cross_check_sample(active)
@@ -471,10 +472,34 @@ def _run(task_id: str) -> None:
             saved=saved,
             failed=failed,
             active_source=read_settings_file().get("active_source") or active,
-            message=f"同步完成：写入 {saved} 只，失败 {failed} 只{switch_note}{quality_note}{memory_note}{summary_note}",
+            message=f"同步完成：写入 {saved} 只，失败 {failed} 只{switch_note}{backfill_note}{quality_note}{memory_note}{summary_note}",
         )
     except Exception as exc:
         _set(running=False, progress=0, message=str(exc) or "同步失败")
+
+
+def _backfill_pass() -> str:
+    """样本池里涨停前不足三根的票，在同步收尾时补拉历史。
+
+    首页扫描、相似度、盘中榜都只读库、不联网；它们要用的那几根补拉线就在这里备好。
+    补不到的不算同步失败：那几只照样会在扫描结果的「跳过」里列出来。
+    """
+    from backend.app.core.database import session_scope
+    from backend.app.services.retention import quote_dates
+    from backend.app.services.similarity_service import backfill_pool
+
+    _set(progress=93, phase="backfill", message="正在为样本池补拉涨停前历史")
+    try:
+        with session_scope() as session:
+            days = quote_dates(session)
+            if not days:
+                return ""
+            result = backfill_pool(session, days[-1])
+    except Exception as exc:
+        logger.exception("样本池补拉没有跑成")
+        return f"，样本池补拉没有跑成：{exc or type(exc).__name__}"
+    missing = len(result["failed"])
+    return f"，样本池有 {missing} 只涨停票补不齐涨停前三根" if missing else ""
 
 
 def _memory_pass(saved: int) -> str:

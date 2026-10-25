@@ -12,8 +12,8 @@
 | GET | `/api/limitups?date=` | 某一天的涨停列表。不传日期用最近一个有行情的交易日。`consecutive_boards` 是从这天往前数的连板数；`consecutive_boards_at_least` 为 true 时数到库里最早那天、或前一个交易日这只票没有行情（停牌、缺数）还没断，只能当下界读，页面与导出写「≥N」。`/api/pool` 的每行同样带这两个字段 |
 | GET | `/api/pool` | 对比窗口（设置项 `compare_window_trading_days`，默认 3 个交易日）的涨停池 |
 | GET | `/api/kline?code=&days=30` | 日 K。正式行情优先，缺的日期用补拉的计算 K 线补上。不会返回今天之后的 K 线。回包带 `name`、`board`、`board_label`、`is_st`；每根 K 线带 `is_limit_up`——正式行情那天按库里登记回 `true`/`false`，补拉的那几根回 `null`（判不了就不替它判） |
-| GET | `/api/similarity?code=&date=&top=20` | 这一只和涨停池的对比 |
-| GET | `/api/scan?date=&top=50&min_score=0` | 全市场和涨停池对比后的排行 |
+| GET | `/api/similarity?code=&date=&top=20` | 这一只和涨停池的对比。只读库、不联网：涨停前凑不齐三根的样本进 `skipped`，补拉由同步收尾与改窗口任务做 |
+| GET | `/api/scan?date=&top=50&min_score=0` | 全市场和涨停池对比后的排行。同上一条，读接口不敲行情源 |
 | GET | `/api/realtime/top?metric=&top_n=` | 盘中监控的榜。榜前 N 只每 2 秒随请求重算，全市场每 120 秒由后台线程跑一轮。`metric` 不认识回 422，`top_n` 超出范围回 422。每行带 `similarity_band`、`next_day_rate_percent`、`next_day_rate_samples`，整份回包带 `probability`（底表，见「历史回测与次日预测池」） |
 | GET | `/api/realtime/status` | 刷新节奏与口径，不触发扫描：`status`（`live` / `warming` / `unavailable`）、`phase`、`in_session`、`refresh_seconds`、`full_rounds`、`fast_rounds`、`window_mode`、`morning_freeze`、`source`、`error`。`phase` 只有 `pre_open` / `morning` / `frozen` 三个值，11:30 起算 `frozen` |
 | GET | `/api/realtime/intraday-watch` | 涨幅报警榜的整份状态：池子、每只今天的涨幅与近 3 分钟跳升、报过哪些、还没确认哪些。只读最近一轮的采样结果，不在请求里跑网络轮次 |
@@ -218,7 +218,7 @@
 这一刀砍下去动的是原始行情红线。第三道是删除范围：只有 error 级账目指到的「哪只哪天」会被删，`error_pairs` 不含
 没有日期的账（名称对不上）和没有代码的账（整天的股票数水位），所以这两种永远不会按天删掉主档。
 
-跟着一起删的是下游派生行：补拉的计算 K 线、特征行、跳过记录，样本行（涨停那天自己脏，或它那三天形态窗口里坐着被抽掉的一根——
+跟着一起删的是下游派生行：补拉的计算 K 线（比正式行情多留 21 个自然日，正好是补拉的回看长度）、特征行、跳过记录，样本行（涨停那天自己脏，或它那三天形态窗口里坐着被抽掉的一根——
 这种向量再也复现不出来），匹配行两头都算（目标那天脏了结果不成立，样本那天脏了分数是抄来的），以及指向被删那一行的 error 账本身。
 正式日线以外的东西都可以重算，不用备份。
 
@@ -228,7 +228,7 @@
 ## 派生数据的四条重建线
 
 「派生数据可以删、原始行情才是红线」在这一节落地成四个后台任务：单日特征、涨停样本库、全市场匹配、训练宽表。
-特征、匹配、训练三个不读网络，只吃库里已有的日线与补拉来的计算 K 线。涨停样本库遇到涨停前凑不齐三根时，和相似度页的样本池同一个口径先补拉（只拉涨停日之前的线，进 `calc_bars`），补不到才记 `insufficient_window`，原因写在 `detail` 里；否则保留区间最前面几天的涨停，样本池收、样本库跳，两边对不上。跑砸了重跑一次就行。
+特征、匹配、训练三个不读网络，只吃库里已有的日线与补拉来的计算 K 线。涨停样本库遇到涨停前凑不齐三根时，和同步收尾那轮样本池补拉同一个口径（只拉涨停日之前的线，进 `calc_bars`），补不到才记 `insufficient_window`，原因写在 `detail` 里；否则保留区间最前面几天的涨停，样本池收、样本库跳，两边对不上。跑砸了重跑一次就行。
 
 训练宽表的回看只认库里留着的那段**全市场**日线，不吃补拉来的计算 K 线：补拉只给涨停票做，吃了它，最早那几个标签日就只剩涨停票能凑满 T-5…T-1，训练集成了涨停票专场。所以最早能出训练行的标签日是库里第 6 个交易日；之前的日子整天记一条 `market_history_too_short`（`stock_code` 为空，页面读作「全市场」），保留天数的下限就是 6（`/api/settings` 回 `retention_min`/`retention_max`），默认设置下最新那天必有训练行。行情范围内自己不足 5 根的（停牌、新上市）逐只记 `insufficient_history_for_training`。重跑会先清掉这一段的旧训练跳过账，不叠两套口径。
 
