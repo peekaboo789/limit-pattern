@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from backend.app.core.config import compare_window_days
 from backend.app.core.constants import MIN_BAND_OBSERVATIONS
 
 # 权重固定。pattern_match_rate 不在这张表里。
@@ -64,24 +65,32 @@ def _level_text() -> str:
     return "，".join(chunks) + "，不到 60 分为低匹配"
 
 
-FORMULA_TEXT = (
-    "综合评分按固定权重计算："
-    f"形态 {_fmt(WEIGHT_PATTERN)}、技术 {_fmt(WEIGHT_TECHNICAL)}、"
-    f"量能 {_fmt(WEIGHT_VOLUME)}、资金 {_fmt(WEIGHT_CAPITAL)}、"
-    f"历史成功率 {_fmt(WEIGHT_HISTORY)}。"
-    "缺了的项按剩余权重摊开，不把没数据当成 0 分。"
-    f"风险扣分：{_risk_text()}。risk_score 没有数时不扣分。"
-    f"等级：{_level_text()}。"
-    "近五日形态匹配率只展示，不参与加权。"
-)
+def formula_text() -> str:
+    """综合评分口径那一段话。
 
-PROMPT_RUBRIC = (
-    FORMULA_TEXT
-    + "这些数你已经有了，不要重新计算，也不要修改输入。"
-    + "null 不是 0 分，它是这一项无从谈起。"
-    + "请按公式分给出等级，并在依据里说明你和公式分差在哪里。"
-    + "不加入新闻、公告、基本面、消息，也不预测确定涨停。"
-)
+    句子里那个天数**必须现读设置**：对比窗口可以改，写死过一次「近五日」，
+    页面上就出现过和样本池对不上的天数，模型也跟着读错。
+    """
+    return (
+        "综合评分按固定权重计算："
+        f"形态 {_fmt(WEIGHT_PATTERN)}、技术 {_fmt(WEIGHT_TECHNICAL)}、"
+        f"量能 {_fmt(WEIGHT_VOLUME)}、资金 {_fmt(WEIGHT_CAPITAL)}、"
+        f"历史成功率 {_fmt(WEIGHT_HISTORY)}。"
+        "缺了的项按剩余权重摊开，不把没数据当成 0 分。"
+        f"风险扣分：{_risk_text()}。risk_score 没有数时不扣分。"
+        f"等级：{_level_text()}。"
+        f"样本池取对比窗口那 {compare_window_days()} 个交易日；池内高相似占比只展示，不参与加权。"
+    )
+
+
+def prompt_rubric() -> str:
+    return (
+        formula_text()
+        + "这些数你已经有了，不要重新计算，也不要修改输入。"
+        + "null 不是 0 分，它是这一项无从谈起。"
+        + "请按公式分给出等级，并在依据里说明你和公式分差在哪里。"
+        + "不加入新闻、公告、基本面、消息，也不预测确定涨停。"
+    )
 
 ROLE_PREAMBLE = (
     "你是一名A股量化研究分析助手。你的任务：根据已经计算好的量化指标进行综合评分。"
@@ -93,7 +102,9 @@ NULL_RULE = "null 不是 0 分，也不是很低，它是这一项无从谈起�
 CAPITAL_RULE = "资金分没有成交额原料时留空，不写 0。"
 HISTORY_RULE = "历史成功率取该档已经发生过的频率，不是模型对这一只股票的预测。"
 
-PUBLIC_TEXTS = (ROLE_PREAMBLE, FORMULA_TEXT, PROMPT_RUBRIC, NULL_RULE, CAPITAL_RULE, HISTORY_RULE)
+def public_texts() -> tuple[str, ...]:
+    """对外展示的口径句子：页面与提示词读同一份，不各抄一遍。"""
+    return (ROLE_PREAMBLE, formula_text(), prompt_rubric(), NULL_RULE, CAPITAL_RULE, HISTORY_RULE)
 
 
 def risk_penalty(risk_score: float | None) -> float:

@@ -7,7 +7,7 @@
 跟「根本没敲网关」和「花了钱没结论」是三件事，必须一句话能问出来。
 
 名次归模型（它自己给的分排出第 1 到最后一名，本系统不替它重排），
-综合评分与等级归本系统按 `FORMULA_TEXT` 那个算式算，两者并排显示、差也一起给。
+综合评分与等级归本系统按 `score_model.formula_text()` 那个算式算，两者并排显示、差也一起给。
 
 五道校验闸的口径与盘中那份同源，只多了一道 `rejected`：固定榜每一行都要有名次，
 缺分或越界的行排不进去，剔掉并计数（不是惩罚它，是为了让「第 N 名」仍对得上一个真实的分）；
@@ -45,7 +45,7 @@ from backend.app.services.ai_analysis_service import (
 )
 from backend.app.services.ai_analysis_store import cost_of
 from backend.app.services.realtime_tracker import DEFAULT_METRIC, RANK_METRICS
-from backend.app.services.score_model import FORMULA_TEXT
+from backend.app.services.score_model import formula_text
 
 logger = get_logger("ai_daily_rank")
 
@@ -92,7 +92,7 @@ def daily_formula(*, metric_label: str) -> str:
         f"输入是「按{metric_label or '默认相似度'}口径选出的相似榜前 {DAILY_FEED_LIMIT} 行」，"
         f"由本系统当场凑好并落库（这一步不花钱）；页面上点一次「排出前 {DAILY_PICK_COUNT} 名」"
         f"才会敲一次外部大模型，它按自己声明的标准（见「它的判断标准」）从好到差排出最多 "
-        f"{DAILY_PICK_COUNT} 名。{FORMULA_TEXT}"
+        f"{DAILY_PICK_COUNT} 名。{formula_text()}"
         "名次按模型自报的相对分排（本系统不替它重排），综合评分与等级按上面这个算式由本系统算，"
         "两者并排显示、模型那一分与公式分的差也一起显示。"
         "名次、模型那一分与理由都是模型的输出：没有回测校准、没有历史命中率，不是涨停概率。"

@@ -25,14 +25,20 @@ from __future__ import annotations
 from datetime import date
 
 from backend.app.algorithms.features import compute_day_features
-from backend.app.core.constants import EVIDENCE_ROW_LIMIT, MIN_BAND_OBSERVATIONS, TEXT_LIMIT
+from backend.app.core.config import compare_window_days
+from backend.app.core.constants import (
+    EVIDENCE_ROW_LIMIT,
+    MIN_BAND_OBSERVATIONS,
+    SHAPE_WINDOW_TRADING_DAYS,
+    TEXT_LIMIT,
+)
 from backend.app.services import ai_picks
 from backend.app.services import match_service
 from backend.app.services import prediction_service
 from backend.app.services.history_backfill import load_bars_bulk
 from backend.app.services.score_model import (
-    FORMULA_TEXT,
-    PROMPT_RUBRIC,
+    formula_text,
+    prompt_rubric,
     ROLE_PREAMBLE,
     build_indicators,
     formula_for,
@@ -63,6 +69,10 @@ _FIELD_DOC = (
     "last_price 最新价（元）；change_percent 当日涨跌幅（百分数）；"
     "to_limit_percent 距当日涨停价还差几个点（分母是前收，已封板为 0，缺输入为 null）；"
     "max_similarity 与对比窗口（设置里的最近若干个交易日）已收盘涨停样本池的最高相似度（0~100）；"
+    "indicator_date 是技术形态评分、成交量评分、风险评分那三项吃的是哪一根日线；"
+    "indicator_date_source 说明为什么是那一天：trade_date 就是评估日当天那根已收盘日线，"
+    "fallback_base_date 表示当天日线还没落库（盘中），退到了上一根已收盘的；"
+    "no_trade_date 表示这份榜连评估日都没给。"
     "avg_similarity 与同一个样本池的平均相似度；high_sim_count 相似度达到 90 以上的样本条数；"
     "sample_count 这一轮实际参与比对的样本条数（已剔掉它自己）；"
     "band 按最高相似度落的那一档；best_match 最像的那一条涨停样本（代码、名称、涨停日、分数）；"
@@ -86,22 +96,32 @@ _FIELD_DOC = (
     "写依据时可以引用它们。"
 )
 
-SYSTEM_PARTS = (ROLE_PREAMBLE, _FIELD_DOC, PROMPT_RUBRIC, NO_INVENTION_RULE)
+#: 静态的那三段拼一次就好；`prompt_rubric()` 里带着对比窗口天数，必须每次现拼，不能进这个元组。
+SYSTEM_PARTS = (ROLE_PREAMBLE, _FIELD_DOC)
 
-INDICATOR_LABELS = {
-    "similarity_score": "三日形态相似度",
-    "pattern_match_rate": "近三日高相似占比",
+#: 五项指标与风险分的中文说法。`similarity_score` 那句里的「三日」是形态窗口
+#: （`SHAPE_WINDOW_TRADING_DAYS`，固定 3，页面上不能改）；`pattern_match_rate` 那句里的
+#: 天数是**对比窗口**，设置里能改，所以它必须现读——写死过一次「近三日」，
+#: 窗口改成 5 的那天，页面说的和样本池数出来的就不是同一件事。
+def indicator_labels() -> dict[str, str]:
+    """七个数的中文说法。每次现读对比窗口，改了设置不用重进进程。"""
+    return {
+    "similarity_score": f"{SHAPE_WINDOW_TRADING_DAYS}日形态相似度",
+    "pattern_match_rate": f"近 {compare_window_days()} 日高相似占比",
     "technical_score": "技术形态评分",
     "volume_score": "成交量评分",
     "capital_score": "资金评分",
     "history_limit_up_rate": "历史成功率",
     "risk_score": "风险评分",
-}
+    }
 
 
 def system_prompt() -> str:
-    """四条链路共用的那一段。数字全部来自 `score_model` 的常量，页面与提示词读同一份。"""
-    return "".join(SYSTEM_PARTS)
+    """四条链路共用的那一段。数字全部来自 `score_model` 的常量，页面与提示词读同一份。
+
+    评分口径那句带着对比窗口天数（能在设置里改），每次拼提示词现读一次。
+    """
+    return "".join(SYSTEM_PARTS) + prompt_rubric() + NO_INVENTION_RULE
 
 
 def _round(value) -> float | None:
@@ -122,7 +142,8 @@ def _as_day(value) -> date | None:
 
 
 def features_at(session, codes: list[str], day: date | None) -> dict[str, dict]:
-    """基准日那一根的日线特征。基准日没有行情（停牌）就整只不给，不拿更早那根冒充。"""
+    """那一天那一根的日线特征。那一天没有行情（停牌、或盘中还没落库）就整只不给，
+    不拿更早那根冒充——冒充出来的分是昨天的分，榜上写的价是今天的价。"""
     if day is None or not codes:
         return {}
     grouped = load_bars_bulk(session, day, codes=codes)
@@ -132,6 +153,23 @@ def features_at(session, codes: list[str], day: date | None) -> dict[str, dict]:
             continue
         found[code] = compute_day_features(bars)
     return found
+
+
+def indicator_day_of(board: dict) -> tuple[date | None, str]:
+    """指标该取哪一天的行情，以及为什么。
+
+    形态窗口和价格都落在评估日 `trade_date` 那一根上，指标也必须落在那一根：
+    取到基准日（上一根已收盘）就成了「用昨天的涨幅给今天的冲板打分」，
+    当天追高、放量这些风险项一项都扣不到。
+
+    盘中那一拍今天的日线还没落库，`load_bars_bulk` 到今天为止也拿不到当天那根，
+    这时**退回基准日并说清**——这一轮的指标是上一根的，页面上要跟着日期讲。
+    """
+    evaluation = _as_day(board.get("trade_date"))
+    base = _as_day(board.get("base_date"))
+    if evaluation is None:
+        return base, "no_trade_date"
+    return evaluation, "trade_date"
 
 
 def carry_overview(session, codes: list[str], base_day: date | None) -> tuple[dict[str, dict], dict]:
@@ -177,7 +215,14 @@ def build_evidence(session, board: dict, *, row_limit: int = DEFAULT_ROW_LIMIT) 
     rows = [*(board.get("limit_up_rows") or []), *(board.get("pending_rows") or [])]
     base_day = _as_day(board.get("base_date"))
     codes = [str(row.get("code") or "") for row in rows if row.get("code")]
-    features = features_at(session, codes, base_day)
+    #: 指标那天与「为什么是那天」：先按评估日取，取不到（盘中当天还没落库）再退基准日。
+    wanted_day, day_reason = indicator_day_of(board)
+    features = features_at(session, codes, wanted_day)
+    used_day = wanted_day
+    if not features and day_reason == "trade_date" and base_day is not None:
+        used_day = base_day
+        features = features_at(session, codes, base_day)
+        day_reason = "fallback_base_date"
     history = ai_picks.history_overview(session, codes)
     carry, carry_meta = carry_overview(session, codes, base_day)
     #: 概率列那份底表跟着榜一起进来：整列留空的原因只写在这一处，页面和提示词读同一句。
@@ -256,6 +301,10 @@ def build_evidence(session, board: dict, *, row_limit: int = DEFAULT_ROW_LIMIT) 
         "feature_missing_rows": sum(1 for item in kept if item["indicator_scores"]["technical_score"] is None),
         "trade_date": str(board.get("trade_date") or ""),
         "base_date": str(board.get("base_date") or ""),
+        #: 技术/量能/风险那三项吃的是哪一天的行情，以及为什么是那一天。
+        #: 盘中今天的日线还没落库时会退回基准日——不说清，页面上就是「用昨天的涨幅评今天的板」。
+        "indicator_date": "" if used_day is None else used_day.isoformat(),
+        "indicator_date_source": day_reason,
         "window_mode": str(board.get("window_mode") or ""),
         "metric": str(board.get("metric") or ""),
         "metric_label": _text(board.get("metric_label")),
@@ -314,14 +363,16 @@ def evidence_line(row: dict) -> str:
 
 __all__ = [
     "AI_DISCLAIMER",
-    "FORMULA_TEXT",
-    "INDICATOR_LABELS",
+    "formula_text",
+    "indicator_labels",
+    "prompt_rubric",
     "NO_INVENTION_RULE",
     "ROLE_PREAMBLE",
     "build_evidence",
     "carry_overview",
     "evidence_line",
     "features_at",
+    "indicator_day_of",
     "prompt_row_of",
     "system_prompt",
     "with_gap",

@@ -40,7 +40,7 @@ from backend.app.services import ai_evidence, ai_gateway, ai_picks
 from backend.app.services.ai_analysis_store import cost_of
 from backend.app.services.ai_analysis_store import latest_report as archived_report
 from backend.app.services.ai_analysis_store import persist_report, trim
-from backend.app.services.score_model import FORMULA_TEXT, with_gap
+from backend.app.services.score_model import formula_text, with_gap
 
 logger = get_logger("ai_analysis")
 
@@ -467,7 +467,11 @@ def run_analysis(
         "history_missing_rows": bundle["history_missing_rows"],
         "feature_missing_rows": bundle["feature_missing_rows"],
         "board_generated_at": bundle["board_generated_at"],
-        "formula": FORMULA_TEXT,
+        # 技术/量能/风险那三项吃的是哪一根日线：回包说清，页面上「评今天的板」与
+        # 「指标是昨天的」就不可能是两件事。
+        "indicator_date": bundle.get("indicator_date", ""),
+        "indicator_date_source": bundle.get("indicator_date_source", ""),
+        "formula": formula_text(),
         "disclaimer": ai_evidence.AI_DISCLAIMER,
         "report_id": None,
         "store_error": "",
@@ -519,7 +523,9 @@ def failed_report(
         "skipped_rows": int(bundle.get("skipped_rows") or 0),
         "history_missing_rows": int(bundle.get("history_missing_rows") or 0),
         "feature_missing_rows": int(bundle.get("feature_missing_rows") or 0),
-        "formula": FORMULA_TEXT,
+        "indicator_date": str(bundle.get("indicator_date") or ""),
+        "indicator_date_source": str(bundle.get("indicator_date_source") or ""),
+        "formula": formula_text(),
         "disclaimer": ai_evidence.AI_DISCLAIMER,
         "report_id": None,
         "store_error": "",

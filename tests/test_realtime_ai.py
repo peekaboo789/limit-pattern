@@ -334,6 +334,14 @@ def ai_client(client, monkeypatch):
     ai_daily_rank_service.daily_rank_runner.reset()
 
 
+def _wait_window_job(client, *, timeout: float = 60.0) -> None:
+    """改窗口会起一个后台重建任务：等它收工，不然断言读到的还是旧口径那一轮。"""
+    deadline = time.monotonic() + timeout
+    while client.get("/api/data/job").json()["running"]:
+        assert time.monotonic() < deadline, "改窗口的后台任务没在期限内收工"
+        time.sleep(0.05)
+
+
 def wait_for(client, path: str, *, timeout: float = 30.0) -> dict:
     """轮询到那一份跑完。等的是后台线程，不是重进页面。"""
     deadline = time.monotonic() + timeout
@@ -1068,3 +1076,87 @@ def test_daily_rank_prompt_says_who_owns_the_rank(ai_client):
     system = server.requests[0]["messages"][0]["content"]
     assert "数组第一个就是你认为最好的那只" in system
     assert "输入是 " + ai_client["last_day"].isoformat() in system
+
+
+def test_the_scoring_wording_follows_the_compare_window_setting(ai_client):
+    """对比窗口在设置里改得动：口径句、指标中文名、提示词里那个天数必须跟着改。
+
+    「近五日」「近三日」都曾写死在源码里——窗口一改成 5，页面上说的天数和
+    样本池数出来的天数就不是同一件事，模型也照着旧天数读证据。"""
+    from backend.app.services.ai_evidence import indicator_labels
+    from backend.app.services.score_model import formula_text
+
+    client = ai_client["client"]
+    assert client.put("/api/settings", json={"compare_window_trading_days": 3}).status_code == 200
+    assert "那 3 个交易日" in formula_text()
+    assert indicator_labels()["pattern_match_rate"] == "近 3 日高相似占比"
+
+    changed = client.put("/api/settings", json={"compare_window_trading_days": 5})
+    assert changed.status_code == 200, changed.text
+    _wait_window_job(client)
+    assert "那 5 个交易日" in formula_text(), "口径句还挂着旧窗口"
+    assert indicator_labels()["pattern_match_rate"] == "近 5 日高相似占比"
+
+    server = ai_client["configure"](sse_script(['{"picks":[]}']))
+    client.post("/api/ai/analysis")
+    report = wait_for(client, "/api/ai/analysis")["report"]
+    assert "那 5 个交易日" in report["formula"], report["formula"]
+    assert "那 5 个交易日" in server.requests[0]["messages"][0]["content"]
+    # 形态窗口是固定的 3 根，不跟对比窗口跑：那句「3日形态相似度」不能一起变。
+    assert indicator_labels()["similarity_score"] == "3日形态相似度"
+
+
+def test_the_three_day_features_come_from_the_evaluation_day(ai_client):
+    """技术/量能/风险那三项必须吃评估日那一根：吃基准日就是拿昨天的涨幅评今天的板。
+
+    判据两头都要落：正常回放取 `trade_date`；那一根不在库里（盘中还没落库）
+    才退回基准日，并且把「退到了」这件事写进回包。"""
+    from backend.app.core.database import session_scope
+    from backend.app.services import ai_evidence, realtime_service
+    from backend.app.services import score_model
+    from backend.app.services.ai_evidence import build_evidence, features_at
+
+    client = ai_client["client"]
+    with session_scope() as session:
+        result = realtime_service.scan(session, mode=realtime_service.MODE_SETTLED)
+        board = {key: value for key, value in result.items() if key != "rows"}
+        board["limit_up_rows"] = [row for row in result["rows"] if row["is_limit_up"]]
+        board["pending_rows"] = [row for row in result["rows"] if not row["is_limit_up"]]
+        assert board["pending_rows"] or board["limit_up_rows"], "这份榜一行都没有"
+        bundle = build_evidence(session, board)
+    assert bundle["rows"], "这份榜一行证据都没有"
+    assert bundle["indicator_date"] == board["trade_date"]
+    assert bundle["indicator_date_source"] == "trade_date"
+
+    code = bundle["rows"][0]["stock_code"]
+    with session_scope() as session:
+        on_day = features_at(session, [code], date.fromisoformat(board["trade_date"]))
+        previous = features_at(session, [code], date.fromisoformat(board["base_date"]))
+    assert code in on_day and code in previous
+    assert on_day[code] != previous[code], "两根线的特征一模一样，这条判据没有区分力"
+    #: 这三项各自从哪一根线算出来，榜上的分必须等于「评估日那一根」的那一份，
+    #: 并且至少有一项与「基准日那一根」算出来的不同——不然上面那串等号是恒等式，不是判据。
+    from_day = {
+        "technical_score": score_model.technical_from_features(on_day[code]),
+        "volume_score": score_model.volume_from_features(on_day[code]),
+        "risk_score": score_model.risk_from_features(on_day[code]),
+    }
+    from_previous = {
+        "technical_score": score_model.technical_from_features(previous[code]),
+        "volume_score": score_model.volume_from_features(previous[code]),
+        "risk_score": score_model.risk_from_features(previous[code]),
+    }
+    row_scores = bundle["rows"][0]["indicator_scores"]
+    for key, value in from_day.items():
+        assert row_scores[key] == value, (key, row_scores[key], value)
+    moved = [key for key in from_day if from_day[key] != from_previous[key]]
+    assert moved, f"两根线的分完全一样：{from_day}"
+
+    shifted = dict(board)
+    shifted["trade_date"] = (date.fromisoformat(board["trade_date"]) + timedelta(days=1)).isoformat()
+    with session_scope() as session:
+        retreated = build_evidence(session, shifted)
+    assert retreated["rows"], "换了评估日之后证据行没了，那条断言就成了空话"
+    assert retreated["indicator_date"] == board["base_date"]
+    assert retreated["indicator_date_source"] == "fallback_base_date"
+    assert client.get("/api/health").status_code == 200

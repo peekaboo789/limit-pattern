@@ -13,10 +13,10 @@ from backend.app.algorithms.features import (
 from backend.app.algorithms.similarity import band_of, score_matrix, score_pair
 from backend.app.services.limit_up_service import LimitUpDetector, limit_up_price, ratio_for
 from backend.app.services.score_model import (
-    FORMULA_TEXT,
+    formula_text,
     ITEMS,
-    PROMPT_RUBRIC,
-    PUBLIC_TEXTS,
+    prompt_rubric,
+    public_texts,
     WEIGHT_CAPITAL,
     WEIGHT_HISTORY,
     WEIGHT_PATTERN,
@@ -302,11 +302,11 @@ def test_capital_stays_empty_even_when_amount_is_present():
 def test_formula_text_mentions_only_the_fixed_weights():
     import re
 
-    found = set(re.findall(r"0\.\d+", FORMULA_TEXT + PROMPT_RUBRIC))
+    found = set(re.findall(r"0\.\d+", formula_text() + prompt_rubric()))
     assert found <= {"0.35", "0.20", "0.15"}
     assert {"0.35", "0.20", "0.15"} <= found
-    assert "不要重新计算" in PROMPT_RUBRIC
-    for text in PUBLIC_TEXTS:
+    assert "不要重新计算" in prompt_rubric()
+    for text in public_texts():
         assert "*" not in text
         assert "`" not in text
     assert WEIGHT_PATTERN == 0.35
