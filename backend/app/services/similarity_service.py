@@ -1,4 +1,4 @@
-"""只和最近三个交易日的涨停样本比。样本窗口不含涨停当天，候选窗口含评估日。"""
+"""只和对比窗口（设置里的最近若干个交易日，默认 3）内的涨停样本比。样本窗口不含涨停当天，候选窗口含评估日。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import numpy as np
 
 from backend.app.algorithms.features import build_three_day_window
 from backend.app.algorithms.similarity import percent, score_components
-from backend.app.core.constants import COMPARE_WINDOW_TRADING_DAYS
+from backend.app.core.config import compare_window_days
 from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import BOARD_LABELS, classify, is_in_scope
 from backend.app.services.history_backfill import ensure_prior_bars, load_bars
@@ -18,12 +18,13 @@ DISCLAIMER = "相似度不是涨停概率"
 
 
 def pool_dates(session, as_of: date) -> list[date]:
+    """样本池覆盖的交易日：`as_of` 及往前，共「对比窗口」那么多个交易日。全工程只算这一份。"""
     days = quote_dates(session, as_of)
-    return days[-COMPARE_WINDOW_TRADING_DAYS:]
+    return days[-compare_window_days():]
 
 
 def limit_up_samples(session, as_of: date) -> tuple[list[date], list[dict], list[dict]]:
-    """截至 `as_of`（含）的最近三个交易日涨停样本。盘中要用它时必须传收盘日，别传当天。"""
+    """截至 `as_of`（含）、对比窗口内的涨停样本。盘中要用它时必须传收盘日，别传当天。"""
     dates = pool_dates(session, as_of)
     if not dates:
         return [], [], []

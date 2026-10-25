@@ -2,8 +2,9 @@
 import { api, ApiError, isAbort } from '@/api/client'
 import ExportButton from '@/components/ExportButton.vue'
 import type { ExportParams, PoolItem } from '@/api/types'
-import { boardLabel, formatAmount, formatPct, formatPrice, formatTime, formatTurnover, pctClass, shortDate } from '@/utils/format'
+import { boardLabel, formatAmount, formatBoards, formatPct, formatPrice, formatTime, formatTurnover, pctClass, shortDate } from '@/utils/format'
 import { limitTypeClass } from '@/utils/labels'
+import { compareWindowText } from '@/stores/session'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -65,7 +66,7 @@ onMounted(() => {
   <header class="page-head">
     <div>
       <h1>涨停池</h1>
-      <p class="lede">只列出最近三个交易日里涨停过的沪深股票。点一行进入相似度对比。</p>
+      <p class="lede">只列出{{ compareWindowText() }}里涨停过的沪深股票。点一行进入相似度对比。</p>
     </div>
     <button class="btn btn-ghost" type="button" :disabled="loading" @click="load">刷新</button>
   </header>
@@ -151,7 +152,7 @@ onMounted(() => {
             <td>{{ item.limit_date }}</td>
             <td class="right">{{ formatPrice(item.close) }}</td>
             <td class="right" :class="pctClass(item.pct_chg)">{{ formatPct(item.pct_chg) }}</td>
-            <td><span class="tag" :class="{ 'tag-hot': item.consecutive_boards >= 3 }">{{ item.consecutive_boards }} 板</span></td>
+            <td><span class="tag" :class="{ 'tag-hot': item.consecutive_boards >= 3 }">{{ formatBoards(item) }}</span></td>
             <td>{{ formatTime(item.first_limit_time) }}</td>
             <td><span class="tag" :class="limitTypeClass(item.limit_type)">{{ item.limit_type }}</span></td>
             <td class="right">{{ formatTurnover(item.turnover_rate) }}</td>

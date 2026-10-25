@@ -14,6 +14,7 @@ import { loadHealth, session } from '@/stores/session'
 import {
   clampPercent,
   formatAmount,
+  formatBoards,
   formatDateTime,
   formatPct,
   formatPrice,
@@ -260,7 +261,7 @@ watch(
     <div v-else-if="limitRow" class="feature-grid">
       <div class="feature"><span class="muted">收盘</span><b>{{ formatPrice(limitRow.close) }}</b></div>
       <div class="feature"><span class="muted">涨幅</span><b class="up">{{ formatPct(limitRow.pct_chg) }}</b></div>
-      <div class="feature"><span class="muted">连板</span><b>{{ limitRow.consecutive_boards }} 板</b></div>
+      <div class="feature"><span class="muted">连板</span><b>{{ formatBoards(limitRow) }}</b></div>
       <div class="feature"><span class="muted">首次封板</span><b>{{ formatTime(limitRow.first_limit_time) }}</b></div>
       <div class="feature"><span class="muted">成交量</span><b>{{ formatVolume(limitRow.volume) }}</b></div>
       <div class="feature">

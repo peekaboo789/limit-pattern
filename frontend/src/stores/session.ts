@@ -13,6 +13,11 @@ export const session = reactive({
 
 /** 花钱的按钮只在这三项配齐时才该按得动——判据与后端 `ai_ready()` 同一个字段。 */
 export const aiReady = () => session.settings?.ai_enabled === true
+/** 「最近 N 个交易日」。N 就是设置里的对比窗口，设置还没读到时不编一个 3 出来。 */
+export const compareWindowText = () => {
+  const days = session.settings?.compare_window_trading_days
+  return days ? `最近 ${days} 个交易日` : '对比窗口内'
+}
 
 export async function loadHealth(): Promise<void> {
   try {

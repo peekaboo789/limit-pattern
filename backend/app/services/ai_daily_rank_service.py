@@ -643,7 +643,7 @@ def persist_outcome(session, outcome: dict) -> dict:
     row.dropped_codes_count = int(result.get("dropped_codes_count") or 0)
     row.rejected_count = int(result.get("rejected_count") or 0)
     row.unverified_citations = int(result.get("unverified_citations") or 0)
-    row.cost_text = str(result.get("cost_text") or "")[:40]
+    row.cost_text = str(result.get("cost_text") or "")[:120]
     session.flush()
     recorded = 0
     if outcome.get("ok"):
@@ -681,6 +681,14 @@ def feed_of(row) -> list[dict]:
         for item in feed if isinstance(item, dict)]
 
 
+
+def _cost_text(row) -> str:
+    """结果里那份是全的；列上那份老版本截在 40 个字，「其中思考 N」正好被截掉。"""
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    return str(result.get("cost_text") or "") or (row.cost_text or "")
+
+
 def board_view(row) -> dict:
     """给页面的一行固定榜。`feed` 只带页面要的那几列，完整证据留在 `payload` 里。"""
     payload = dict(row.payload or {})
@@ -711,7 +719,7 @@ def board_view(row) -> dict:
         "dropped_codes_count": int(row.dropped_codes_count or 0),
         "rejected_count": int(row.rejected_count or 0),
         "unverified_citations": int(row.unverified_citations or 0),
-        "cost_text": row.cost_text or "",
+        "cost_text": _cost_text(row),
         "error": row.error or "",
         "result": result,
         "feed": feed_of(row),
@@ -885,7 +893,7 @@ def history(session, limit: int = 15) -> dict:
                 "picks_count": int(row.picks_count or 0),
                 "rejected_count": int(row.rejected_count or 0),
                 "unverified_citations": int(row.unverified_citations or 0),
-                "cost_text": row.cost_text or "",
+                "cost_text": _cost_text(row),
                 "error": (row.error or "")[:200],
             }
             for row in rows

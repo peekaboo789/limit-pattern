@@ -15,7 +15,7 @@ import type { ExportParams } from '@/api/types'
 import KlineChart from '@/components/KlineChart.vue'
 import OverlayChart from '@/components/OverlayChart.vue'
 import ScorePanel from '@/components/ScorePanel.vue'
-import { loadHealth, session } from '@/stores/session'
+import { compareWindowText, loadHealth, session } from '@/stores/session'
 import { formatScore, scoreColor, shortDate } from '@/utils/format'
 import { saveExportedText } from '@/utils/saveFile'
 import { computed, onMounted, ref, watch } from 'vue'
@@ -296,7 +296,7 @@ watch(
   <header class="page-head">
     <div>
       <h1>个股相似度</h1>
-      <p class="lede">把这只股票的近期窗口，和最近三个交易日涨停过的股票逐一对比。已排除自身。</p>
+      <p class="lede">把这只股票的近期窗口，和{{ compareWindowText() }}涨停过的股票逐一对比。已排除自身。</p>
     </div>
   </header>
 
@@ -504,7 +504,7 @@ watch(
           <div class="card stat">
             <div class="stat-label">高相似</div>
             <div class="stat-value">{{ summary?.high_similarity_count ?? '—' }}</div>
-            <div class="stat-foot">{{ summary?.high_similarity_rate === null ? '未设阈值' : `${summary?.high_similarity_rate ?? '—'}%` }}</div>
+            <div class="stat-foot">{{ summary == null ? '—' : summary.high_similarity_rate === null ? '未设阈值' : `${summary.high_similarity_rate}%` }}</div>
           </div>
           <div class="card stat">
             <div class="stat-label">最高相似</div>

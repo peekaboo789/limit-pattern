@@ -101,7 +101,7 @@ watch(
   <header class="page-head">
     <div>
       <h1>涨停形态样本</h1>
-      <p class="lede">{{ overview?.trade_date ?? '—' }} 往前 {{ overview?.pool_dates.length ?? 0 }} 个交易日的已收盘涨停样本库。</p>
+      <p class="lede">{{ overview?.pool_dates.length ? `${overview.trade_date} 往前 ${overview.pool_dates.length} 个交易日的已收盘涨停样本库` : '—' }}</p>
     </div>
     <div class="toolbar">
       <label class="field">

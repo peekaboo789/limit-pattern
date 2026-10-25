@@ -181,6 +181,16 @@ OPTIONAL_HIDDEN = (
     "httpcore",
 )
 
+#: 形态聚类在函数体里才 import sklearn（见 `algorithms/clustering.load_sklearn`）。
+#: 早先这里把 sklearn/scipy 排除在包外，结果出厂件一点「形态聚类」就是裸 500：
+#: `ModuleNotFoundError: No module named 'sklearn'`。这三项写死；打包机没装 sklearn 时
+#: 后端会把聚类接口答成可读的 503，而不是裸 500。
+CLUSTERING_HIDDEN = (
+    "sklearn.cluster",
+    "sklearn.decomposition",
+    "sklearn.metrics",
+)
+
 # 启动器用 importlib 按字符串加载后端，PyInstaller 扫不到。这些必须写死。
 REQUIRED_BACKEND = (
     "backend",
@@ -239,6 +249,11 @@ def analysis_kwargs() -> dict:
         hiddenimports.extend(REQUIRED_BACKEND)
         _log("已写入后端关键 hidden imports")
     hiddenimports.extend(_optional_hiddenimports())
+    if _spec_exists("sklearn"):
+        hiddenimports.extend(CLUSTERING_HIDDEN)
+        _log("已写入形态聚类的 sklearn hidden imports")
+    else:
+        _log("打包机没装 scikit-learn：出厂件的形态聚类会报「缺少聚类组件」")
     backend = ROOT / "backend"
     if backend.is_dir() and importlib.util.find_spec("backend") is not None:
         _try_package_files("backend", datas, binaries)
@@ -300,8 +315,6 @@ def analysis_kwargs() -> dict:
             "pydantic.mypy",
             "pydantic.v1.mypy",
             "anyio.pytest_plugin",
-            "sklearn",
-            "scipy",
         ],
         "noarchive": False,
         "optimize": 0,

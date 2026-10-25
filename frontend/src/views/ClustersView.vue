@@ -39,6 +39,12 @@ const biggest = computed(() =>
 )
 /** 归属表要跟分组表讲同一个故事：两边吃同一个 k，页面上不留两套组。 */
 const kParam = computed(() => (kChoice.value === 0 ? undefined : kChoice.value))
+/** 样本池的起止日。两头都写出来，不让人去猜「往前」含不含基准日本身。 */
+const poolSpan = computed(() => {
+  const dates = [...(overview.value?.pool_dates ?? [])].sort()
+  if (!dates.length) return overview.value?.trade_date ?? ''
+  return dates.length === 1 ? dates[0] : `${dates[0]} ~ ${dates[dates.length - 1]}`
+})
 
 async function ensureDate() {
   if (!session.health) await loadHealth()
@@ -117,9 +123,9 @@ watch(
   <header class="page-head">
     <div>
       <h1>形态聚类</h1>
-      <p class="lede">
-        {{ overview?.trade_date ?? '—' }} 往前 {{ overview?.pool_dates.length ?? 0 }} 个交易日的
-        {{ overview?.sample_count ?? 0 }} 条涨停样本，分成 {{ overview?.k ?? 0 }} 组。
+      <p v-if="overview" class="lede">
+        {{ poolSpan }} 共 {{ overview.pool_dates.length }} 个交易日的
+        {{ overview.sample_count }} 条涨停样本，分成 {{ overview.k }} 组。
       </p>
     </div>
     <div class="toolbar">
@@ -334,7 +340,7 @@ watch(
                 <td class="right mono">{{ item.avg_similarity.toFixed(2) }}</td>
                 <td class="right mono">{{ item.max_similarity.toFixed(2) }}</td>
                 <td class="right mono">{{ item.high_band_count }}</td>
-                <td class="muted mono">
+                <td class="muted mono wrap">
                   {{ item.top_members.map((member) => `${member.code} ${shortDate(member.limit_date)} ${member.similarity?.toFixed(2) ?? '—'}`).join(' · ') }}
                 </td>
               </tr>

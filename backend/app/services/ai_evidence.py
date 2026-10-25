@@ -62,7 +62,7 @@ _FIELD_DOC = (
     "at_limit 此刻是否封在涨停价上；limit_confirmed 这个涨停有没有收盘确认（盘中一律没有）；"
     "last_price 最新价（元）；change_percent 当日涨跌幅（百分数）；"
     "to_limit_percent 距当日涨停价还差几个点（分母是前收，已封板为 0，缺输入为 null）；"
-    "max_similarity 与最近三个交易日已收盘涨停样本池的最高相似度（0~100）；"
+    "max_similarity 与对比窗口（设置里的最近若干个交易日）已收盘涨停样本池的最高相似度（0~100）；"
     "avg_similarity 与同一个样本池的平均相似度；high_sim_count 相似度达到 90 以上的样本条数；"
     "sample_count 这一轮实际参与比对的样本条数（已剔掉它自己）；"
     "band 按最高相似度落的那一档；best_match 最像的那一条涨停样本（代码、名称、涨停日、分数）；"

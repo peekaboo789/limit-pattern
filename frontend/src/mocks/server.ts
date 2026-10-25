@@ -15,6 +15,7 @@ import {
 const settings: Settings = {
   retention_trading_days: 5,
   compare_window_trading_days: 3,
+  compare_window_min: 1,
   ai_enabled: true,
   ai_base_url: 'https://api.deepseek.com/v1',
   ai_model: 'deepseek-chat',
@@ -103,8 +104,8 @@ function updateSettings(body: unknown): Settings {
   }
   if ('compare_window_trading_days' in input) {
     const value = input.compare_window_trading_days
-    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-      throw new ApiError(422, '对比窗口必须是正整数')
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > settings.retention_trading_days) {
+      throw new ApiError(422, `对比窗口要在 1 到保留天数 ${settings.retention_trading_days} 之间`)
     }
     settings.compare_window_trading_days = value
   }

@@ -10,7 +10,7 @@
 `test_patterns_and_matches.py` 里有一条断言逐维比较库里那一条与现算那一条，
 谁改了口径当场炸。
 
-样本池的宽度沿用 `COMPARE_WINDOW_TRADING_DAYS`（3 个交易日），不做第二个常量：
+样本池的宽度就是设置里的「对比窗口」（`config.compare_window_days()`，默认 3 个交易日），不做第二个数：
 分档阈值、榜上的样本条数、回测的池子都是按这个数定的，多一个数就多一套对不上的账。
 
 第十五节的闸门也在这里：涨停当日或形态三天任一天有 error 级质量异常，这只股票当天
@@ -32,11 +32,12 @@ from backend.app.algorithms.features import (
     build_three_day_window,
     raw_day,
 )
+from backend.app.core.constants import MIN_LISTED_TRADING_DAYS
 from backend.app.core.logging import get_logger
 from backend.app.models.tables import DailyQuote, LimitUpPattern, SkippedRecord, Stock
 from backend.app.providers.markets import is_in_scope
 from backend.app.services.feature_service import add_skip, record_skip
-from backend.app.services.history_backfill import load_bars_bulk
+from backend.app.services.history_backfill import ensure_prior_bars, load_bars, load_bars_bulk
 from backend.app.services.quality_service import error_pairs
 from backend.app.services.retention import quote_dates
 from backend.app.services.similarity_service import DISCLAIMER, pool_dates
@@ -51,7 +52,7 @@ SKIP_INSUFFICIENT_WINDOW = "insufficient_window"
 #: 跳过原因给页面看的说法。
 REASON_LABELS = {
     SKIP_QUALITY_ERROR: "涨停日或形态三天里有 error 级数据质量异常",
-    SKIP_INSUFFICIENT_WINDOW: "库里凑不齐涨停前三根K线",
+    SKIP_INSUFFICIENT_WINDOW: "库里凑不齐涨停日之前那三根K线",
 }
 
 
@@ -95,6 +96,14 @@ def build_patterns(
     for code in candidates:
         bars = bars_by_code.get(code) or []
         window = build_three_day_window(bars, day, include_as_of_date=False)
+        backfill_reason = None
+        if not window.ok:
+            # 和相似度页的样本池同一个口径：涨停日前不足三根先补拉（只拉涨停日之前的线），
+            # 否则保留窗口最前面那几天的涨停，那边进池、这边落库时却被当成「凑不齐」跳过。
+            backfill_reason = ensure_prior_bars(session, code, day, day)
+            if backfill_reason is None:
+                bars = load_bars(session, code, day)
+                window = build_three_day_window(bars, day, include_as_of_date=False)
         if not window.ok:
             record_skip(
                 session,
@@ -102,7 +111,8 @@ def build_patterns(
                 stock_code=code,
                 stage="pattern",
                 reason=SKIP_INSUFFICIENT_WINDOW,
-                detail=window.reason or "窗口不足三天",
+                detail=backfill_reason
+                or f"涨停日之前只有 {sum(1 for bar in bars if bar.trade_date < day)} 根可用K线，需要 {MIN_LISTED_TRADING_DAYS} 根",
             )
             add_skip(stats, SKIP_INSUFFICIENT_WINDOW)
             continue
@@ -140,7 +150,7 @@ def _delete_day(session: Session, day: date) -> None:
 
 
 def pool_pattern_dates(session: Session, as_of: date) -> list[date]:
-    """样本池覆盖的交易日：`as_of` 及其前 `COMPARE_WINDOW_TRADING_DAYS-1` 天。
+    """样本池覆盖的交易日：`as_of` 及其前「对比窗口 − 1」个交易日。
 
     与 `similarity_service.pool_dates` 同一个来源，不另算一份。
     """

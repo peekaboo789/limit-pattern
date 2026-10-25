@@ -40,6 +40,13 @@ def cost_of(usage: dict) -> str:
     return " · ".join(parts)
 
 
+
+def stored_cost_text(row) -> str:
+    """账面那一行先按存档里的 `usage` 现写：老版本把这一列截在 40 个字，
+    「其中思考 N」那段正好被截掉。存档里没有 usage 才退回列上那一份。"""
+    return cost_of((row.payload or {}).get("usage") or {}) or (row.cost_text or "")
+
+
 def persist_report(session, report: dict) -> int:
     """落一份存档，回它的编号。榜上没一行证据的报告不该走到这里（调用方已经拦了）。"""
     usage = report.get("usage") or {}
@@ -62,7 +69,7 @@ def persist_report(session, report: dict) -> int:
         picks_beyond_limit=int(report.get("picks_beyond_limit") or 0),
         text_truncated=bool(report.get("text_truncated")),
         recommended_codes=[str(pick.get("stock_code") or "") for pick in report.get("picks") or []],
-        cost_text=cost_of(usage)[:40],
+        cost_text=cost_of(usage)[:120],
     )
     session.add(row)
     session.flush()
@@ -75,7 +82,7 @@ def view_of(row: AiAnalysisReport) -> dict:
     payload["report_id"] = int(row.id)
     payload.setdefault("chain", row.chain)
     payload["archived_at"] = row.created_at.isoformat(timespec="seconds") if row.created_at else ""
-    payload["stored_cost_text"] = row.cost_text or cost_of(payload.get("usage") or {})
+    payload["stored_cost_text"] = stored_cost_text(row)
     return payload
 
 
@@ -125,7 +132,7 @@ def list_reports(session, *, chain: str = "", limit: int = 20) -> dict:
             "feed_rows": int(row.feed_rows or 0),
             "picks_count": int(row.picks_count or 0),
             "recommended_codes": list(row.recommended_codes or []),
-            "cost_text": row.cost_text or cost_of((row.payload or {}).get("usage") or {}),
+            "cost_text": stored_cost_text(row),
             "error": str((row.payload or {}).get("error") or "")[:200],
         }
         for row in rows

@@ -5,6 +5,7 @@ import { aiReady } from '@/stores/session'
 import { realtime, refreshRealtimeNow, releaseRealtime, retainRealtime, setRankMetric, setTopCount, startBoardAnalysis, startSingleAnalysis, clearSingle } from '@/stores/realtime'
 import { refreshWatchNow, releaseWatch, retainWatch } from '@/stores/watch'
 import { boardLabel, formatDateTime, formatGap, formatPct, formatPrice, formatScore, pctClass, spendWord } from '@/utils/format'
+import { phaseLabel, snapshotSourceLabel, sourceLabel, windowModeLabel } from '@/utils/labels'
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -157,9 +158,9 @@ onUnmounted(() => {
     <div class="readonly" style="margin-top: 12px">
       <div class="two">
         <div>
-          <div><span class="muted">时段</span> <b>{{ status?.phase || '—' }}</b><span v-if="status" class="muted"> · {{ status.in_session ? '盘中' : '非盘中' }}</span></div>
-          <div><span class="muted">形态窗口</span> <b>{{ snapshot?.window_mode || '—' }}</b></div>
-          <div><span class="muted">行情来源</span> <b>{{ snapshot?.provider || status?.source || '—' }}</b></div>
+          <div><span class="muted">时段</span> <b>{{ phaseLabel(status?.phase) }}</b><span v-if="status" class="muted"> · {{ status.in_session ? '盘中' : '非盘中' }}</span></div>
+          <div><span class="muted">形态窗口</span> <b>{{ windowModeLabel(snapshot?.window_mode) }}</b></div>
+          <div><span class="muted">行情来源</span> <b>{{ sourceLabel(snapshot?.provider || status?.source || '') || '—' }}</b></div>
           <div><span class="muted">监控线程</span> <b>{{ status?.tracker_running ? '在跑' : '待命' }}</b></div>
         </div>
         <div>
@@ -192,7 +193,7 @@ onUnmounted(() => {
     <article class="card stat">
       <div class="stat-label">取不到相似度</div>
       <div class="stat-value">{{ top?.market?.skipped_count ?? snapshot?.skipped_count ?? 0 }}</div>
-      <div class="stat-foot">{{ snapshot?.trade_date || '—' }} · {{ snapshot?.source || '—' }}</div>
+      <div class="stat-foot">交易日 {{ snapshot?.trade_date || '—' }} · {{ snapshotSourceLabel(snapshot?.source) }}</div>
     </article>
   </section>
 
@@ -278,8 +279,8 @@ onUnmounted(() => {
               </td>
               <td class="right">{{ pick.score == null ? '未给分' : formatScore(pick.score) }}</td>
               <td class="right">{{ pick.evidence.formula?.model_gap == null ? '—' : formatScore(pick.evidence.formula.model_gap) }}</td>
-              <td style="max-width: 260px">{{ pick.reason || '—' }}</td>
-              <td style="max-width: 260px">{{ pick.counter_evidence || '—' }}</td>
+              <td class="wrap">{{ pick.reason || '—' }}</td>
+              <td class="wrap">{{ pick.counter_evidence || '—' }}</td>
               <td class="hint">{{ evidenceText(pick) }}</td>
               <td class="hint">{{ historyText(pick.stock_code) }}</td>
             </tr>

@@ -334,7 +334,7 @@ class AiAnalysisReport(Base):
     picks_beyond_limit: Mapped[int] = mapped_column(Integer, default=0)
     text_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
     recommended_codes: Mapped[list] = mapped_column(JSON, default=list)
-    cost_text: Mapped[str] = mapped_column(String(40), default="")
+    cost_text: Mapped[str] = mapped_column(String(120), default="")
 
 
 class AiDailyRankBoard(Base):
@@ -365,7 +365,7 @@ class AiDailyRankBoard(Base):
     dropped_codes_count: Mapped[int] = mapped_column(Integer, default=0)
     rejected_count: Mapped[int] = mapped_column(Integer, default=0)
     unverified_citations: Mapped[int] = mapped_column(Integer, default=0)
-    cost_text: Mapped[str] = mapped_column(String(40), default="")
+    cost_text: Mapped[str] = mapped_column(String(120), default="")
     error: Mapped[str] = mapped_column(String(1000), default="")
 
 

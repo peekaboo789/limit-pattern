@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { initSession, session } from '@/stores/session'
+import { compareWindowText, initSession, session } from '@/stores/session'
 import { sourceLabel } from '@/utils/labels'
 import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
@@ -92,7 +92,7 @@ onMounted(() => {
         <div class="disclaimer-bar" role="note">
           <span class="mark">声明</span>
           <strong>相似度不是涨停概率</strong>
-          <span class="sub">只衡量与最近三个交易日涨停样本的形态接近程度，不预测之后涨跌。</span>
+          <span class="sub">只衡量与{{ compareWindowText() }}涨停样本的形态接近程度，不预测之后涨跌。</span>
         </div>
       </div>
       <main class="content">

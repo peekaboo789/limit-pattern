@@ -59,11 +59,20 @@ class SklearnTools(NamedTuple):
     silhouette: object
 
 
+class ClusteringToolsMissing(RuntimeError):
+    """运行环境里没有 scikit-learn。接口答 503 并说清缺什么，不吐裸 500。"""
+
+
 @cache
 def load_sklearn() -> SklearnTools:
-    from sklearn.cluster import KMeans
-    from sklearn.decomposition import PCA
-    from sklearn.metrics import silhouette_score
+    try:
+        from sklearn.cluster import KMeans
+        from sklearn.decomposition import PCA
+        from sklearn.metrics import silhouette_score
+    except ImportError as exc:
+        raise ClusteringToolsMissing(
+            f"缺少聚类组件 scikit-learn（{exc.name or exc}），形态聚类用不了"
+        ) from exc
 
     return SklearnTools(KMeans, PCA, silhouette_score)
 

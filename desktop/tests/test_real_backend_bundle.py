@@ -33,4 +33,10 @@ def test_hiddenimports_cover_backend_providers_and_scheduler():
     assert missing == []
     for name in ("numpy", "httpx", "apscheduler.schedulers.background", "sqlalchemy.dialects.sqlite"):
         assert name in hidden, name
-    assert "sklearn" in built["excludes"]
+    # 形态聚类靠 sklearn。早先它被排除在包外，出厂件一点聚类页就是裸 500。
+    for name in ("sklearn", "scipy"):
+        assert name not in built["excludes"], name
+    if importlib.util.find_spec("sklearn") is not None:
+        from desktop.pyi_bundle import CLUSTERING_HIDDEN
+
+        assert [name for name in CLUSTERING_HIDDEN if name not in hidden] == []

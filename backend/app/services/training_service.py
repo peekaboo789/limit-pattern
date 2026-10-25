@@ -11,8 +11,10 @@
 * 命中 error 级质量异常的行**照样写**，但 `quality_passed=False` 并记下原因：
   丢掉就没人知道这只股票这天本可以进训练集。`matrix()` 默认只取通过的那些行。
 
-库里只留约一周明细时，绝大多数股票连 T-5 都取不满，这张表的行数会很少——
-那是保留窗口的直接后果，不是这张表的 bug。作业把取不满的只数如实记进跳过账。
+T-5…T-1 只在库里留着的那段全市场行情（`daily_quotes` 的交易日）里数：保留 N 天的库，
+最早能出训练行的标签日是第 6 个交易日，保留天数不到 6 就一行都出不来。全市场都凑不满的
+那一天只记一笔日级跳过账（代码留空）；在行情范围内仍凑不满的个股（停牌、新上市）才按只记账。
+`calc_bars` 里为算样本补拉的历史不参与回看——那份历史只有涨停票有，混进来训练集就成了涨停票专场。
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from backend.app.models.tables import (
     DailyFeature,
     DailyQuote,
     DataQualityError,
+    SkippedRecord,
     Stock,
     StockTrainingRow,
 )
@@ -44,6 +47,7 @@ from backend.app.services.feature_service import (
 )
 from backend.app.services.history_backfill import load_bars_bulk
 from backend.app.services.quality_service import ERROR as ERROR_SEVERITY, error_pairs
+from backend.app.services.retention import quote_dates
 
 logger = get_logger("training_service")
 
@@ -81,11 +85,13 @@ REQUIRED_PRIOR_BARS = max(BAR_LAGS)
 #: 跳过与拦下的原因。
 SKIP_NOT_IN_MASTER = "code_not_in_master"
 SKIP_INSUFFICIENT_HISTORY = "insufficient_history_for_training"
+SKIP_MARKET_HISTORY = "market_history_too_short"
 BLOCK_QUALITY_ERROR = "quality_error"
 
 REASON_LABELS = {
     SKIP_NOT_IN_MASTER: "代码不在股票主档里",
-    SKIP_INSUFFICIENT_HISTORY: f"标签日之前不足 {REQUIRED_PRIOR_BARS} 个交易日，T-5…T-1 取不满",
+    SKIP_INSUFFICIENT_HISTORY: f"这只票在库里行情范围内不足 {REQUIRED_PRIOR_BARS} 根（停牌或新上市）",
+    SKIP_MARKET_HISTORY: f"库里这一天之前不足 {REQUIRED_PRIOR_BARS} 个交易日的行情，全市场都取不满 T-5…T-1",
     BLOCK_QUALITY_ERROR: "标签日、cutoff 或 T-5…T-1 里有 error 级数据质量异常（行仍写入，quality_passed=False）",
 }
 
@@ -185,9 +191,36 @@ def build_training(
     master_errors = _master_error_codes(session)
     features_map = _feature_map(session, by_code, warmup_from, end)
 
+    # 回看只认库里留着的那段全市场行情。`load_bars_bulk` 还会带出 `calc_bars` 的补拉历史，
+    # 而那份历史只给「涨停过、要算样本」的票补过：拿它凑 T-5…T-1，训练集里就只剩
+    # 涨停票，标签率被抬到六成，跟全市场一成出头的真实底数是两回事。
+    market_days = quote_dates(session)
+    coverage_start = market_days[0] if market_days else start
+    label_days = sorted({day for days in by_code.values() for day in days})
+    short_days = {
+        day: len([item for item in market_days if item < day])
+        for day in label_days
+        if len([item for item in market_days if item < day]) < REQUIRED_PRIOR_BARS
+    }
+    _clear_stale(session, start=start, end=end, codes=codes, short_days=set(short_days))
+    for day, have in sorted(short_days.items()):
+        # 全市场都取不满的那一天只记一笔，不给四千多只票各记一笔同样的话。
+        add_skip(stats, SKIP_MARKET_HISTORY, 1)
+        _record_skip(
+            session,
+            code="",
+            day=day,
+            stage="training",
+            reason=SKIP_MARKET_HISTORY,
+            detail=(
+                f"库里这一天之前只有 {have} 个交易日的行情，需要 {REQUIRED_PRIOR_BARS} 个；"
+                f"保留天数至少 {REQUIRED_PRIOR_BARS + 1} 天才会出训练行"
+            ),
+        )
+
     for code in sorted(by_code):
         days = by_code[code]
-        bars = bars_by_code.get(code) or []
+        bars = [bar for bar in (bars_by_code.get(code) or []) if bar.trade_date >= coverage_start]
         ordered_days = sorted(bar.trade_date for bar in bars)
         if code not in master:
             add_skip(stats, SKIP_NOT_IN_MASTER, 1)
@@ -195,6 +228,8 @@ def build_training(
             continue
         written = 0
         for label_day in sorted(days):
+            if label_day in short_days:
+                continue
             prior_days = [day for day in ordered_days if day < label_day]
             if len(prior_days) < REQUIRED_PRIOR_BARS:
                 add_skip(stats, SKIP_INSUFFICIENT_HISTORY, 1)
@@ -204,7 +239,7 @@ def build_training(
                     day=label_day,
                     stage="training",
                     reason=SKIP_INSUFFICIENT_HISTORY,
-                    detail=f"标签日之前只有 {len(prior_days)} 根，需要 {REQUIRED_PRIOR_BARS} 根",
+                    detail=f"库里行情范围内标签日之前只有 {len(prior_days)} 根，需要 {REQUIRED_PRIOR_BARS} 根",
                 )
                 continue
             lag_days = prior_lag_dates(ordered_days, label_day)
@@ -257,6 +292,34 @@ def build_training(
     # 所以收尾必须补一次：写入在事务里对后续读取可见，提交仍由调用方决定。
     session.flush()
     return stats
+
+
+def _clear_stale(
+    session: Session,
+    *,
+    start: date,
+    end: date,
+    codes: Sequence[str] | None,
+    short_days: set[date],
+) -> None:
+    """重建前先把这段区间里旧的训练跳过账、以及全市场都凑不满那几天的旧行清掉。
+
+    旧口径会拿补拉历史给涨停票凑出训练行，并给其余四千多只各记一笔「只有 4 根」：
+    不清的话新旧两套口径并排留在库里，页面上的数也就对不上这一轮跑出来的结果。
+    """
+    skips = session.query(SkippedRecord).filter(
+        SkippedRecord.stage == "training",
+        SkippedRecord.trade_date >= start,
+        SkippedRecord.trade_date <= end,
+    )
+    if codes:
+        skips = skips.filter(SkippedRecord.stock_code.in_([str(code) for code in codes]))
+    skips.delete(synchronize_session=False)
+    if short_days:
+        rows = session.query(StockTrainingRow).filter(StockTrainingRow.label_date.in_(sorted(short_days)))
+        if codes:
+            rows = rows.filter(StockTrainingRow.stock_code.in_([str(code) for code in codes]))
+        rows.delete(synchronize_session=False)
 
 
 def _feature_map(
@@ -377,6 +440,7 @@ __all__ = [
     "REASON_LABELS",
     "REQUIRED_PRIOR_BARS",
     "SKIP_INSUFFICIENT_HISTORY",
+    "SKIP_MARKET_HISTORY",
     "SKIP_NOT_IN_MASTER",
     "build_training",
     "column_names",

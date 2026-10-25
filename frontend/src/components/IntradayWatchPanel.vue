@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { watch as watchStore, ackWatch } from '@/stores/watch'
 import type { WatchAlert, WatchRow } from '@/api/types'
-import { formatPct, formatPrice, formatScore, pctClass } from '@/utils/format'
+import { formatClock, formatPct, formatPrice, formatScore, pctClass } from '@/utils/format'
 import { computed } from 'vue'
 
 /**
@@ -69,9 +69,6 @@ function rankText(value: number | null | undefined): string {
   return value === null || value === undefined ? '—' : String(value)
 }
 
-function clockOf(value: string | null | undefined): string {
-  return value ? value.slice(11, 19) : '—'
-}
 
 function isPin(item: { tier: string }): boolean {
   return item.tier === state.value?.pin_tier
@@ -199,7 +196,7 @@ function pendingOf(row: WatchRow): boolean {
             <span class="hint">
               {{ item.rank === null ? '名次未知' : `第 ${item.rank} 名` }} ·
               {{ item.rise_3min === null ? '跳升未知' : `跳升 ${item.rise_3min.toFixed(2)} 点` }} ·
-              {{ clockOf(item.fired_at) }}
+              {{ formatClock(item.fired_at) }}
             </span>
             <button class="btn btn-ghost" type="button" :disabled="watchStore.ackBusy" @click="ackWatch(item.stock_code, item.tier)">
               知道了

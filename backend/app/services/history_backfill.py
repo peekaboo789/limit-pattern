@@ -157,6 +157,12 @@ def load_bars_bulk(session, as_of: date, codes: list[str] | None = None) -> dict
     return {code: [slot[day] for day in sorted(slot)] for code, slot in grouped.items()}
 
 
+def _fetch_kline(code: str, start: date, end: date) -> list[dict]:
+    from backend.app.services.sync_service import fetch_kline_retry
+
+    return fetch_kline_retry(code, start, end)
+
+
 def ensure_prior_bars(session, code: str, limit_date: date, as_of: date) -> str | None:
     """让涨停日之前至少有三根 K 线。成功返回 None，失败返回可展示的原因。"""
     if limit_date > as_of:
@@ -172,9 +178,7 @@ def ensure_prior_bars(session, code: str, limit_date: date, as_of: date) -> str 
     if end < start:
         return "没有可补的历史区间"
     try:
-        from backend.app.services.sync_service import fetch_kline_retry
-
-        fetched = fetch_kline_retry(code, start, end)
+        fetched = _fetch_kline(code, start, end)
     except Exception:
         return "补拉历史日线失败"
     usable = []

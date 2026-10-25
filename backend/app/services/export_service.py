@@ -12,7 +12,7 @@ from backend.app.core.config import exports_dir, public_settings
 from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import classify, is_in_scope
 from backend.app.services.similarity_service import DISCLAIMER, pool_dates, scan_market, similar_to
-from backend.app.services.summary_service import _streak, get_summary
+from backend.app.services.summary_service import get_summary, streak_of
 
 COLUMNS = ["排名", "代码", "名称", "总分", "形态分", "量能分", "量比分", "最相似涨停股", "涨停日期"]
 
@@ -117,11 +117,16 @@ def _pool_rows(session, day: date) -> tuple[list[str], list[list]]:
                     "SH" if exchange == "SSE" else "SZ",
                     quote.close,
                     quote.change_percent,
-                    _streak(session, quote.stock_code, limit_day),
+                    _streak_text(*streak_of(session, quote.stock_code, limit_day)),
                 ]
             )
             rank += 1
     return [item.isoformat() for item in dates], rows
+
+
+def _streak_text(height: int, at_least: bool) -> str:
+    """数到库里最早那天还没断的连板只能写下界，和页面上的「≥N」同一个读法。"""
+    return f"≥{height}" if at_least else str(height)
 
 
 def render_export(session, kind: str, day: date, code: str | None, top: int) -> tuple[str, str]:

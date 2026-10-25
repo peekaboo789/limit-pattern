@@ -13,6 +13,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.app.core.constants import (
+    COMPARE_WINDOW_MIN_TRADING_DAYS,
     COMPARE_WINDOW_TRADING_DAYS,
     DETAIL_RETENTION_TRADING_DAYS,
     RETENTION_MAX_TRADING_DAYS,
@@ -250,6 +251,7 @@ def settings_path() -> Path:
 def default_settings() -> dict:
     return {
         "retention_trading_days": DETAIL_RETENTION_TRADING_DAYS,
+        "compare_window_trading_days": COMPARE_WINDOW_TRADING_DAYS,
         "ai_base_url": os.environ.get("AI_BASE_URL", "").strip(),
         "ai_model": os.environ.get("AI_MODEL", "").strip(),
         "ai_api_key": os.environ.get("AI_API_KEY", "").strip(),
@@ -372,8 +374,9 @@ def public_settings() -> dict:
     ai = describe_ai_sources()
     active = next((item for item in ai["sources"] if item["active"]), None) or {}
     return {
-        "retention_trading_days": int(raw["retention_trading_days"]),
-        "compare_window_trading_days": COMPARE_WINDOW_TRADING_DAYS,
+        "retention_trading_days": retention_days(),
+        "compare_window_trading_days": compare_window_days(),
+        "compare_window_min": COMPARE_WINDOW_MIN_TRADING_DAYS,
         "ai_enabled": bool(active.get("complete")),
         "ai_base_url": url,
         "ai_model": model,
@@ -407,20 +410,40 @@ def _market_scope_text() -> str:
     return market_scope_text()
 
 
+def _whole_days(value: object, label: str) -> int:
+    """设置里的天数只收整数。`3.7`、`true`、`"三"` 都直接拒，不悄悄取整。"""
+    if isinstance(value, bool):
+        raise ValueError(f"{label}要填整数天数")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    raise ValueError(f"{label}要填整数天数，收到的是 {value!r}")
+
+
 def update_settings(changes: dict) -> dict:
     current = read_settings_file()
-    if "compare_window_trading_days" in changes and changes["compare_window_trading_days"] not in (
-        None,
-        COMPARE_WINDOW_TRADING_DAYS,
-    ):
-        raise ValueError("对比窗口固定为 3 个交易日，不能修改")
     if "retention_trading_days" in changes and changes["retention_trading_days"] is not None:
-        days = int(changes["retention_trading_days"])
+        days = _whole_days(changes["retention_trading_days"], "保留天数")
         if days < RETENTION_MIN_TRADING_DAYS or days > RETENTION_MAX_TRADING_DAYS:
             raise ValueError(
                 f"保留天数要在 {RETENTION_MIN_TRADING_DAYS} 到 {RETENTION_MAX_TRADING_DAYS} 之间"
             )
         current["retention_trading_days"] = days
+    if "compare_window_trading_days" in changes and changes["compare_window_trading_days"] is not None:
+        current["compare_window_trading_days"] = _whole_days(
+            changes["compare_window_trading_days"], "对比窗口"
+        )
+    # 两个数一起核：样本池只能落在库里留着的那几天里。窗口比保留天数还长，
+    # 池子最老的那几天早被清掉了，页面上写着「5 日窗口」实际只比了 3 天。
+    retention = _whole_days(current.get("retention_trading_days", DETAIL_RETENTION_TRADING_DAYS), "保留天数")
+    window = _whole_days(current.get("compare_window_trading_days", COMPARE_WINDOW_TRADING_DAYS), "对比窗口")
+    if window < COMPARE_WINDOW_MIN_TRADING_DAYS or window > retention:
+        raise ValueError(
+            f"对比窗口要在 {COMPARE_WINDOW_MIN_TRADING_DAYS} 到保留天数 {retention} 之间，收到的是 {window}"
+        )
     if "ai_base_url" in changes and changes["ai_base_url"] is not None:
         text = str(changes["ai_base_url"]).strip()
         if masked_placeholder_in(text):
@@ -463,3 +486,16 @@ def retention_days() -> int:
     except (TypeError, ValueError, KeyError):
         return DETAIL_RETENTION_TRADING_DAYS
     return max(RETENTION_MIN_TRADING_DAYS, min(RETENTION_MAX_TRADING_DAYS, days))
+
+
+def compare_window_days() -> int:
+    """对比窗口（样本池往回看几个交易日，含基准日）。全工程只从这里取这个数。
+
+    设置文件被手改坏、或者窗口比保留天数还长时，按边界收回来——
+    读的这一头不报错，拒绝是 `update_settings` 在写入时做的事。
+    """
+    try:
+        days = int(read_settings_file()["compare_window_trading_days"])
+    except (TypeError, ValueError, KeyError):
+        days = COMPARE_WINDOW_TRADING_DAYS
+    return max(COMPARE_WINDOW_MIN_TRADING_DAYS, min(retention_days(), days))

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from backend.app import __version__
+from backend.app.algorithms.clustering import ClusteringToolsMissing
 from backend.app.core import ai_sources
 from backend.app.core.clock import today
 from backend.app.core.config import exports_dir, public_settings, update_settings
@@ -61,6 +62,7 @@ from backend.app.services import data_service
 from backend.app.services import match_service
 from backend.app.services import pattern_service
 from backend.app.services import prediction_service
+from backend.app.services import skip_labels
 from backend.app.services.feature_service import skip_page
 from backend.app.services.similarity_service import DISCLAIMER, pool_dates, scan_market, similar_to
 from backend.app.services.summary_service import generate_summary, get_summary, list_summaries
@@ -102,7 +104,7 @@ def _code(value: str) -> str:
     return code
 
 
-def _limit_item(row: DailyQuote, names: dict[str, str], streak: int) -> dict:
+def _limit_item(row: DailyQuote, names: dict[str, str], streak: tuple[int, bool]) -> dict:
     exchange, _board = classify(row.stock_code)
     one_word = (
         row.open is not None
@@ -128,21 +130,23 @@ def _limit_item(row: DailyQuote, names: dict[str, str], streak: int) -> dict:
         "amount": row.amount,
         "amount_estimated": bool(row.amount_estimated),
         "turnover_rate": row.turnover_rate,
-        "consecutive_boards": streak,
+        "consecutive_boards": streak[0],
+        #: True = 数到库里最早那天（或停牌缺行）还没断，连板数只能当下界读
+        "consecutive_boards_at_least": streak[1],
         "first_limit_time": None,
         "limit_type": limit_type,
     }
 
 
-def _streaks(session, day: date) -> dict[str, int]:
-    from backend.app.services.summary_service import _streak
+def _streaks(session, day: date) -> dict[str, tuple[int, bool]]:
+    from backend.app.services.summary_service import streak_of
 
     rows = (
         session.query(DailyQuote.stock_code)
         .filter(DailyQuote.trade_date == day, DailyQuote.is_limit_up.is_(True))
         .all()
     )
-    return {code: _streak(session, code, day) for (code,) in rows}
+    return {code: streak_of(session, code, day) for (code,) in rows}
 
 
 @router.get("/health")
@@ -167,10 +171,16 @@ def get_settings_view() -> dict:
 
 @router.put("/settings")
 def put_settings(body: dict) -> dict:
+    before = public_settings()["compare_window_trading_days"]
     try:
-        return update_settings(body or {})
+        saved = update_settings(body or {})
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # 窗口一改，最新一天落库的样本池与扫描就是旧口径：当场起任务按新窗口重做，
+    # 不让用户自己去数据管理页再点两个按钮才对上。
+    if saved["compare_window_trading_days"] != before:
+        saved["window_refresh"] = data_service.start_window_refresh()
+    return saved
 
 
 @router.post("/sync")
@@ -233,7 +243,7 @@ def limitups(date: str | None = None) -> dict:
             .all()
         )
         items = [
-            _limit_item(row, names, streaks.get(row.stock_code, 1))
+            _limit_item(row, names, streaks.get(row.stock_code, (1, False)))
             for row in rows
             if is_in_scope(row.stock_code)
         ]
@@ -261,7 +271,7 @@ def pool() -> dict:
             for row in rows:
                 if not is_in_scope(row.stock_code):
                     continue
-                item = _limit_item(row, names, streaks.get(row.stock_code, 1))
+                item = _limit_item(row, names, streaks.get(row.stock_code, (1, False)))
                 item["limit_date"] = day.isoformat()
                 items.append(item)
     return {"dates": [day.isoformat() for day in dates], "items": items}
@@ -914,7 +924,8 @@ def data_skips(
     """跳过账分页：哪一天哪只股票在哪个阶段因为什么没进库。"""
     day = _day_or_none(date)
     with session_scope() as session:
-        return skip_page(session, stage=stage or None, reason=reason or None, day=day, limit=limit, offset=offset)
+        page = skip_page(session, stage=stage or None, reason=reason or None, day=day, limit=limit, offset=offset)
+    return skip_labels.annotate(page, stage or None)
 
 
 @router.get("/patterns/overview")
@@ -1097,6 +1108,8 @@ def _clusters(action) -> dict:
         return action()
     except cluster_service.ClusterUnavailable as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ClusteringToolsMissing as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/clusters/overview")

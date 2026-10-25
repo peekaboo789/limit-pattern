@@ -41,7 +41,6 @@ export const dailyRank = reactive({
 
 let refs = 0
 let timer = 0
-let ticks = 0
 let inFlight = false
 
 function detail(reason: unknown, fallback: string): string {
@@ -107,13 +106,13 @@ async function loadSummary(): Promise<void> {
 async function tick(): Promise<void> {
   if (inFlight) return
   inFlight = true
-  ticks += 1
   try {
     if (isRunning() || dailyRank.pendingRank) {
       await loadRunner()
     } else if (refs > 0) {
-      if (ticks === 1) await Promise.all([loadState(), loadHistory(), loadSummary()])
-      else await loadState()
+      // 收盘后定时任务会自己对账、落新的一天：闲着的每一拍三份都读，
+      // 不然「备过的日子」和「历史账」要重进页面才追得上。
+      await Promise.all([loadState(), loadHistory(), loadSummary()])
     }
   } finally {
     inFlight = false
@@ -146,7 +145,6 @@ export function releaseDailyRank(): void {
 
 /** 回到前台那一拍补一次读数，不等下一次定时。 */
 export function refreshDailyRankNow(): void {
-  ticks = 0
   void loadState()
   void loadHistory()
   void loadSummary()

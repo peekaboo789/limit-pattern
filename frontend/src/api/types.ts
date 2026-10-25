@@ -12,6 +12,8 @@ export interface Health {
 export interface Settings {
   retention_trading_days: number
   compare_window_trading_days: number
+  /** 对比窗口的下限；上限就是保留天数。 */
+  compare_window_min?: number
   ai_enabled: boolean
   ai_base_url: string
   ai_model: string
@@ -73,6 +75,8 @@ export interface LimitUpItem {
   amount_estimated?: boolean
   turnover_rate: number | null
   consecutive_boards: number
+  /** true = 数到库里最早那天（或停牌缺行）还没断，只能当下界读，显示「≥N」 */
+  consecutive_boards_at_least?: boolean
   first_limit_time: string | null
   limit_type: string
 }
@@ -1320,6 +1324,8 @@ export interface DataJobState {
   started_at: string
   finished_at: string
   result: DataJobResult | null
+  /** 结果卡里跳过原因的中文说法（按任务所属阶段翻）。 */
+  skip_labels?: Record<string, string>
   counts?: DataCounts
 }
 
@@ -1379,11 +1385,15 @@ export interface DataJobAck {
 export interface SkipPage {
   total: number
   by_reason: Record<string, number>
+  /** 原因码 → 中文。带阶段筛选时按那个阶段的说法。 */
+  reason_labels?: Record<string, string>
   items: {
     trade_date: string
+    /** 留空 = 日级账：那一天全市场都一样，不逐只记。 */
     stock_code: string
     stage: string
     reason: string
+    reason_label?: string
     detail: string
   }[]
 }

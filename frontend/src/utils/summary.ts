@@ -125,7 +125,7 @@ function normalizeLadder(raw: unknown): LadderCard[] {
     const label = numeric && boards != null
       ? boards <= 1
         ? '首板'
-        : `${boards} 连板`
+        : `${record.at_least === true ? '≥' : ''}${boards} 连板`
       : String(record.name ?? record.label ?? record.level ?? '梯队')
     const examples = stringList(record.examples ?? record.stocks ?? record.names ?? record.samples ?? record.codes)
     return {

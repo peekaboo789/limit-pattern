@@ -126,10 +126,47 @@ def test_health_and_settings_round_trip(client):
     again = client.get("/api/settings")
     assert secret not in again.text
     assert again.json()["ai_model"] == "demo-model"
-    rejected = client.put("/api/settings", json={"compare_window_trading_days": 4})
-    assert rejected.status_code == 422
     too_small = client.put("/api/settings", json={"retention_trading_days": 2})
     assert too_small.status_code == 422
+
+
+def test_compare_window_is_customisable_within_retention(client):
+    settings = client.get("/api/settings").json()
+    assert settings["compare_window_trading_days"] == 3
+    assert settings["compare_window_min"] == 1
+    retention = settings["retention_trading_days"]
+
+    accepted = client.put("/api/settings", json={"compare_window_trading_days": 4})
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["compare_window_trading_days"] == 4
+    assert client.get("/api/settings").json()["compare_window_trading_days"] == 4
+
+    # 窗口比保留天数还长，样本池里那几天的明细早被清掉了：拒收，而不是悄悄截短。
+    for bad in (retention + 1, 0, -2, 3.5, "abc", True):
+        response = client.put("/api/settings", json={"compare_window_trading_days": bad})
+        assert response.status_code == 422, (bad, response.text)
+    assert client.get("/api/settings").json()["compare_window_trading_days"] == 4, "拒收的值把旧设置改掉了"
+
+    # 保留天数砍到比窗口还短，同样拒收；两项一起改、一起合法才收。
+    shrink = client.put("/api/settings", json={"retention_trading_days": 3})
+    assert shrink.status_code == 422, shrink.text
+    both = client.put("/api/settings", json={"retention_trading_days": 3, "compare_window_trading_days": 2})
+    assert both.status_code == 200, both.text
+    assert both.json()["retention_trading_days"] == 3
+    assert both.json()["compare_window_trading_days"] == 2
+
+
+def test_pool_follows_the_compare_window_setting(client):
+    days = _seed()
+    last = days[-1].isoformat()
+    for window in (3, 2, 1):
+        assert client.put("/api/settings", json={"compare_window_trading_days": window}).status_code == 200
+        pool = client.get("/api/pool").json()
+        assert pool["dates"] == [day.isoformat() for day in days[-window:]], window
+        scan = client.get("/api/scan", params={"date": last, "top": 20}).json()
+        assert scan["pool_size"] == window, (window, scan["pool_size"])
+        status = client.get("/api/data/status").json()
+        assert status["compare_window_days"] == window
 
 
 def test_pool_is_three_days_and_excludes_self_and_future(client):

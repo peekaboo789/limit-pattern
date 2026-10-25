@@ -56,19 +56,39 @@ export function formatTime(value: string | null | undefined): string {
   return matched?.[1] ?? value
 }
 
+/** 时刻一律写成 `YYYY-MM-DD HH:mm`（北京时间），和页面上别处的日期同一个样子；
+ *  zh-CN 的默认格式是 `2026/10/23 15:02`，和 `2026-10-23` 并排就是两套写法。 */
+/** 只要钟点（上海时间 HH:mm:ss）：报警这类当天内的事件用它，和 formatDateTime 同一个时区口径。 */
+export function formatClock(value: string | null | undefined): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: SHANGHAI,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date)
+  const pick = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? ''
+  return `${pick('hour')}:${pick('minute')}:${pick('second')}`
+}
+
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return '—'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat('zh-CN', {
+  const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: SHANGHAI,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
-  }).format(date)
+    hourCycle: 'h23',
+  }).formatToParts(date)
+  const pick = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? ''
+  return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}`
 }
 
 /** 落盘文件大小只有这一把尺子：快照卡片和别处读同一份字节数都走它。 */
@@ -77,6 +97,11 @@ export function formatBytes(value: number | null | undefined): string {
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${(value / 1024 / 1024).toFixed(2)} MB`
+}
+
+/** 连板数：后端说只能当下界读的写成「≥N 板」。 */
+export function formatBoards(item: { consecutive_boards: number; consecutive_boards_at_least?: boolean }): string {
+  return `${item.consecutive_boards_at_least ? '≥' : ''}${item.consecutive_boards} 板`
 }
 
 export function shortDate(iso: string): string {

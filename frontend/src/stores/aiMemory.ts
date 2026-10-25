@@ -1,5 +1,6 @@
 import { api, ApiError } from '@/api/client'
 import type { AiMemoryDays, AiMemoryRunResult, AiMemorySummary } from '@/api/types'
+import { dailyRank } from '@/stores/dailyRank'
 import { reactive } from 'vue'
 
 /**
@@ -21,6 +22,10 @@ export const aiMemory = reactive({
   /** 这一拍没读到，屏幕上还是上一份。 */
   note: '',
 })
+
+const IDLE_TICK_MS = 30000
+let refs = 0
+let timer = 0
 
 function detail(reason: unknown, fallback: string): string {
   return reason instanceof ApiError ? reason.detail : fallback
@@ -44,6 +49,21 @@ export async function loadAiMemory(): Promise<void> {
   }
 }
 
+/** 收盘后那条闭环由定时任务自己跑：页面开着就隔一阵读一次，落了新的一天不用重进页面。 */
+export function retainAiMemory(): void {
+  refs += 1
+  void loadAiMemory()
+  if (!timer) timer = window.setInterval(() => void loadAiMemory(), IDLE_TICK_MS)
+}
+
+export function releaseAiMemory(): void {
+  refs = Math.max(0, refs - 1)
+  if (!refs && timer) {
+    window.clearInterval(timer)
+    timer = 0
+  }
+}
+
 /** 手动跑一遍收盘后那条闭环：对账 → 导当天 → 回填上一个交易日。一分钱都不花。 */
 export async function runAiMemoryNow(): Promise<void> {
   if (aiMemory.running) return
@@ -52,11 +72,15 @@ export async function runAiMemoryNow(): Promise<void> {
     const result = await api.runAiMemory()
     aiMemory.lastRun = result
     aiMemory.days = result.export
+    // 这一趟顺手对了账：同页的「它的历史账」读的是同一本账，当场交给它，不等下一拍。
+    dailyRank.summary = result.check
     aiMemory.summary = aiMemory.summary
       ? { ...aiMemory.summary, check: result.check, export: result.export, latest_quote_date: result.trade_date }
       : aiMemory.summary
     aiMemory.error = ''
     aiMemory.note = ''
+    // 一次都没读到过摘要时上面那一句换不上去：回头读一份完整的。
+    if (!aiMemory.summary) void loadAiMemory()
   } catch (reason) {
     const message = detail(reason, '对账与快照没有跑成')
     if (aiMemory.summary) aiMemory.note = `${message}，屏幕上还是上一份`

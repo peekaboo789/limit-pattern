@@ -127,6 +127,15 @@ async function save() {
     error.value = '保留天数要在 3 到 30 之间'
     return
   }
+  const windowMin = meta.value?.compare_window_min ?? 1
+  if (
+    !Number.isInteger(form.compare_window_trading_days) ||
+    form.compare_window_trading_days < windowMin ||
+    form.compare_window_trading_days > form.retention_trading_days
+  ) {
+    error.value = `对比窗口要在 ${windowMin} 到保留天数 ${form.retention_trading_days} 之间`
+    return
+  }
   if (!sourceOptions.value.includes(form.data_source)) {
     error.value = '数据源只能是 auto、eastmoney、tencent、sina'
     return
@@ -135,12 +144,14 @@ async function save() {
   try {
     const body: {
       retention_trading_days: number
+      compare_window_trading_days: number
       ai_base_url: string
       ai_model: string
       data_source: string
       ai_api_key?: string
     } = {
       retention_trading_days: form.retention_trading_days,
+      compare_window_trading_days: form.compare_window_trading_days,
       ai_base_url: form.ai_base_url.trim(),
       ai_model: form.ai_model.trim(),
       data_source: form.data_source,
@@ -184,8 +195,14 @@ onMounted(() => {
       </label>
       <label class="field" style="margin-top: 12px">
         <span>对比窗口（交易日）</span>
-        <input :value="form.compare_window_trading_days" type="number" readonly />
-        <span class="hint">固定为 3 个交易日，不能修改。相似度只和最近涨停样本比。</span>
+        <input
+          v-model.number="form.compare_window_trading_days"
+          type="number"
+          :min="meta?.compare_window_min ?? 1"
+          :max="form.retention_trading_days"
+          step="1"
+        />
+        <span class="hint">默认 3，可改 {{ meta?.compare_window_min ?? 1 }} 到保留天数。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>数据源</span>

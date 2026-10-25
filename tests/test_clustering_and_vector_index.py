@@ -315,6 +315,27 @@ def test_cluster_overview_groups_the_stored_pool(client) -> None:
     json.loads(response.text)
 
 
+def test_missing_sklearn_is_a_readable_503_not_a_bare_500(client, monkeypatch) -> None:
+    """出厂件曾把 sklearn 排除在包外：聚类页只看见一行英文「Internal Server Error」。"""
+    import sys
+
+    from backend.app.algorithms import clustering
+
+    days = _seed_pool()
+    clustering.load_sklearn.cache_clear()
+    monkeypatch.setitem(sys.modules, "sklearn.cluster", None)
+    try:
+        response = client.get("/api/clusters/overview", params={"date": days[-1].isoformat()})
+    finally:
+        monkeypatch.delitem(sys.modules, "sklearn.cluster")
+        clustering.load_sklearn.cache_clear()
+    assert response.status_code == 503, response.text
+    assert "scikit-learn" in response.json()["detail"]
+    # 撤掉注入后同一个请求立刻恢复：缓存里没留下那次失败。
+    again = client.get("/api/clusters/overview", params={"date": days[-1].isoformat()})
+    assert again.status_code == 200, again.text
+
+
 def test_clustering_is_deterministic(client) -> None:
     days = _seed_pool()
     as_of = days[-1].isoformat()

@@ -221,6 +221,8 @@ button { cursor: pointer; }
   margin-bottom: 12px;
 }
 .card-head h2 { font-size: 16px; }
+.card-head > h2, .card-head > h3, .page-head h1 { flex: none; white-space: nowrap; }
+.card-head > .toolbar { justify-content: flex-end; min-width: 0; }
 .card-head h3 { font-size: 15px; }
 .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .stat { position: relative; overflow: hidden; }
@@ -235,7 +237,8 @@ button { cursor: pointer; }
 }
 .stat-label { color: var(--muted); font-size: 12px; }
 .stat-value { margin-top: 6px; font-size: 28px; font-weight: 700; letter-spacing: 0.02em; }
-.stat-foot { margin-top: 2px; color: var(--faint); font-size: 12px; }
+.stat-foot { margin-top: 2px; color: var(--faint); font-size: 12px; overflow-wrap: anywhere; }
+.stat-value.stat-text { font-size: 14px; line-height: 1.45; font-weight: 600; letter-spacing: 0; overflow-wrap: anywhere; }
 .toolbar, .filters, .form-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
 .export-action { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -284,7 +287,8 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.85); }
 .table-wrap { overflow: auto; max-height: min(560px, calc(100vh - 390px)); }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 9px 10px; text-align: left; white-space: nowrap; }
-td.wrap { white-space: normal; min-width: 148px; line-height: 1.35; }
+td.wrap { white-space: normal; min-width: 148px; max-width: 360px; line-height: 1.35; overflow-wrap: anywhere; }
+.nowrap { white-space: nowrap; }
 th {
   position: sticky;
   top: 0;

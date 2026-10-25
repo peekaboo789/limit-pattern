@@ -53,7 +53,7 @@ function Install-Requirements([string]$RelativePath) {
 Install-Requirements "desktop/requirements-dev.txt"
 Install-Requirements "requirements.txt"
 Install-Requirements "backend/requirements.txt"
-# 聚类才需要 sklearn。打进 EXE 会把包变得很大，这一版不装。
+# 上面的 requirements.txt 已装 scikit-learn：形态聚类要用，pyi_bundle 会把它打进包。
 Install-Requirements "desktop/requirements-build.txt"
 
 Write-Host "== icon =="

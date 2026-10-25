@@ -43,13 +43,20 @@ def _median(values: list[float]) -> float | None:
     return round((ordered[mid - 1] + ordered[mid]) / 2, 4)
 
 
-def _streak(session, code: str, day: date) -> int:
+def streak_of(session, code: str, day: date) -> tuple[int, bool]:
+    """从 `day` 往前数连续涨停天数。返回（连板数, 这个数是不是只能当**下界**读）。
+
+    数到库里最早那天还没断、或者前一个交易日这只票没有行情行（停牌、那天缺数），
+    都说不清断没断，按下界交出去，页面写「≥N」——当成「断了」会把高位连板报成低位。
+    """
     rows = (
-        session.query(DailyQuote.trade_date)
-        .filter(DailyQuote.stock_code == code, DailyQuote.is_limit_up.is_(True), DailyQuote.trade_date <= day)
+        session.query(DailyQuote.trade_date, DailyQuote.is_limit_up)
+        .filter(DailyQuote.stock_code == code, DailyQuote.trade_date <= day)
         .all()
     )
-    owned = {row[0] for row in rows}
+    flags = {row[0]: bool(row[1]) for row in rows}
+    if not flags.get(day):
+        return 0, False
     days = [
         row[0]
         for row in session.query(DailyQuote.trade_date)
@@ -57,16 +64,21 @@ def _streak(session, code: str, day: date) -> int:
         .distinct()
         .order_by(DailyQuote.trade_date)
     ]
-    if day not in owned:
-        return 0
-    index = days.index(day) if day in days else None
-    if index is None:
-        return 1
+    index = days.index(day)
     streak = 1
-    while index > 0 and days[index - 1] in owned:
+    while index > 0:
+        previous = days[index - 1]
+        if previous not in flags:
+            return streak, True
+        if not flags[previous]:
+            return streak, False
         streak += 1
         index -= 1
-    return streak
+    return streak, True
+
+
+def _streak(session, code: str, day: date) -> int:
+    return streak_of(session, code, day)[0]
 
 
 def build_facts(session, day: date) -> dict:
@@ -78,15 +90,14 @@ def build_facts(session, day: date) -> dict:
     )
     rows = [row for row in rows if is_in_scope(row.stock_code)]
     sectors: dict[str, int] = {}
-    ladders: dict[int, list[str]] = {}
+    ladders: dict[tuple[int, bool], list[str]] = {}
     patterns: dict[str, list[str]] = {}
     turnovers: list[float] = []
     volumes: list[float] = []
     for row in rows:
         name = board_name(row.stock_code)
         sectors[name] = sectors.get(name, 0) + 1
-        height = _streak(session, row.stock_code, day)
-        ladders.setdefault(height, []).append(row.stock_code)
+        ladders.setdefault(streak_of(session, row.stock_code, day), []).append(row.stock_code)
         if row.turnover_rate is not None:
             turnovers.append(row.turnover_rate)
         if row.volume is not None:
@@ -110,8 +121,8 @@ def build_facts(session, day: date) -> dict:
         "limitup_count": len(rows),
         "sectors": [{"name": name, "count": count} for name, count in sorted(sectors.items())],
         "ladder": [
-            {"height": height, "count": len(codes), "codes": codes}
-            for height, codes in sorted(ladders.items())
+            {"height": height, "at_least": at_least, "count": len(codes), "codes": codes}
+            for (height, at_least), codes in sorted(ladders.items())
         ],
         "patterns": [
             {"name": name, "count": len(codes), "example_code": codes[0]}

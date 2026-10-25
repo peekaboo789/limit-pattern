@@ -106,7 +106,7 @@ def upgrade_existing_tables(engine=None) -> list[str]:
             "picks_beyond_limit": "INTEGER",
             "text_truncated": "BOOLEAN",
             "recommended_codes": "JSON",
-            "cost_text": "VARCHAR(40)",
+            "cost_text": "VARCHAR(120)",
         },
         "ai_daily_rank_boards": {
             "base_date": "DATE",
@@ -124,7 +124,7 @@ def upgrade_existing_tables(engine=None) -> list[str]:
             "dropped_codes_count": "INTEGER",
             "rejected_count": "INTEGER",
             "unverified_citations": "INTEGER",
-            "cost_text": "VARCHAR(40)",
+            "cost_text": "VARCHAR(120)",
             "error": "VARCHAR(1000)",
         },
         "daily_quotes": {

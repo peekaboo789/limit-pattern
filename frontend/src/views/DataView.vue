@@ -60,6 +60,8 @@ const coverage = computed(() => {
 
 const skipReasons = computed(() => Object.keys(skips.value?.by_reason ?? {}).sort())
 
+const severityLabels: Record<string, string> = { error: '错误', warning: '警告' }
+
 const stageLabels: Record<string, string> = {
   feature: '特征',
   pattern: '样本',
@@ -239,9 +241,9 @@ onUnmounted(stopPolling)
       <div class="stat-foot">闸门挡住 {{ status.training.blocked_rows }} 行</div>
     </div>
     <div class="card stat">
-      <div class="stat-label">质量 error</div>
+      <div class="stat-label">质量错误</div>
       <div class="stat-value">{{ status.quality.errors }}</div>
-      <div class="stat-foot">warning {{ status.quality.warnings }} · 最晚 {{ status.quality.latest_date || '—' }}</div>
+      <div class="stat-foot">警告 {{ status.quality.warnings }} · 最晚 {{ status.quality.latest_date || '—' }}</div>
     </div>
     <div class="card stat">
       <div class="stat-label">跳过账</div>
@@ -309,7 +311,7 @@ onUnmounted(stopPolling)
             <tr v-if="result.training_blocked"><td class="muted">被闸门挡住</td><td>{{ result.training_blocked }}</td></tr>
             <tr v-if="result.skipped_total"><td class="muted">跳过合计</td><td>{{ result.skipped_total }}</td></tr>
             <tr v-for="(count, reason) in result.skipped ?? {}" :key="reason">
-              <td class="muted">跳过 · {{ reason }}</td>
+              <td class="muted">跳过 · {{ job?.skip_labels?.[reason] ?? reason }}</td>
               <td>{{ count }}</td>
             </tr>
           </tbody>
@@ -352,8 +354,8 @@ onUnmounted(stopPolling)
         <label class="field">
           <span>级别</span>
           <select v-model="errorSeverity">
-            <option value="error">error</option>
-            <option value="warning">warning</option>
+            <option value="error">错误</option>
+            <option value="warning">警告</option>
           </select>
         </label>
         <label class="field">
@@ -369,7 +371,7 @@ onUnmounted(stopPolling)
       </div>
     </div>
     <p class="muted" style="margin-top: 0">
-      error {{ quality.errors }} · warning {{ quality.warnings }} · 有 error 的股票·日 {{ quality.purge.error_pairs }} 对，
+      错误 {{ quality.errors }} · 警告 {{ quality.warnings }} · 有错误的股票·日 {{ quality.purge.error_pairs }} 对，
       涉及 {{ quality.purge.codes }} 只、{{ quality.purge.days.length }} 天
     </p>
     <div class="table-wrap">
@@ -388,7 +390,7 @@ onUnmounted(stopPolling)
             <td class="mono">{{ row.trade_date }}</td>
             <td class="code">{{ row.stock_code }}</td>
             <td>{{ row.check_label }}</td>
-            <td :class="row.severity === 'error' ? 'down' : 'flat'">{{ row.severity }}</td>
+            <td :class="row.severity === 'error' ? 'down' : 'flat'">{{ severityLabels[row.severity] ?? row.severity }}</td>
             <td class="wrap">{{ row.detail }}</td>
           </tr>
         </tbody>
@@ -414,7 +416,9 @@ onUnmounted(stopPolling)
           <span>原因</span>
           <select v-model="skipReason">
             <option value="all">全部</option>
-            <option v-for="reason in skipReasons" :key="reason" :value="reason">{{ reason }}</option>
+            <option v-for="reason in skipReasons" :key="reason" :value="reason">
+              {{ skips?.reason_labels?.[reason] ?? reason }}（{{ skips?.by_reason[reason] }}）
+            </option>
           </select>
         </label>
       </div>
@@ -433,9 +437,9 @@ onUnmounted(stopPolling)
         <tbody>
           <tr v-for="row in skips?.items ?? []" :key="`${row.trade_date}${row.stock_code}${row.stage}${row.reason}`">
             <td class="mono">{{ row.trade_date }}</td>
-            <td class="code">{{ row.stock_code }}</td>
+            <td class="code">{{ row.stock_code || '全市场' }}</td>
             <td>{{ stageLabels[row.stage] ?? row.stage }}</td>
-            <td>{{ row.reason }}</td>
+            <td class="wrap">{{ row.reason_label ?? row.reason }}</td>
             <td class="wrap">{{ row.detail }}</td>
           </tr>
         </tbody>

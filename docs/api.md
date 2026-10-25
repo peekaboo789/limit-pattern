@@ -6,11 +6,11 @@
 | --- | --- | --- |
 | GET | `/api/health` | `status`、`version`、`data_date`、`data_source`、`active_source`、`exports_dir` |
 | GET | `/api/settings` | 保留天数、对比窗口、AI 是否启用、地址、模型、密钥是否已填、数据源（`auto` / `eastmoney` / `tencent` / `sina`）、实际使用的源、纳入范围 `market_scope`、`excluded_boards`、上次同步、上次清理。另给 `ai_active_*`（id / 名称 / 打码地址 / 模型 / 密钥有没有）与 `ai_source_count`：那三格是**表单要编辑的**，`ai_active_*` 是**下一次请求真正用的**，两者可以不是同一家 |
-| PUT | `/api/settings` | 修改可写项。`ai_api_key` 只写入、不回显。对比窗口传了非 3 会 422 |
+| PUT | `/api/settings` | 修改可写项。`ai_api_key` 只写入、不回显。对比窗口 `compare_window_trading_days` 只收 1 到保留天数之间的整数，越界或非整数 422（`compare_window_min` 给下限）。窗口真变了，回包多一个 `window_refresh`：已起的「按新对比窗口重建样本与扫描」任务（库里从没建过样本也没扫过、或槽位被占时为 `null`） |
 | POST | `/api/sync` | 后台同步，返回 `{"task_id": "..."}` |
 | GET | `/api/sync/status` | `running`、`progress`（0–100）、`message`、`last_sync_at`、`last_sync_sources`（上一轮的出数来源账） |
-| GET | `/api/limitups?date=` | 某一天的涨停列表。不传日期用最近一个有行情的交易日 |
-| GET | `/api/pool` | 最近 3 个交易日的涨停池 |
+| GET | `/api/limitups?date=` | 某一天的涨停列表。不传日期用最近一个有行情的交易日。`consecutive_boards` 是从这天往前数的连板数；`consecutive_boards_at_least` 为 true 时数到库里最早那天、或前一个交易日这只票没有行情（停牌、缺数）还没断，只能当下界读，页面与导出写「≥N」。`/api/pool` 的每行同样带这两个字段 |
+| GET | `/api/pool` | 对比窗口（设置项 `compare_window_trading_days`，默认 3 个交易日）的涨停池 |
 | GET | `/api/kline?code=&days=30` | 日 K。正式行情优先，缺的日期用补拉的计算 K 线补上。不会返回今天之后的 K 线。回包带 `name`、`board`、`board_label`、`is_st`；每根 K 线带 `is_limit_up`——正式行情那天按库里登记回 `true`/`false`，补拉的那几根回 `null`（判不了就不替它判） |
 | GET | `/api/similarity?code=&date=&top=20` | 这一只和涨停池的对比 |
 | GET | `/api/scan?date=&top=50&min_score=0` | 全市场和涨停池对比后的排行 |
@@ -57,7 +57,7 @@
 | GET | `/api/data/status` | 数据管理页概况：七张表各多少行、四类派生数据按日覆盖多少、样本池日期、质量账计数、训练统计、跳过账分阶段行数、当前任务 |
 | GET | `/api/data/job` | 后台重建任务的进度与记账。页面每 2 秒轮询这一条，不靠重进页面刷新 |
 | POST | `/api/data/rebuild-features?start=&end=&codes=` | 重算单日特征。区间留空吃库里全部已同步交易日；`codes` 是逗号分隔的 6 位代码 |
-| POST | `/api/data/rebuild-patterns?start=&end=` | 重建涨停样本库。留空只重建样本池该覆盖的那 3 个交易日 |
+| POST | `/api/data/rebuild-patterns?start=&end=` | 重建涨停样本库。留空只重建样本池该覆盖的对比窗口那几个交易日 |
 | POST | `/api/data/scan-market?start=&end=` | 全市场匹配扫描，明细与汇总一起落库。留空只扫最新一个交易日 |
 | POST | `/api/data/build-training?start=&end=&codes=` | 构造训练宽表。闸门吃的是账表里的 error，跑之前先跑一遍 `POST /api/quality/check` |
 | GET | `/api/data/skips?stage=&reason=&date=&limit=200&offset=0` | 跳过账分页：哪一天哪只股票在哪个阶段因为什么没进库。`limit` 1 到 2000 |
@@ -154,7 +154,7 @@
 
 缺了的项（没有回测、没有可用连板样本）把权重摊给其余项，不回一个 0。每行的 `score_terms` 给三个原值，`prediction_score` 是加权后的分。
 
-连板证据有唯一一道未来信息闸门：样本涨停日的下一交易日必须**严格早于**基准日。等于或晚于基准日的一律不查。已知后果也写在回包里：样本池只有三个交易日，基准日当天涨停的那批样本永远进不了连板统计，`carry_known_count` 为 0 的行照实显示。
+连板证据有唯一一道未来信息闸门：样本涨停日的下一交易日必须**严格早于**基准日。等于或晚于基准日的一律不查。已知后果也写在回包里：样本池只覆盖对比窗口那几个交易日，基准日当天涨停的那批样本永远进不了连板统计，`carry_known_count` 为 0 的行照实显示。
 
 回包字段：
 
@@ -228,12 +228,14 @@
 ## 派生数据的四条重建线
 
 「派生数据可以删、原始行情才是红线」在这一节落地成四个后台任务：单日特征、涨停样本库、全市场匹配、训练宽表。
-四个都不读网络，只吃库里已有的日线与补拉来的计算 K 线，跑砸了重跑一次就行。
+特征、匹配、训练三个不读网络，只吃库里已有的日线与补拉来的计算 K 线。涨停样本库遇到涨停前凑不齐三根时，和相似度页的样本池同一个口径先补拉（只拉涨停日之前的线，进 `calc_bars`），补不到才记 `insufficient_window`，原因写在 `detail` 里；否则保留区间最前面几天的涨停，样本池收、样本库跳，两边对不上。跑砸了重跑一次就行。
+
+训练宽表的回看只认库里留着的那段**全市场**日线，不吃补拉来的计算 K 线：补拉只给涨停票做，吃了它，最早那几个标签日就只剩涨停票能凑满 T-5…T-1，训练集成了涨停票专场。所以最早能出训练行的标签日是库里第 6 个交易日；之前的日子整天记一条 `market_history_too_short`（`stock_code` 为空，页面读作「全市场」），保留天数至少 6 天才会出训练行。行情范围内自己不足 5 根的（停牌、新上市）逐只记 `insufficient_history_for_training`。重跑会先清掉这一段的旧训练跳过账，不叠两套口径。
 
 `POST /api/data/rebuild-features`、`/rebuild-patterns`、`/scan-market`、`/build-training` 形状一样：起线程、回
 `{"task_id": "...", "label": "全市场匹配扫描", "days_total": 5, "running": true, "progress": 0, "message": "...", "error": ""}`，
 进度靠轮询 `GET /api/data/job`。区间留空时各任务覆盖面不同，写死在 `data_service.DEFAULT_DAY_SCOPE`：特征与训练吃库里
-**全部**已同步交易日（装了两周历史的库要能整段重算，而不是只重算最新那天），样本只重建涨停池那 3 个交易日，
+**全部**已同步交易日（装了两周历史的库要能整段重算，而不是只重算最新那天），样本只重建涨停池那几个交易日（对比窗口），
 扫描只扫最新一个交易日。
 
 日期必须在请求还活着的时候定下来。「区间里没有已同步的交易日」这种话一旦落到后台线程，页面上就只剩一句「失败」；
@@ -263,7 +265,7 @@
 注意 error 挡的是**双向**的：脏行自己那天的样本建不成，后面任何一天的窗口里含它也一样建不成。
 
 `GET /api/patterns/overview` 的 `days[].skipped` 就是这几天各挡了多少，明细去 `GET /api/data/skips`：
-可按 `stage`（`feature` / `pattern` / `match` / `training`）、`reason`、`date` 筛，`limit` 1 到 2000。
+可按 `stage`（`feature` / `pattern` / `match` / `training`）、`reason`、`date` 筛，`limit` 1 到 2000。每行带中文 `reason_label`，`by_reason` 的每个原因在 `reason_labels` 里有中文说法（同一个原因码在不同阶段说法不同，按行的 `stage` 取）；旧版本把原因码原样写进 `detail` 的行，读出来时换成同一句中文。`GET /api/data/job` 与 `GET /api/data/status` 里的 `job` 都带 `skip_labels`。
 训练宽表那一条线还有第三种记账：`quality_passed` 为 false 的行**照样落库**、带着 `reason`，
 因为「被闸门挡过」本身是训练时要知道的事；它进的是 `blocked_rows`，不是消失。
 

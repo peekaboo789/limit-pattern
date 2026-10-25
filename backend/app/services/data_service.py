@@ -17,7 +17,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.app.core.config import retention_days
-from backend.app.core.constants import COMPARE_WINDOW_TRADING_DAYS, MATCH_TOP_N
+from backend.app.core.config import compare_window_days
+from backend.app.core.constants import MATCH_TOP_N
 from backend.app.core.database import session_scope
 from backend.app.models.tables import (
     CalcBar,
@@ -29,7 +30,7 @@ from backend.app.models.tables import (
     SkippedRecord,
     StockTrainingRow,
 )
-from backend.app.services import data_job, match_service, pattern_service, training_service
+from backend.app.services import data_job, match_service, pattern_service, skip_labels, training_service
 from backend.app.services.feature_service import new_stats, public_stats, rebuild_features
 from backend.app.services.history_backfill import load_bars_bulk
 from backend.app.services.quality_service import counts as quality_counts
@@ -42,6 +43,9 @@ DEFAULT_DAY_SCOPE = {
     "patterns": "pool",
     "scan": "latest",
 }
+
+#: 任务种类 → 跳过账里的阶段名。结果卡上的跳过原因按这个阶段翻成中文。
+JOB_STAGE = {"features": "feature", "patterns": "pattern", "scan": "match", "training": "training"}
 
 #: 跨天累加的那几列：它们数的都是「写进了多少行」，一天一天加起来才是这一轮的总量。
 ADDITIVE_KEYS = (
@@ -72,7 +76,7 @@ def range_days(session: Session, start: date | None, end: date | None, *, kind: 
         if scope == "latest":
             return [days[-1]]
         if scope == "pool":
-            return days[-COMPARE_WINDOW_TRADING_DAYS:]
+            return days[-compare_window_days():]
         return list(days)
     low = start or days[0]
     high = end or days[-1]
@@ -168,6 +172,47 @@ def start_training(start: date | None, end: date | None, codes: list[str] | None
     return data_job.start("training", dates=days, work=work)
 
 
+def start_window_refresh() -> dict | None:
+    """对比窗口改了之后，把最新一天落库的样本池与扫描按新窗口重做一遍。
+
+    库里已有的扫描结果各自带着当时的 `pool_dates`，旧日子不动；只有最新一天
+    是页面默认打开的那一天，它要是还挂着旧窗口，用户刚改完设置看到的仍是旧池子。
+    从没建过样本、也没扫过的库不起任务——那里没有旧东西要换。
+    槽位被占（`JobBusy`）就不抢：设置照样生效，等那个任务跑完用户再点一次扫描。
+    """
+    with session_scope() as session:
+        days = quote_dates(session)
+        if not days:
+            return None
+        latest = days[-1]
+        has_scan = session.scalar(
+            select(func.count(MatchSummary.id)).where(MatchSummary.target_date == latest)
+        )
+        has_patterns = session.scalar(select(func.count(LimitUpPattern.id)))
+        if not has_scan and not has_patterns:
+            return None
+        pool = days[-compare_window_days():]
+    cache: dict = {}
+
+    def work(session: Session, day: date, acc: dict) -> None:
+        cache.setdefault("bars", load_bars_bulk(session, latest))
+        stats = new_stats("build_patterns", day, day)
+        pattern_service.build_patterns(session, day, bars_by_code=cache["bars"], stats=stats)
+        _merge(acc, stats)
+        if day == latest:
+            scan = new_stats("scan_market", day, day)
+            match_service.scan_and_store(session, day, stats=scan)
+            _merge(acc, scan)
+        acc["job"] = "window_refresh"
+        acc["start"] = pool[0].isoformat()
+        acc["end"] = latest.isoformat()
+
+    try:
+        return data_job.start("window", dates=pool, work=work)
+    except data_job.JobBusy:
+        return None
+
+
 def job_result(session: Session) -> dict:
     """页面上那张结果卡：任务记账 + 跑完之后库里真落了多少行。
 
@@ -187,6 +232,7 @@ def job_result(session: Session) -> dict:
         "started_at": state.get("started_at", ""),
         "finished_at": state.get("finished_at", ""),
         "result": state.get("result"),
+        "skip_labels": state["skip_labels"],
         "counts": _counts(session),
     }
 
@@ -200,6 +246,13 @@ def _job_state() -> dict:
     state = data_job.state()
     raw = state.get("result")
     state["result"] = public_stats(raw) if isinstance(raw, dict) else raw
+    # 跳过原因的中文跟着任务状态一起走：`/data/status` 和 `/data/job` 都从这里拿，
+    # 页面先读到哪一份都不会露出机器码。
+    result = state["result"] if isinstance(state["result"], dict) else {}
+    stage = JOB_STAGE.get(str(state.get("kind") or ""))
+    state["skip_labels"] = {
+        str(reason): skip_labels.label(str(reason), stage) for reason in (result.get("skipped") or {})
+    }
     return state
 
 
@@ -222,7 +275,7 @@ def status(session: Session) -> dict:
         "latest_trade_date": days[-1].isoformat() if days else "",
         "trade_day_count": len(days),
         "retention_trading_days": retention_days(),
-        "compare_window_days": COMPARE_WINDOW_TRADING_DAYS,
+        "compare_window_days": compare_window_days(),
         "match_top_n": MATCH_TOP_N,
         "counts": _counts(session),
         "pool_dates": [day.isoformat() for day in pool],
@@ -287,5 +340,6 @@ __all__ = [
     "start_patterns",
     "start_scan",
     "start_training",
+    "start_window_refresh",
     "status",
 ]

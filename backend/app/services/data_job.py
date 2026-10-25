@@ -31,6 +31,7 @@ _LABELS: dict[str, str] = {
     "patterns": "重建涨停样本",
     "scan": "全市场匹配扫描",
     "training": "构造训练集",
+    "window": "按新对比窗口重建样本与扫描",
 }
 
 _LOCK = threading.Lock()

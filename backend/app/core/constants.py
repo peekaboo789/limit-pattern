@@ -1,12 +1,17 @@
-"""口径常量。对比窗口固定为 3；明细保留天数默认为 5，可在设置里改。"""
+"""口径常量。形态窗口固定为 3；对比窗口与明细保留天数是默认值，可在设置里改。"""
 
 from __future__ import annotations
 
 from datetime import date
 
-# 相似度只和最近 3 个交易日里涨停过的股票比。这个数不能在页面上改。
+#: 形态向量取几根 K 线。向量维度（VECTOR_DIM）跟着它走，所以它不能在页面上改。
+SHAPE_WINDOW_TRADING_DAYS = 3
+
+#: 对比窗口 = 样本池往回看几个交易日（含基准日）：只和这几天里涨停过的股票比。
+#: 这是**默认值**，实际值由 `config.compare_window_days()` 读设置，范围 1..保留天数。
+#: 代码里取窗口一律走那个函数，别再直接拿这个常量当口径用。
 COMPARE_WINDOW_TRADING_DAYS = 3
-SAMPLE_POOL_TRADING_DAYS = COMPARE_WINDOW_TRADING_DAYS
+COMPARE_WINDOW_MIN_TRADING_DAYS = 1
 
 # 行情、标签等明细默认只留最近 5 个交易日。设置页可以改，见 retention 范围。
 DETAIL_RETENTION_TRADING_DAYS = 5

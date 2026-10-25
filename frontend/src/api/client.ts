@@ -1,4 +1,4 @@
-import { ApiError, formatDetail, request } from './http'
+import { ApiError, formatDetail, plainDetail, request } from './http'
 import type {
   AiReportListResponse,
   AiMemoryDays,
@@ -328,7 +328,7 @@ export const api = {
     const blob = await response.blob()
     if (!response.ok) {
       const raw = await blob.text()
-      let detail = raw.trim() || `导出失败（${response.status}）`
+      let detail = plainDetail(response.status, raw)
       try {
         const parsed = JSON.parse(raw) as { detail?: unknown }
         if (parsed && typeof parsed === 'object' && 'detail' in parsed) detail = formatDetail(parsed.detail)
@@ -372,7 +372,7 @@ export const api = {
     const blob = await response.blob()
     if (!response.ok) {
       const raw = await blob.text()
-      let detail = raw.trim() || `导出失败（${response.status}）`
+      let detail = plainDetail(response.status, raw)
       try {
         const parsed = JSON.parse(raw) as { detail?: unknown }
         if (parsed && typeof parsed === 'object' && 'detail' in parsed) detail = formatDetail(parsed.detail)

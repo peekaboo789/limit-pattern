@@ -510,7 +510,7 @@ onUnmounted(stopPolling)
             <td>{{ item.start_date }} ~ {{ item.end_date }}</td>
             <td>
               <span class="tag" :class="item.status === 'done' ? 'tag-hot' : item.status === 'failed' ? 'type-weak' : 'type-normal'">
-                {{ statusWord[item.status] || item.status }}
+                {{ statusWord[item.status] ?? '状态未知' }}
               </span>
             </td>
             <td class="right">{{ item.day_count }}</td>
@@ -518,7 +518,7 @@ onUnmounted(stopPolling)
             <td class="right">{{ rateText(item.baseline_rate) }}</td>
             <td>{{ formatDateTime(item.created_at) }}</td>
             <td>{{ formatDateTime(item.finished_at) }}</td>
-            <td class="hint" style="max-width: 320px">{{ item.error || item.note || '—' }}</td>
+            <td class="hint wrap">{{ item.error || item.note || '—' }}</td>
             <td>
               <button class="btn btn-ghost" type="button" @click="remove(item)">删</button>
             </td>

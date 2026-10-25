@@ -955,6 +955,31 @@ def test_prepare_is_free_and_rank_costs(ai_client):
     assert len(calls) == 1
 
 
+def test_the_cost_line_keeps_the_thinking_tokens_even_on_a_row_cut_by_the_old_column(ai_client):
+    """「输入 N tokens · 输出 N tokens · 其中思考 N」轻松过 40 字；老版本把列截在 40 字，
+    页面上那格就只剩前两段。现在列放宽，老库里已经被截的那行也从结果里读回全文。"""
+    from backend.app.core.database import session_scope
+    from backend.app.models.tables import AiDailyRankBoard
+
+    client = ai_client["client"]
+    answer = json.dumps({"criteria": "c", "picks": [{"stock_code": "600000", "score": 90.0, "reason": "r"}]})
+    usage = {"prompt_tokens": 123456, "completion_tokens": 78901, "completion_tokens_details": {"reasoning_tokens": 65432}}
+    ai_client["configure"](sse_script([answer], usage=usage))
+    client.post("/api/ai/daily-rank/prepare")
+    client.post("/api/ai/daily-rank/rank")
+    board = wait_for(client, "/api/ai/daily-rank")["board"]
+    full = "输入 123456 tokens · 输出 78901 tokens · 其中思考 65432"
+    assert len(full) > 40
+    assert board["cost_text"] == full
+    assert client.get("/api/ai/daily-rank/history").json()["items"][0]["cost_text"] == full
+
+    with session_scope() as session:
+        row = session.query(AiDailyRankBoard).one()
+        assert row.cost_text == full
+        row.cost_text = full[:40]  # 老版本落下来的那一行
+    assert client.get("/api/ai/daily-rank").json()["board"]["cost_text"] == full
+
+
 def test_re_prepare_pushes_a_ranked_day_back_to_prepared(ai_client):
     """输入换了，旧名次就不是这份输入的名次——留着比空着更坏。"""
     client = ai_client["client"]

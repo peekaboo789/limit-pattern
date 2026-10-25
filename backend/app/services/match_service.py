@@ -54,7 +54,7 @@ STORED = "stored"
 REASONS: dict[str, str] = {
     NO_QUOTE: "这一天没有它的行情",
     LIMIT_UP_TODAY: "当天已经涨停：它的形态里含着涨停那一天，不进匹配候选",
-    INSUFFICIENT_WINDOW: "库里凑不齐它的前三根K线",
+    INSUFFICIENT_WINDOW: "库里凑不齐评估日及前两天这三根K线",
     QUALITY_ERROR: "它的窗口里有 error 级数据质量异常",
     EMPTY_POOL: "样本池是空的：这一天之前没有已收盘的涨停样本",
 }
@@ -216,7 +216,7 @@ def scan_and_store(session: Session, day: date, *, stats: dict) -> dict:
                 stock_code=code,
                 stage="match",
                 reason=INSUFFICIENT_WINDOW,
-                detail="凑不齐评估日前四根K线（含当天）",
+                detail="凑不齐评估日及前两天这三根K线",
             )
     if scored.get("dirty_skipped"):
         add_skip(stats, QUALITY_ERROR, int(scored["dirty_skipped"]))

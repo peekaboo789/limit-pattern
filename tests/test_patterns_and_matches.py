@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import unquote
 
 import pytest
@@ -263,6 +263,34 @@ def test_a_sample_without_three_prior_bars_is_a_skip_not_a_padded_row(client):
     # 正向对照：再往后两天，前置线够了，同一批票就出得了样本。
     later = _build_one_pattern(days[3])
     assert later["pattern_count"] == 2 and later["skipped"] == {}
+
+
+def test_a_sample_at_the_front_of_the_retained_range_is_backfilled_like_the_pool(client):
+    """保留区间最前面那几天的涨停：相似度页的样本池会补拉涨停前的线把它收进池，
+    落库的样本库也得补，否则同一条涨停一边算样本、一边记「凑不齐」。补拉只要涨停日之前的线。"""
+    from backend.app.services import similarity_service
+    from backend.app.services.sync_service import set_fetcher
+
+    days = seed(limit_indices={1, 3})
+    before = weekdays(5, end=days[0] - timedelta(days=1))
+    history = series(before, limit_on=set(), start=9.0)
+    asked: list[tuple[str, date, date]] = []
+
+    def fake_kline(code, start, end):
+        asked.append((code, start, end))
+        return [row for row in history if start <= row["trade_date"] <= end]
+
+    set_fetcher(kline_fn=fake_kline)
+    stats = _build_one_pattern(days[1])
+    assert stats["pattern_count"] == 1 and stats["skipped"] == {}
+    stored = _stored_pattern("600000", days[1])
+    assert stored["window"] == [before[-2].isoformat(), before[-1].isoformat(), days[0].isoformat()]
+    assert asked and all(code == "600000" and end < days[1] for code, _start, end in asked)
+
+    # 与样本池同一个结论：池里有它，库里也有它。
+    with session_scope() as session:
+        _dates, pool, _skipped = similarity_service.limit_up_samples(session, days[1])
+    assert ("600000", days[1]) in {(item["code"], item["limit_date"]) for item in pool}
 
 
 def test_build_patterns_is_idempotent_and_only_rewrites_that_day(client):
@@ -900,3 +928,117 @@ def test_the_shared_fixture_is_one_calendar_for_every_judgment(client):
     assert len(feature_names()) == VECTOR_DIM
     assert feature_names()[: len(DAILY_SPEC)] == [f"t3_{name}" for name, _group in DAILY_SPEC]
     assert feature_names()[-len(AGGREGATE_NAMES) :] == AGGREGATE_NAMES
+
+
+def test_changing_the_compare_window_rebuilds_the_latest_pool_and_scan(client):
+    """改对比窗口之后，最新一天落库的样本池和扫描当场按新窗口重做，不等用户重进页、再点按钮。"""
+    days = seed()
+    latest = days[-1]
+    for path in ("/api/data/rebuild-patterns", "/api/data/scan-market"):
+        assert client.post(path).status_code == 200, path
+        _wait_job(client)
+
+    def stored_pool() -> set[tuple[str, ...]]:
+        with session_scope() as session:
+            rows = session.query(MatchSummary).filter(MatchSummary.target_date == latest).all()
+            return {tuple(row.pool_dates or []) for row in rows}
+
+    def pattern_dates() -> list[date]:
+        with session_scope() as session:
+            return sorted({row.limit_up_date for row in session.query(LimitUpPattern)})
+
+    assert stored_pool() == {tuple(item.isoformat() for item in days[-3:])}
+    assert pattern_dates() == [days[9]]
+
+    widened = client.put("/api/settings", json={"compare_window_trading_days": 5})
+    assert widened.status_code == 200, widened.text
+    assert widened.json()["window_refresh"] is not None, "窗口改了却没起重建任务"
+    state = _wait_job(client)
+    assert state["result"]["job"] == "window_refresh"
+    assert stored_pool() == {tuple(item.isoformat() for item in days[-5:])}, "最新一天的扫描仍挂着旧池子"
+    assert pattern_dates() == [days[7], days[8], days[9]], "放宽窗口后新纳入那两天的样本没建"
+
+    # 没改窗口的保存不起任务：只改保留天数不该把全市场扫描再跑一遍。
+    same = client.put("/api/settings", json={"retention_trading_days": 6})
+    assert same.status_code == 200 and "window_refresh" not in same.json()
+
+
+def test_skip_ledger_speaks_chinese_and_respects_the_stage(client):
+    """跳过账的原因码要带中文；同一个码在样本与扫描两个阶段说的不是同一件事。"""
+    import re
+
+    days = seed()
+    with session_scope() as session:
+        for stage in ("pattern", "match"):
+            feature_service.record_skip(
+                session, day=days[-1], stock_code="600000", stage=stage, reason="insufficient_window"
+            )
+        feature_service.record_skip(
+            session, day=days[-1], stock_code="", stage="training", reason="market_history_too_short"
+        )
+        # 旧版本把原因码原样写进了说明列：库里留着的这种行读出来也得是中文。
+        feature_service.record_skip(
+            session, day=days[-2], stock_code="600001", stage="pattern", reason="insufficient_window",
+            detail="insufficient_window",
+        )
+    everything = client.get("/api/data/skips").json()
+    for item in everything["items"]:
+        assert re.search(r"[\u4e00-\u9fff]", item["reason_label"]), item
+        assert not re.fullmatch(r"[a-z_]+", item.get("detail") or "—"), item
+    labels = {item["stage"]: item["reason_label"] for item in everything["items"]}
+    assert labels["pattern"] != labels["match"], "样本与扫描的「凑不齐三根」被说成了同一句"
+    assert "涨停" in labels["pattern"] and "评估日" in labels["match"]
+    for reason, text in everything["reason_labels"].items():
+        assert re.search(r"[\u4e00-\u9fff]", text), (reason, text)
+    only_match = client.get("/api/data/skips", params={"stage": "match"}).json()
+    assert only_match["reason_labels"]["insufficient_window"] == labels["match"]
+
+
+def test_the_job_card_reads_chinese_skip_reasons_from_either_endpoint(client):
+    """数据页先读 `/data/status` 再轮询 `/data/job`：两份回包里的任务都要带跳过原因的中文，
+    不然页面刚打开那一拍结果卡上露的是 `market_history_too_short` 这种机器码。"""
+    import re
+
+    seed()
+    assert client.post("/api/data/build-training").status_code == 200
+    state = _wait_job(client)
+    skipped = state["result"]["skipped"]
+    assert skipped, "这一轮应当有跳过（夹具的行情天数凑不满 T-5）"
+    from_status = client.get("/api/data/status").json()["job"]
+    for payload in (state, from_status):
+        labels = payload.get("skip_labels") or {}
+        assert set(labels) == set(skipped), labels
+        for reason, text in labels.items():
+            assert text != reason and re.search(r"[一-鿿]", text), (reason, text)
+    with session_scope() as session:
+        details = [row.detail or "" for row in session.query(SkippedRecord).all()]
+    assert details and not any(re.fullmatch(r"[a-z_]+", text) for text in details), details
+
+
+def test_a_streak_that_reaches_the_oldest_retained_day_is_a_lower_bound(client):
+    """连板数到库里最早那天还没断、或者前一天这只票没有行情（停牌），都说不清断没断：
+    接口要标出「只能当下界读」，导出写「≥N」。前一天确实没涨停的是确值。"""
+    days = seed(limit_indices={0, 1})
+    # 600000 涨停在 0、1；600001 在 1、2；000002 在 3、4。
+
+    def boards(day):
+        items = client.get("/api/limitups", params={"date": day.isoformat()}).json()["items"]
+        return {item["code"]: (item["consecutive_boards"], item["consecutive_boards_at_least"]) for item in items}
+
+    assert boards(days[1])["600000"] == (2, True)
+    assert boards(days[1])["600001"] == (1, False)
+    assert boards(days[2])["600001"] == (2, False)
+    assert boards(days[4])["000002"] == (2, False)
+
+    # 停牌那天没有行情行：断没断不知道，按下界。
+    with session_scope() as session:
+        session.query(DailyQuote).filter(
+            DailyQuote.stock_code == "000002", DailyQuote.trade_date == days[3]
+        ).delete(synchronize_session=False)
+    assert boards(days[4])["000002"] == (1, True)
+
+    with session_scope() as session:
+        from backend.app.services import summary_service
+
+        ladder = summary_service.build_facts(session, days[1])["ladder"]
+    assert {(item["height"], item["at_least"]) for item in ladder} == {(1, False), (2, True)}

@@ -36,7 +36,14 @@ from backend.app.algorithms.indicators import (
     is_valid_bar,
 )
 from backend.app.core.database import session_scope
-from backend.app.models.tables import DailyFeature, DailyQuote, DataQualityError, Stock, StockTrainingRow
+from backend.app.models.tables import (
+    CalcBar,
+    DailyFeature,
+    DailyQuote,
+    DataQualityError,
+    Stock,
+    StockTrainingRow,
+)
 from backend.app.services import feature_service, training_service
 from backend.app.services.history_backfill import load_bars
 from backend.app.services.quality_service import ERROR
@@ -392,24 +399,90 @@ def test_training_blocked_row_is_written_and_flagged(client):
 
 
 def test_training_needs_five_prior_bars_and_says_so(client):
-    """前五天不够就不出行，并把不够记进跳过账——而不是拿零补齐。"""
+    """全市场前五天都不够的日子：不出行，只记一笔日级账（代码留空），不给每只票各记一笔。"""
     days = seed()
-    code = "600000"
     with session_scope() as session:
         stats = feature_service.new_stats("build_training", days[0], days[3])
-        training_service.build_training(session, days[0], days[3], codes=[code], stats=stats)
-        rows = (
-            session.query(StockTrainingRow)
-            .filter(StockTrainingRow.stock_code == code, StockTrainingRow.label_date <= days[3])
-            .count()
-        )
-        page = feature_service.skip_page(
-            session, stage="training", reason=training_service.SKIP_INSUFFICIENT_HISTORY
-        )
+        training_service.build_training(session, days[0], days[3], stats=stats)
+        rows = session.query(StockTrainingRow).filter(StockTrainingRow.label_date <= days[3]).count()
+        page = feature_service.skip_page(session, stage="training")
     assert rows == 0
-    assert stats["skipped"][training_service.SKIP_INSUFFICIENT_HISTORY] == 4
-    assert page["total"] == 4 and all(item["stock_code"] == code for item in page["items"])
+    assert stats["skipped"] == {training_service.SKIP_MARKET_HISTORY: 4}, stats["skipped"]
+    assert page["total"] == 4, "四只票四天该是四笔日级账，不是十六笔逐只账"
+    assert {item["stock_code"] for item in page["items"]} == {""}
+    assert sorted(item["trade_date"] for item in page["items"]) == [day.isoformat() for day in days[:4]]
     assert str(training_service.REQUIRED_PRIOR_BARS) in page["items"][0]["detail"]
+
+
+def test_a_suspended_stock_is_skipped_on_its_own(client):
+    """全市场够五天、只有这只票缺线（停牌/新上市）：才按只记账，别人照常出行。"""
+    days = seed()
+    late = days[3:]
+    save_stock("600002", "新上市", "SSE", series(late, limit_on=set(), start=5.0))
+    label_day = days[6]
+    with session_scope() as session:
+        stats = feature_service.new_stats("build_training", label_day, label_day)
+        training_service.build_training(session, label_day, label_day, stats=stats)
+        page = feature_service.skip_page(session, stage="training")
+        written = {
+            row.stock_code
+            for row in session.query(StockTrainingRow).filter(StockTrainingRow.label_date == label_day)
+        }
+    assert "600002" not in written and len(written) == 4
+    assert page["by_reason"] == {training_service.SKIP_INSUFFICIENT_HISTORY: 1}
+    assert page["items"][0]["stock_code"] == "600002"
+
+
+def test_backfilled_history_does_not_make_a_limit_up_only_training_set(client):
+    """补拉进 `calc_bars` 的历史只给涨停票有：它不能替那几只票凑出全市场都凑不满的 T-5。"""
+    days = seed()
+    retained = days[-4:]
+    with session_scope() as session:
+        session.query(DailyQuote).filter(DailyQuote.trade_date < retained[0]).delete()
+    # 只给 600000 补一段更早的线，就像它涨停后被补拉过历史那样。
+    with session_scope() as session:
+        for offset in range(1, 8):
+            day = retained[0] - timedelta(days=offset * 7)
+            session.add(
+                CalcBar(
+                    stock_code="600000",
+                    trade_date=day,
+                    open=9.0,
+                    high=9.2,
+                    low=8.9,
+                    close=9.1,
+                    pre_close=9.0,
+                    volume=1000.0,
+                    amount=9100.0,
+                    turnover_rate=1.0,
+                )
+            )
+    with session_scope() as session:
+        stats = feature_service.new_stats("build_training", retained[0], retained[-1])
+        training_service.build_training(session, retained[0], retained[-1], stats=stats)
+        rows = session.query(StockTrainingRow).count()
+    assert rows == 0, "只有补过历史的那只票出了训练行：训练集成了涨停票专场"
+    assert stats["skipped"] == {training_service.SKIP_MARKET_HISTORY: len(retained)}
+
+
+def test_rebuilding_training_replaces_the_old_per_stock_ledger(client):
+    """旧口径留下的逐只「只有 4 根」账，重建这段区间时要被这一轮的结果换掉。"""
+    days = seed()
+    with session_scope() as session:
+        for code in ("600000", "600001", "000001", "000002"):
+            feature_service.record_skip(
+                session,
+                day=days[2],
+                stock_code=code,
+                stage="training",
+                reason=training_service.SKIP_INSUFFICIENT_HISTORY,
+                detail="标签日之前只有 2 根，需要 5 根",
+            )
+    with session_scope() as session:
+        stats = feature_service.new_stats("build_training", days[0], days[-1])
+        training_service.build_training(session, days[0], days[-1], stats=stats)
+        page = feature_service.skip_page(session, stage="training", day=days[2])
+    assert page["by_reason"] == {training_service.SKIP_MARKET_HISTORY: 1}, page["by_reason"]
 
 
 def test_prior_lag_dates_refuses_the_label_day_and_pads_nothing(client):

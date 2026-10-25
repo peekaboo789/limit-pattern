@@ -4,7 +4,7 @@ import Disclaimer from '@/components/Disclaimer.vue'
 import ExportButton from '@/components/ExportButton.vue'
 import type { ExportParams } from '@/api/types'
 import type { PoolResponse, ScanResponse } from '@/api/types'
-import { loadHealth, session, startSync } from '@/stores/session'
+import { compareWindowText, loadHealth, session, startSync } from '@/stores/session'
 import { boardLabel, clampPercent, formatDateTime, formatScore, scoreColor, shortDate } from '@/utils/format'
 import { sourceLabel } from '@/utils/labels'
 import { computed, onMounted, ref, watch } from 'vue'
@@ -102,7 +102,7 @@ watch(
   <header class="page-head">
     <div>
       <h1>总览</h1>
-      <p class="lede">最近三个交易日的涨停样本，以及全市场与该样本池的形态扫描。</p>
+      <p class="lede">{{ compareWindowText() }}的涨停样本，以及全市场与该样本池的形态扫描。</p>
     </div>
   </header>
 

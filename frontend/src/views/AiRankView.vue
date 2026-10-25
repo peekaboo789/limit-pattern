@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import type { DailyRankPick, MemoryDayFile } from '@/api/types'
 import { dailyRank, prepareFeed, refreshDailyRankNow, releaseDailyRank, retainDailyRank, runPicksCheck, startRanking } from '@/stores/dailyRank'
-import { aiMemory, loadAiMemory, runAiMemoryNow } from '@/stores/aiMemory'
+import { aiMemory, loadAiMemory, releaseAiMemory, retainAiMemory, runAiMemoryNow } from '@/stores/aiMemory'
 import { aiReady } from '@/stores/session'
 import { formatBytes, formatDateTime, formatGap, formatPct, formatPrice, formatScore, pctClass, spendShort, spendWord } from '@/utils/format'
+import { windowModeLabel } from '@/utils/labels'
 import { onMounted, onUnmounted, computed } from 'vue'
 
 const board = computed(() => dailyRank.state?.board ?? null)
@@ -24,12 +25,30 @@ const spend = computed(() => {
 const feedReady = computed(() => (board.value?.feed_rows ?? 0) > 0)
 const ranked = computed(() => board.value?.status === 'done')
 
-const statusWord: Record<string, string> = {
+const statusWords: Record<string, string> = {
   prepared: '输入已备好',
   done: '名次已排出',
   failed: '这一趟失败',
   running: '正在排名',
 }
+
+function statusWord(status: string | null | undefined): string {
+  if (!status) return '没备过'
+  return statusWords[status] ?? '状态未知'
+}
+
+/** 「上一趟」：内存槽位有就抄它；重启之后槽位空了，退回库里最近那一份固定榜自己的账。 */
+const lastRun = computed(() => {
+  const last = dailyRank.runner?.last
+  if (last?.trade_date) {
+    return { date: last.trade_date, word: last.ok ? '成功' : '失败', spend: spendShort(last) }
+  }
+  const row = board.value
+  if (row && (row.status === 'done' || row.status === 'failed')) {
+    return { date: row.trade_date, word: row.status === 'done' ? '成功' : '失败', spend: spend.value ? spendShort(spend.value) : '—' }
+  }
+  return null
+})
 
 const indicatorLabels: Record<string, string> = {
   similarity_score: '最高相似度',
@@ -57,6 +76,12 @@ function indicatorText(pick: DailyRankPick): string {
   return Object.entries(indicatorLabels)
     .map(([key, label]) => `${label} ${scores[key] == null ? '—' : formatScore(scores[key])}`)
     .join(' · ')
+}
+
+/** 补对账改的是同一本账：快照那块的「最新对账」也当场跟上。 */
+async function checkNow(): Promise<void> {
+  await runPicksCheck()
+  void loadAiMemory()
 }
 
 function onVisibility(): void {
@@ -105,13 +130,14 @@ const runLegs = computed(() => {
 
 onMounted(() => {
   retainDailyRank()
-  void loadAiMemory()
+  retainAiMemory()
   document.addEventListener('visibilitychange', onVisibility)
 })
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibility)
   releaseDailyRank()
+  releaseAiMemory()
 })
 </script>
 
@@ -124,7 +150,7 @@ onUnmounted(() => {
       </p>
     </div>
     <div class="toolbar">
-      <span v-if="board" class="muted">{{ board.trade_date || '—' }} · {{ board.metric_label }}</span>
+      <span v-if="board" class="muted nowrap">交易日 {{ board.trade_date || '—' }} · {{ board.metric_label }}</span>
       <button class="btn btn-ghost" type="button" @click="refreshDailyRankNow">刷新</button>
     </div>
   </header>
@@ -156,13 +182,13 @@ onUnmounted(() => {
     <div v-if="board" class="stats" style="margin-top: 8px">
       <article class="card stat">
         <div class="stat-label">状态</div>
-        <div class="stat-value" style="font-size: 20px">{{ statusWord[board.status] || board.status || '没备过' }}</div>
-        <div class="stat-foot">{{ board.trade_date || '—' }} · {{ board.base_date || '—' }}</div>
+        <div class="stat-value" style="font-size: 20px">{{ statusWord(board.status) }}</div>
+        <div class="stat-foot">交易日 {{ board.trade_date || '—' }} · 形态截至 {{ board.base_date || '—' }}</div>
       </article>
       <article class="card stat">
         <div class="stat-label">榜 / 喂给模型</div>
         <div class="stat-value">{{ board.board_rows }} / {{ board.feed_rows }}</div>
-        <div class="stat-foot">{{ board.metric_label }} · {{ board.window_mode || '—' }}</div>
+        <div class="stat-foot">{{ board.metric_label }} · {{ windowModeLabel(board.window_mode) }}</div>
       </article>
       <article class="card stat">
         <div class="stat-label">名次</div>
@@ -171,7 +197,7 @@ onUnmounted(() => {
       </article>
       <article class="card stat">
         <div class="stat-label">这次花了</div>
-        <div class="stat-value" style="font-size: 20px">{{ board.cost_text || '—' }}</div>
+        <div class="stat-value stat-text">{{ board.cost_text || '—' }}</div>
         <div class="stat-foot">{{ board.latency_seconds == null ? '没有耗时记录' : `${board.latency_seconds} 秒` }}</div>
       </article>
     </div>
@@ -190,7 +216,7 @@ onUnmounted(() => {
         </div>
         <div>
           <div><span class="muted">排名结束</span> <b>{{ formatDateTime(board?.finished_at) }}</b></div>
-          <div><span class="muted">上一趟</span> <b>{{ dailyRank.runner?.last?.trade_date || '—' }} · {{ dailyRank.runner?.last?.ok ? '成功' : dailyRank.runner?.last?.trade_date ? '失败' : '没有' }} · {{ spendShort(dailyRank.runner?.last) }}</b></div>
+          <div><span class="muted">上一趟</span> <b>{{ lastRun ? `${lastRun.date || '—'} · ${lastRun.word} · ${lastRun.spend}` : '没有' }}</b></div>
         </div>
       </div>
     </div>
@@ -215,7 +241,7 @@ onUnmounted(() => {
             <th class="right">输入位次</th>
             <th>理由</th>
             <th>反证</th>
-            <th>五项</th>
+            <th>指标</th>
             <th>闸门</th>
           </tr>
         </thead>
@@ -234,9 +260,9 @@ onUnmounted(() => {
             </td>
             <td class="right">{{ pick.formula.model_gap == null ? '—' : formatScore(pick.formula.model_gap) }}</td>
             <td class="right">{{ pick.feed_rank ?? '—' }}</td>
-            <td style="max-width: 280px">{{ pick.reason || '—' }}</td>
-            <td style="max-width: 280px">{{ pick.counter_evidence || '—' }}</td>
-            <td class="hint">{{ indicatorText(pick) }}</td>
+            <td class="wrap">{{ pick.reason || '—' }}</td>
+            <td class="wrap">{{ pick.counter_evidence || '—' }}</td>
+            <td class="hint wrap">{{ indicatorText(pick) }}</td>
             <td>
               <span v-if="pick.unverified_citation" class="tag type-weak">数字追不回</span>
               <span v-else class="tag">对得上</span>
@@ -265,7 +291,7 @@ onUnmounted(() => {
   <section v-if="board && board.feed.length" class="card">
     <div class="card-head">
       <h2>喂给模型的输入</h2>
-      <span class="muted">{{ board.feed.length }} 行 · {{ board.prepared_at }}</span>
+      <span class="muted nowrap">{{ board.feed.length }} 行 · 定格于 {{ formatDateTime(board.prepared_at) }}</span>
     </div>
     <div class="table-wrap" style="max-height: 420px">
       <table>
@@ -311,7 +337,7 @@ onUnmounted(() => {
       <h2>它的历史账</h2>
       <div class="toolbar">
         <span v-if="dailyRank.summary" class="muted">定判 {{ dailyRank.summary.check.settled }} / 共 {{ dailyRank.summary.check.total }} 条 · 命中 {{ dailyRank.summary.check.hits }}</span>
-        <button class="btn btn-ghost" type="button" :disabled="dailyRank.checking" @click="runPicksCheck">
+        <button class="btn btn-ghost" type="button" :disabled="dailyRank.checking" @click="checkNow">
           {{ dailyRank.checking ? '对账中…' : '当场补一次对账' }}
         </button>
       </div>
@@ -440,7 +466,7 @@ onUnmounted(() => {
         <tbody>
           <tr v-for="item in dailyRank.history.items" :key="`${item.trade_date}-${item.status}`">
             <td>{{ item.trade_date || '—' }}</td>
-            <td><span class="tag" :class="item.status === 'done' ? 'tag-hot' : item.status === 'failed' ? 'type-weak' : 'type-normal'">{{ statusWord[item.status] || item.status }}</span></td>
+            <td><span class="tag" :class="item.status === 'done' ? 'tag-hot' : item.status === 'failed' ? 'type-weak' : 'type-normal'">{{ statusWord(item.status) }}</span></td>
             <td>{{ item.metric_label }}</td>
             <td class="code">{{ item.model || '—' }}</td>
             <td class="right">{{ item.feed_rows }}</td>
@@ -448,7 +474,7 @@ onUnmounted(() => {
             <td class="right">{{ item.rejected_count }}</td>
             <td class="right">{{ item.unverified_citations }}</td>
             <td class="right">{{ item.latency_seconds == null ? '—' : `${item.latency_seconds} 秒` }}</td>
-            <td>{{ item.cost_text || '—' }}<span v-if="item.error" class="hint"> · {{ item.error }}</span></td>
+            <td class="wrap">{{ item.cost_text || '—' }}<span v-if="item.error" class="hint"> · {{ item.error }}</span></td>
           </tr>
         </tbody>
       </table>

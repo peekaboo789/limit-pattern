@@ -38,13 +38,14 @@ from backend.app.algorithms.calibration import (
 from backend.app.algorithms.features import build_three_day_window
 from backend.app.algorithms.similarity import band_of, percent, score_components
 from backend.app.core.clock import SHANGHAI
+from backend.app.core.config import compare_window_days
 from backend.app.core.constants import (
     BAND_HIGH,
     BAND_LOW,
     BAND_MID,
     BAND_WEAK,
-    COMPARE_WINDOW_TRADING_DAYS,
     MIN_BAND_OBSERVATIONS,
+    SHAPE_WINDOW_TRADING_DAYS,
 )
 from backend.app.core.database import session_scope
 from backend.app.core.logging import get_logger
@@ -575,11 +576,11 @@ def run_backtest(
         days = days[: int(max_days)]
 
     next_map = _next_day_map(all_days)
-    # 窗口最长往前看三天，样本池再往前看三个交易日：脏行那份账往区间下界之前多取几天，
+    # 形态窗口往前看三天，样本池再往前看「对比窗口」个交易日：脏行那份账往区间下界之前多取几天，
     # 否则区间第一天的形态窗口里住着一条 error 也照用。
     dirty = error_pairs(
         session,
-        start=days[0] - timedelta(days=COMPARE_WINDOW_TRADING_DAYS * 2 + 4),
+        start=days[0] - timedelta(days=(SHAPE_WINDOW_TRADING_DAYS + compare_window_days()) * 2 + 4),
         end=days[-1],
     )
     bars_by_code = load_bars_bulk(session, days[-1])
@@ -662,7 +663,7 @@ def run_backtest(
         "leakage": leakage,
         "observations": observations,
         "parameters": {
-            "compare_window_trading_days": COMPARE_WINDOW_TRADING_DAYS,
+            "compare_window_trading_days": compare_window_days(),
             "band_floors": _floors(),
             "high_band": BAND_HIGH,
             "min_band_observations": MIN_BAND_OBSERVATIONS,
@@ -1068,7 +1069,7 @@ def _new_run(session, *, low: date, high: date, split_ratio: float, max_days: in
         note=f"{low}~{high} 正在回测"[:200],
         error="",
         parameters={
-            "compare_window_trading_days": COMPARE_WINDOW_TRADING_DAYS,
+            "compare_window_trading_days": compare_window_days(),
             "band_floors": _floors(),
             "high_band": BAND_HIGH,
             "min_band_observations": MIN_BAND_OBSERVATIONS,
