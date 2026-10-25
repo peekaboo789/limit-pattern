@@ -68,9 +68,10 @@ export interface LimitUpItem {
   close: number
   pct_chg: number
   volume: number
-  amount: number
+  /** 成交额缺值时后端保持 null，不是 0——「库里没这条」和「这条是 0」不能读成同一个数。 */
+  amount: number | null
   amount_estimated?: boolean
-  turnover_rate: number
+  turnover_rate: number | null
   consecutive_boards: number
   first_limit_time: string | null
   limit_type: string
@@ -97,14 +98,25 @@ export interface KBar {
   low: number
   close: number
   volume: number
-  amount: number
+  /** 日线源有时不给成交额，补拉的那几根也没有：保持 null，别当 0 画进柱子里。 */
+  amount: number | null
   amount_estimated?: boolean
   pct_chg: number
+  /**
+   * 库里登记的涨停标记。`true`/`false` 来自正式行情，`null` 是补拉的计算柱——
+   * 那一根判不了，不是「不是涨停」。页面靠它画涨停点，不再用涨幅自己猜。
+   */
+  is_limit_up?: boolean | null
 }
 
 export interface KlineResponse {
   code: string
   name: string
+  /** `stocks.board` 那一列：main_board / chinext / star / bse / unknown，没建档是空串。 */
+  board: string
+  /** 中文名由后端出（`markets.BOARD_LABELS`），前端不再自己映射。 */
+  board_label: string
+  is_st: boolean
   bars: KBar[]
 }
 
@@ -651,10 +663,35 @@ export interface AiPickRecord {
   }
 }
 
+/** `pick_history` 里最新那一行。列表（`recent`）被这条接口剥掉了，只剩合计加最新。 */
+export interface PickLatestRecord {
+  trade_date: string | null
+  judge_date: string | null
+  recommended_at: string
+  score: number | null
+  composite_score: number | null
+  level: string
+  model_gap: number | null
+  verdict: string
+  reason: string
+  criteria: string
+  model: string
+  checked_at: string | null
+}
+
+/** GET /api/ai/picks/{code} 的 `history`：`stats_from` 折出来的合计，加最新一行。
+ *  这条接口不返回 `recent`（那个字段只有整榜那批读数里才有），所以单开一个声明。 */
+export interface PickHistoryDetail extends AiHistory {
+  code: string
+  stock_name: string
+  score: number | null
+  latest: PickLatestRecord
+}
+
 export interface PickHistoryResponse {
   code: string
   never_recommended: boolean
-  history: AiHistory | null
+  history: PickHistoryDetail | null
 }
 
 export interface PicksSummary {
@@ -1156,6 +1193,10 @@ export interface PatternDetailResponse {
 export interface MatchSummaryRow {
   code: string
   name: string
+  /** 主档里的板块键，`boards` 下拉与筛选吃的都是它。没建档的股票是空串。 */
+  board: string
+  /** 中文板块名由后端出（`markets.BOARD_LABELS`），列表页直接画，前端不自己映射。 */
+  board_label: string
   sample_count: number
   high_similarity_count: number
   high_similarity_rate: number | null
@@ -1167,9 +1208,20 @@ export interface MatchSummaryRow {
   created_at: string
 }
 
+/** 列表页那一页的读数：`total` 是**筛完之后**的条数，翻页靠它算得到哪一页。 */
 export interface MatchSummaryPage {
   trade_date: string
   total: number
+  limit: number
+  offset: number
+  /** 回显当次生效的筛选与排序，页面直接从回包取，不在前端留第二份状态。 */
+  q: string
+  board: string
+  sort: string
+  order: string
+  sort_options: { key: string; label: string }[]
+  /** 板块下拉的档位与条数：跟着关键词走、不跟着板块自己走。 */
+  boards: { board: string; label: string; count: number }[]
   items: MatchSummaryRow[]
 }
 

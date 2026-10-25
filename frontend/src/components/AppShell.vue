@@ -7,10 +7,11 @@ import { useRoute } from 'vue-router'
 const route = useRoute()
 const mockMode = import.meta.env.VITE_USE_MOCK === '1'
 
-const items = [
+const items: { name: string; label: string; to: string; also?: string[] }[] = [
   { name: 'overview', label: '总览', to: '/' },
   { name: 'realtime', label: '盘中监控', to: '/realtime' },
   { name: 'similarity', label: '个股相似度', to: '/similarity' },
+  { name: 'stocks', label: '股票列表', to: '/stocks', also: ['stock'] },
   { name: 'pool', label: '涨停池', to: '/pool' },
   { name: 'prediction', label: '次日预测池', to: '/prediction' },
   { name: 'ai-rank', label: '每日 AI 固定榜', to: '/ai-rank' },
@@ -21,6 +22,12 @@ const items = [
   { name: 'data', label: '数据管理', to: '/data' },
   { name: 'settings', label: '设置', to: '/settings' },
 ]
+
+/** 详情页是从列表页点进去的，侧栏得继续亮在「股票列表」那一格。 */
+function isActive(item: { name: string; also?: string[] }): boolean {
+  const names = [item.name, ...(item.also ?? [])]
+  return names.includes(String(route.name ?? ''))
+}
 
 const syncText = computed(() => {
   const sync = session.sync
@@ -59,7 +66,7 @@ onMounted(() => {
         v-for="item in items"
         :key="item.name"
         class="nav-link"
-        :class="{ active: route.name === item.name }"
+        :class="{ active: isActive(item) }"
         :to="item.to"
       >
         {{ item.label }}

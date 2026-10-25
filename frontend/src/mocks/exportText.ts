@@ -98,7 +98,7 @@ function poolText(date: string): string {
       item.consecutive_boards,
       item.first_limit_time ?? '',
       item.limit_type,
-      item.turnover_rate.toFixed(2),
+      item.turnover_rate?.toFixed(2) ?? '',
       formatAmount(item.amount),
     ].join('\t'),
   )

@@ -16,7 +16,13 @@ from backend.app.services.export_service import content_disposition, render_expo
 from backend.app.core.database import session_scope
 from backend.app.models.tables import BacktestRun, CalcBar, DailyQuote, Stock
 from backend.app.core.constants import CLUSTER_MIN_K, REALTIME_TOP_N_MAX, REALTIME_TOP_N_MIN
-from backend.app.providers.markets import classify, is_in_scope, normalize_code, reject_reason
+from backend.app.providers.markets import (
+    BOARD_LABELS,
+    classify,
+    is_in_scope,
+    normalize_code,
+    reject_reason,
+)
 from backend.app.services.intraday_watch import watcher
 from backend.app.services.intraday_watch_store import TIERS
 from backend.app.services.realtime_tracker import RANK_METRICS, tracker
@@ -267,7 +273,9 @@ def _pct_chg(close: float | None, pre_close: float | None) -> float | None:
     return round((close - pre_close) / pre_close * 100, 4)
 
 
-def _kline_bar(day: date, row, pct: float | None, estimated: bool = False) -> dict:
+def _kline_bar(
+    day: date, row, pct: float | None, estimated: bool = False, limit_up: bool | None = None
+) -> dict:
     return {
         "date": day.isoformat(),
         "open": row.open,
@@ -278,6 +286,9 @@ def _kline_bar(day: date, row, pct: float | None, estimated: bool = False) -> di
         "amount": row.amount,
         "amount_estimated": estimated,
         "pct_chg": pct,
+        #: 涨停判定**只来自正式行情里那一列**。补拉的计算 K 线没有这个字段，所以是 null
+        #: 而不是 false——「这根不是涨停」和「这根是算出来的、判不了」不能读成同一个数。
+        "is_limit_up": limit_up,
     }
 
 
@@ -305,10 +316,18 @@ def kline(code: str, days: int = Query(30, ge=1, le=120)) -> dict:
                 row,
                 row.change_percent,
                 bool(getattr(row, "amount_estimated", False)),
+                bool(row.is_limit_up),
             )
         ordered = [merged[day] for day in sorted(merged)]
         bars = ordered[-days:]
-    return {"code": normalized, "name": stock.name if stock else "", "bars": bars}
+    return {
+        "code": normalized,
+        "name": stock.name if stock else "",
+        "board": stock.board if stock else "",
+        "board_label": BOARD_LABELS.get(stock.board, stock.board) if stock else "",
+        "is_st": bool(stock.is_st) if stock else False,
+        "bars": bars,
+    }
 
 
 @router.get("/similarity")
@@ -948,13 +967,38 @@ def matches_summary(
     date: str | None = None,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
+    q: str | None = Query(None, description="按代码或名称模糊筛"),
+    board: str | None = Query(None, description="main_board / chinext / star / bse"),
+    sort: str = Query("max", description=" | ".join(match_service.SUMMARY_SORTS)),
+    order: str = Query("desc", description="desc | asc"),
 ) -> dict:
-    """某一天落库汇总的分页，按最高相似度排。"""
+    """某一天落库汇总的分页：可筛、可排、可翻页，默认按最高相似度排。"""
+    if sort not in match_service.SUMMARY_SORTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"不支持的排序字段：{sort}。可用的是 {' / '.join(match_service.SUMMARY_SORTS)}",
+        )
+    if order not in ("desc", "asc"):
+        raise HTTPException(status_code=422, detail="排序方向只能是 desc 或 asc")
     day = _parse_day(date, default_latest=True)
-    with session_scope() as session:
-        if day not in quote_dates(session):
-            raise HTTPException(status_code=404, detail="这一天没有行情")
-        return match_service.summary_page(session, day, limit=limit, offset=offset)
+    try:
+        with session_scope() as session:
+            if day not in quote_dates(session):
+                raise HTTPException(status_code=404, detail="这一天没有行情")
+            return match_service.summary_page(
+                session,
+                day,
+                limit=limit,
+                offset=offset,
+                q=q or "",
+                board=board or "",
+                sort=sort,
+                order=order,
+            )
+    except ValueError as exc:
+        # 服务层那两道校验是给所有调用方兜底的：接口上已经有了同样的闸，这里只保证
+        # 万一有人绕过路由直接调服务，也不会拿到一个静默的默认排序。
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/matches/export")

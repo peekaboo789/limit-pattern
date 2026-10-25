@@ -30,12 +30,11 @@ function option(): EChartsCoreOption {
   const present = new Set(dates)
   const windowDates = (props.windowDates ?? []).filter((date) => present.has(date))
   const start = bars.length <= 48 ? 0 : Math.round((1 - 48 / bars.length) * 100)
+  /** 涨停点只认库里登记的那一列（补拉的计算柱是 null，画不出点）。
+   *  之前这里拿涨幅接近 10%/20% 反推，那是第二把尺子：ST 的 5%、北交所的 30% 都会漏，
+   *  一根补来的计算线还会被当成「不是涨停」——库里根本没判过它。 */
   const marks = bars
-    .filter((bar) => {
-      const pct = bar.pct_chg ?? Number.NaN
-      const nearLimit = Math.abs(pct - 10) < 0.4 || Math.abs(pct - 20) < 0.5
-      return nearLimit && bar.high <= bar.close + 0.03
-    })
+    .filter((bar) => bar.is_limit_up === true)
     .map((bar) => ({
       coord: [bar.date, bar.high],
       symbol: 'circle',

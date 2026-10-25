@@ -11,7 +11,7 @@
 | GET | `/api/sync/status` | `running`、`progress`（0–100）、`message`、`last_sync_at`、`last_sync_sources`（上一轮的出数来源账） |
 | GET | `/api/limitups?date=` | 某一天的涨停列表。不传日期用最近一个有行情的交易日 |
 | GET | `/api/pool` | 最近 3 个交易日的涨停池 |
-| GET | `/api/kline?code=&days=30` | 日 K。正式行情优先，缺的日期用补拉的计算 K 线补上。不会返回今天之后的 K 线 |
+| GET | `/api/kline?code=&days=30` | 日 K。正式行情优先，缺的日期用补拉的计算 K 线补上。不会返回今天之后的 K 线。回包带 `name`、`board`、`board_label`、`is_st`；每根 K 线带 `is_limit_up`——正式行情那天按库里登记回 `true`/`false`，补拉的那几根回 `null`（判不了就不替它判） |
 | GET | `/api/similarity?code=&date=&top=20` | 这一只和涨停池的对比 |
 | GET | `/api/scan?date=&top=50&min_score=0` | 全市场和涨停池对比后的排行 |
 | GET | `/api/realtime/top?metric=&top_n=` | 盘中监控的榜。榜前 N 只每 2 秒随请求重算，全市场每 120 秒由后台线程跑一轮。`metric` 不认识回 422，`top_n` 超出范围回 422。每行带 `similarity_band`、`next_day_rate_percent`、`next_day_rate_samples`，整份回包带 `probability`（底表，见「历史回测与次日预测池」） |
@@ -64,7 +64,7 @@
 | GET | `/api/patterns/overview?date=` | 涨停形态页：样本池这几天库里存了哪些样本、各天被闸门跳过了什么。只读库，不现算 |
 | GET | `/api/patterns/top?date=&limit=50` | 样本池已落库的样本清单，按涨停日、代码排，只给概要字段。`limit` 1 到 500 |
 | GET | `/api/patterns/{code}?with_details=true` | 这一只股票在保留窗口里落库的涨停样本，带三日明细与向量尾部那 7 项聚合。一条都没有回 404 |
-| GET | `/api/matches/summary?date=&limit=100&offset=0` | 某一天落库汇总的分页，按最高相似度排。`limit` 1 到 1000 |
+| GET | `/api/matches/summary?date=&q=&board=&sort=max&order=desc&limit=100&offset=0` | 某一天落库汇总的分页。`q` 按代码或名称子串匹配；`board` 取 `main_board` / `chinext` / `star`；`sort` 取 `max` / `avg` / `rate` / `count` / `samples` / `code` / `name`，`order` 取 `desc` / `asc`，其它值回 422 并列出可用值；同分再按代码升序，空值（比如参与比对 0 条时的比例）恒排在末尾。`limit` 1 到 1000。回包除 `items`、`total` 外还带 `sort_options`（下拉就读它）与 `boards`（按板块计数，只受 `q` 影响、不受 `board` 自己影响）；每行带 `board` 与 `board_label` |
 | GET | `/api/matches/{code}?date=` | 这一只股票某一天**库里**的匹配明细。没落库回 `ok: false` 并说清为什么，不偷偷现算 |
 | POST | `/api/matches/{code}?date=` | 现算这一只的匹配明细并落库，与全市场扫描共用同一把尺子 |
 | GET | `/api/matches/compare?code=&sample_code=&date=&sample_date=` | 左右对比：目标当天的三日窗口与那条涨停样本落库的三日窗口，逐字段差值。`sample_date` 必填 |
@@ -413,5 +413,6 @@
 （本轮定判 / 落某天 / 回填上一交易日三条读数与 `errors`）直接并进 store，不再回头 refetch 一遍——
 谁跑出这些数，谁把它们交出去。`onVisibility()` 那一拍也读 `loadAiMemory()`，切回标签页时读数是新的。
 
-两条还没有消费方：`GET /api/patterns/top`（接口通、有测试，页面上首屏读的是 `overview`）与
-`GET /api/matches/summary`（某一天全市场汇总的分页）。后者是股票详情页与列表页要用的那一份，排在路线图的档 6。
+`GET /api/matches/summary`（某一天全市场汇总的分页）落在「股票列表」页（`/stocks`）——筛选、排序、
+翻页都吃它；点一行进「股票详情」页（`/stocks/:code`），详情页那根日 K 读 `GET /api/kline`（`code` + `days`，
+一并回名称、板块与 ST 标记）。只剩 `GET /api/patterns/top` 还没有消费方：接口通、有测试，页面上首屏读的是 `overview`。

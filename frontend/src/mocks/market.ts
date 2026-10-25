@@ -1,5 +1,6 @@
 import type {
   KBar,
+  KlineResponse,
   PoolItem,
   ScanItem,
   ScanResponse,
@@ -295,6 +296,18 @@ export function limitPercent(code: string): number {
   return 10
 }
 
+/** 模拟数据也要给出详情页页眉那三个读数。板块键与中文名照后端 `markets.BOARD_LABELS` 的口径，
+ *  否则真假两套数据在同一个页面上会长出两种说法。 */
+export function boardKeyOf(code: string): { board: string; board_label: string } {
+  if (code.startsWith('300') || code.startsWith('301') || code.startsWith('302')) {
+    return { board: 'chinext', board_label: '创业板' }
+  }
+  if (code.startsWith('688') || code.startsWith('689')) {
+    return { board: 'star', board_label: '科创板' }
+  }
+  return { board: 'main_board', board_label: '主板' }
+}
+
 export function boardOf(code: string): 'SH' | 'SZ' {
   return code.startsWith('6') ? 'SH' : 'SZ'
 }
@@ -431,6 +444,7 @@ function buildBars(code: string): KBar[] {
       volume,
       amount,
       pct_chg: event ? round(pct, 2) : pct,
+      is_limit_up: Boolean(event),
     })
     previous = closePrice
   }
@@ -475,6 +489,7 @@ function applyTwin(code: string, bars: KBar[]): void {
       volume,
       amount: round((volume * (open + close)) / 2, 2),
       pct_chg: round((close / previous.close - 1) * 100),
+      is_limit_up: false,
     }
   }
 }
@@ -634,16 +649,26 @@ export function buildScan(date: string, top: number, minScore: number): ScanResp
   }
 }
 
-export function klineOf(code: string, days: number): { code: string; name: string; bars: KBar[] } {
+export function klineOf(code: string, days: number): KlineResponse {
   const info = stock(code)
   const all = barsFor(code)
   const count = Math.min(all.length, Math.max(1, Math.floor(days)))
-  return { code, name: info.name, bars: all.slice(-count) }
+  const { board, board_label } = boardKeyOf(code)
+  return {
+    code,
+    name: info.name,
+    board,
+    board_label,
+    is_st: info.name.toUpperCase().includes('ST'),
+    bars: all.slice(-count),
+  }
 }
 
-function median(values: number[]): number {
-  if (!values.length) return 0
-  const sorted = [...values].sort((a, b) => a - b)
+function median(values: (number | null | undefined)[]): number {
+  //: 换手、成交额这些列缺就写 null（公开源常整列不给），缺的不参与中位数，别拿 0 顶替。
+  const present = values.filter((value): value is number => value != null)
+  if (!present.length) return 0
+  const sorted = [...present].sort((a, b) => a - b)
   const mid = Math.floor(sorted.length / 2)
   const left = sorted[mid - 1] ?? 0
   const right = sorted[mid] ?? 0

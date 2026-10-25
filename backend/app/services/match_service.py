@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import case, delete, func, insert, or_, select
 from sqlalchemy.orm import Session
 
 from backend.app.algorithms.features import (
@@ -33,7 +33,8 @@ from backend.app.algorithms.features import (
 )
 from backend.app.core.constants import BAND_HIGH, MATCH_INSERT_BATCH, MATCH_TOP_N
 from backend.app.core.logging import get_logger
-from backend.app.models.tables import DailyQuote, MatchSummary, PatternMatch
+from backend.app.models.tables import DailyQuote, MatchSummary, PatternMatch, Stock
+from backend.app.providers.markets import BOARD_LABELS
 from backend.app.services import pattern_service
 from backend.app.services.backtest_service import score_day
 from backend.app.services.feature_service import add_skip, record_skip
@@ -355,27 +356,146 @@ def matches_by_code(session: Session, day: date, codes: list[str]) -> dict[str, 
     return grouped
 
 
-def summary_page(session: Session, day: date, *, limit: int = 100, offset: int = 0) -> dict:
-    """某一天所有落库汇总的分页，按最高相似度排。数据管理页用它数「今天扫了多少只」。"""
-    total = int(
-        session.query(MatchSummary).filter(MatchSummary.target_date == day).count() or 0
+#: 列表页排序认的键，唯一一份。页面上那个下拉读回包里的 `sort_options`，
+#: 不是在前端再抄一遍字段名——抄了就会有「页面能选、接口回 422」那一天。
+SUMMARY_SORTS = {
+    "max": "最高相似度",
+    "avg": "全池平均分",
+    "rate": "过高分线比例",
+    "count": "过高分线条数",
+    "samples": "参与比对的样本条数",
+    "code": "代码",
+    "name": "名称",
+}
+
+
+def _rate_expression():
+    """`_summary_out` 那个 `high_similarity_rate` 的同一把尺子，在库里除出来。
+
+    分母（实际参与比对的样本条数）为 0 时回 NULL，不是 0%——「一条样本都没比上」
+    和「比上了但一条没过线」是两个不同的事实，排序时前者自然垫到空值那一档。
+    """
+    return case(
+        (
+            MatchSummary.sample_count > 0,
+            MatchSummary.high_similarity_count * 100.0 / MatchSummary.sample_count,
+        ),
+        else_=None,
     )
+
+
+def _sort_expression(sort: str):
+    if sort == "rate":
+        return _rate_expression()
+    if sort == "count":
+        return MatchSummary.high_similarity_count
+    if sort == "samples":
+        return MatchSummary.sample_count
+    if sort == "avg":
+        return MatchSummary.avg_similarity
+    if sort == "code":
+        return MatchSummary.target_code
+    if sort == "name":
+        return Stock.name
+    return MatchSummary.max_similarity
+
+
+def summary_page(
+    session: Session,
+    day: date,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    q: str = "",
+    board: str = "",
+    sort: str = "max",
+    order: str = "desc",
+) -> dict:
+    """某一天所有落库汇总的分页，可按代码/名称与板块筛、按任一相似度口径排。
+
+    筛选、排序、分页全在 SQL 里做：这一页只取回 `limit` 行，页面拿到的 `total` 是
+    **筛完之后**的条数。数据管理页仍然用默认那档（`sort=max&order=desc`）数「今天扫了多少只」，
+    同一张表、同一个排序，不会因为多了一个列表页就长出第二套读法。
+
+    排序键允许是 NULL 的（`avg_similarity` / `max_similarity` 在池子为空时是 None）：
+    SQLite 把 NULL 当最小，所以倒序时空值自然垫后、升序时排在最前，页面按「—」显示。
+    次关键字恒为代码升序，否则同分的行在翻页时会重复出现或整页漏掉。
+    """
+    if sort not in SUMMARY_SORTS:
+        raise ValueError(f"不支持的排序字段：{sort}")
+    if order not in ("desc", "asc"):
+        raise ValueError(f"不支持的排序方向：{order}")
+
+    keyword = (q or "").strip()
+    board_name = (board or "").strip()
+    conditions = [MatchSummary.target_date == day]
+    if keyword:
+        pattern = f"%{keyword}%"
+        conditions.append(or_(MatchSummary.target_code.like(pattern), Stock.name.like(pattern)))
+    base_conditions = list(conditions)
+    if board_name:
+        conditions.append(Stock.board == board_name)
+
+    total = int(
+        session.scalar(
+            select(func.count())
+            .select_from(MatchSummary)
+            .outerjoin(Stock, Stock.code == MatchSummary.target_code)
+            .where(*conditions)
+        )
+        or 0
+    )
+    # 板块下拉的条数跟着关键词走、但不跟着板块自己走：选了「创业板」之后
+    # 其他板块不能从下拉里消失，否则想换回去就只能先清空选择。
+    boards = [
+        {
+            "board": value or "",
+            "label": BOARD_LABELS.get(value or "", "没登记板块"),
+            "count": int(count),
+        }
+        for value, count in session.execute(
+            select(Stock.board, func.count())
+            .select_from(MatchSummary)
+            .outerjoin(Stock, Stock.code == MatchSummary.target_code)
+            .where(*base_conditions)
+            .group_by(Stock.board)
+            .order_by(func.count().desc(), Stock.board)
+        ).all()
+    ]
+    direction = _sort_expression(sort)
+    direction = direction.desc() if order == "desc" else direction.asc()
     rows = list(
-        session.scalars(
-            select(MatchSummary)
-            .where(MatchSummary.target_date == day)
-            .order_by(MatchSummary.max_similarity.desc(), MatchSummary.target_code)
+        session.execute(
+            select(MatchSummary, Stock.name, Stock.board)
+            .outerjoin(Stock, Stock.code == MatchSummary.target_code)
+            .where(*conditions)
+            .order_by(direction, MatchSummary.target_code.asc())
             .limit(int(limit))
             .offset(int(offset))
         ).all()
     )
-    names = pattern_service.stock_names(session)
     return {
         "trade_date": day.isoformat(),
         "total": total,
+        "limit": int(limit),
+        "offset": int(offset),
+        "q": keyword,
+        "board": board_name,
+        "sort": sort,
+        "order": order,
+        "sort_options": [{"key": key, "label": label} for key, label in SUMMARY_SORTS.items()],
+        "boards": boards,
         "items": [
-            {"code": row.target_code, "name": names.get(row.target_code, ""), **_summary_out(row)}
-            for row in rows
+            {
+                "code": row.target_code,
+                "name": name or "",
+                "board": board_value or "",
+                #: 板块中文名由这里出：前端自己再写一份 `main_board → 主板` 的映射，
+                #: 就是第二把尺子，后端哪天加一档（北交所）页面会跟着漏。
+                "board_label": BOARD_LABELS.get(board_value or "", "没登记板块"),
+                **_summary_out(row),
+            }
+            for row, name, board_value in rows
         ],
     }
 

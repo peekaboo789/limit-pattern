@@ -57,7 +57,7 @@ STATIC_FIELD_GAPS: tuple[str, ...] = (
     "所以本文件里根本没有这三项的键，而不是「值为 0」。",
     "题材板块（如「人工智能」）本库没有：`daily_quotes.limit_up_reason` 存的是 "
     "matched_limit_price 这类**涨停判定标记**（记的是「这行凭什么被判涨停」），"
-    "`stocks.board` 是 main_board/chinext/star_market 这种交易所板块，两者都不是题材。",
+    "`stocks.board` 是 main_board/chinext/star 这种交易所板块，两者都不是题材。",
     "连板数 `streak_days` 是按库里真有行情的交易日往前现数出来的连续涨停天数；"
     "遇到没有行情的日子就停止累加，并把 `streak_truncated` 标为 true —— "
     "把它当成「断了」会少报，当成「没断」会多报，两者都是在替库里没有的事下结论。",

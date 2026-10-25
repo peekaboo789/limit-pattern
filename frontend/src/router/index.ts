@@ -9,6 +9,8 @@ import PredictionView from '@/views/PredictionView.vue'
 import RealtimeView from '@/views/RealtimeView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import SimilarityView from '@/views/SimilarityView.vue'
+import StockDetailView from '@/views/StockDetailView.vue'
+import StocksView from '@/views/StocksView.vue'
 import SummaryView from '@/views/SummaryView.vue'
 import { createRouter, createWebHistory } from 'vue-router'
 
@@ -21,6 +23,8 @@ export const router = createRouter({
     { path: '/', name: 'overview', component: OverviewView, meta: { title: '总览' } },
     { path: '/realtime', name: 'realtime', component: RealtimeView, meta: { title: '盘中监控' } },
     { path: '/similarity', name: 'similarity', component: SimilarityView, meta: { title: '个股相似度' } },
+    { path: '/stocks', name: 'stocks', component: StocksView, meta: { title: '股票列表' } },
+    { path: '/stocks/:code', name: 'stock', component: StockDetailView, meta: { title: '股票详情' } },
     { path: '/pool', name: 'pool', component: PoolView, meta: { title: '涨停池' } },
     { path: '/prediction', name: 'prediction', component: PredictionView, meta: { title: '次日预测池' } },
     { path: '/ai-rank', name: 'ai-rank', component: AiRankView, meta: { title: '每日 AI 固定榜' } },

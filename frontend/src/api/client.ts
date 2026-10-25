@@ -266,12 +266,24 @@ export const api = {
   patternDetail: (code: string, withDetails = true) =>
     request<PatternDetailResponse>(`/api/patterns/${code}${query({ with_details: withDetails ? 'true' : undefined })}`),
 
-  matchesSummary: (params: { date?: string; limit?: number; offset?: number } = {}) =>
+  matchesSummary: (params: {
+    date?: string
+    limit?: number
+    offset?: number
+    q?: string
+    board?: string
+    sort?: string
+    order?: string
+  } = {}) =>
     request<MatchSummaryPage>(
       `/api/matches/summary${query({
         date: params.date,
         limit: params.limit ?? 100,
         offset: params.offset ?? 0,
+        q: params.q,
+        board: params.board,
+        sort: params.sort,
+        order: params.order,
       })}`,
     ),
 
