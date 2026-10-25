@@ -127,7 +127,7 @@ watch(
 
   <section class="stats">
     <article class="card stat">
-      <div class="stat-label">近三日涨停样本</div>
+      <div class="stat-label">{{ compareWindowText() }}涨停样本</div>
       <div class="stat-value">{{ total }}</div>
       <div class="stat-foot">含同一只股票的多次涨停</div>
     </article>
