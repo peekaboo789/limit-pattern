@@ -1,4 +1,9 @@
-"""相似度：RobustScaler + 加权欧氏距离 + 余弦。分数只描述形态像不像，不是概率。"""
+"""相似度：RobustScaler + 加权欧氏距离 + 余弦。分数只描述形态像不像，不是概率。
+
+距离那一步走 `algorithms/vector_index.py`：规模够大且装了 faiss 时用 `IndexFlatL2`，
+否则用 numpy 的恒等式展开。两条路都是精确检索，分数逐项一致，所以后端不是口径、
+也不给页面调——见那个文件的开头。
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ import math
 import numpy as np
 
 from backend.app.algorithms.features import AGGREGATE_NAMES, DAILY_SPEC, dimension_weights
+from backend.app.algorithms.vector_index import VectorIndex
 from backend.app.core.constants import (
     BAND_HIGH,
     BAND_LOW,
@@ -99,10 +105,7 @@ def score_matrix(
     root = np.sqrt(weights)
     tw = scaled_targets * root
     sw = scaled_samples * root
-    target_sq = np.sum(tw * tw, axis=1)[:, None]
-    sample_sq = np.sum(sw * sw, axis=1)[None, :]
-    cross = tw @ sw.T
-    dist = np.sqrt(np.maximum(target_sq + sample_sq - 2.0 * cross, 0.0))
+    dist = VectorIndex.build(sw, n_queries=int(tw.shape[0])).distances(tw)
     euclidean = 100.0 * np.exp(-dist)
 
     target_norm = np.linalg.norm(scaled_targets, axis=1)

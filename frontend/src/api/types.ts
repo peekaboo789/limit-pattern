@@ -1381,3 +1381,101 @@ export interface QualityErrorPage {
   }[]
   count: number
 }
+
+/** 形态聚类与归属（档4 的接口，页面在「形态聚类」）。
+ *  组画像那几项与后端 `ClusterSignature.as_dict()` 一一对应：`turnover_rate` 是
+ *  `number | null`——整组都没这一列时后端回 null，页面显示「—」，不是 0.00%。 */
+
+export interface ClusterMemberOut {
+  code: string
+  name: string
+  limit_date: string
+  window: string[]
+  is_representative?: boolean
+  similarity?: number
+}
+
+export interface ClusterSignatureOut {
+  return_3d: number
+  slope_close: number
+  volatility_3d: number
+  volume_trend: number
+  amplitude_sum: number
+  amplitude_mean: number
+  turnover_rate: number | null
+  position_20: number
+}
+
+export interface ClusterGroupOut {
+  cluster_id: number
+  name: string
+  size: number
+  share: number
+  description: string
+  intra_distance: number
+  nearest_other_distance: number
+  separation: number
+  signature: ClusterSignatureOut
+  representative: ClusterMemberOut
+  members: ClusterMemberOut[]
+}
+
+export interface ClusterPointOut {
+  x: number
+  y: number
+  cluster_id: number
+  code: string
+  name: string
+  is_centroid: boolean
+  group: string
+}
+
+export interface ClusterEvalOut {
+  k: number
+  silhouette: number
+}
+
+export interface ClusterOverviewOut {
+  trade_date: string
+  pool_dates: string[]
+  sample_count: number
+  ignored_stale: number
+  k: number
+  selected_by: string
+  silhouette: number
+  evaluated: ClusterEvalOut[]
+  clusters: ClusterGroupOut[]
+  points: ClusterPointOut[]
+  high_band: number
+  k_min: number
+  k_max: number
+  disclaimer: string
+}
+
+export interface ClusterAssignmentGroupOut {
+  cluster_id: number
+  name: string
+  size: number
+  avg_similarity: number
+  max_similarity: number
+  high_band_count: number
+  top_members: ClusterMemberOut[]
+}
+
+export interface ClusterAssignmentOut {
+  trade_date: string
+  pool_dates: string[]
+  code: string
+  name: string
+  sample_count: number
+  ignored_stale: number
+  k: number
+  assigned_cluster_id: number | null
+  assigned_cluster_name: string
+  margin: number
+  groups: ClusterAssignmentGroupOut[]
+  window: string[]
+  skipped_reason: string | null
+  high_band: number
+  disclaimer: string
+}

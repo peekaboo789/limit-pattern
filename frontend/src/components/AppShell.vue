@@ -17,6 +17,7 @@ const items = [
   { name: 'summaries', label: '每日总结', to: '/summaries' },
   { name: 'backtest', label: '历史回测', to: '/backtest' },
   { name: 'patterns', label: '涨停形态样本', to: '/patterns' },
+  { name: 'clusters', label: '形态聚类', to: '/clusters' },
   { name: 'data', label: '数据管理', to: '/data' },
   { name: 'settings', label: '设置', to: '/settings' },
 ]

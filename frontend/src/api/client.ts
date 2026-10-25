@@ -7,6 +7,8 @@ import type {
   BacktestStartAck,
   BacktestStatus,
   BoardState,
+  ClusterAssignmentOut,
+  ClusterOverviewOut,
   CompareResponse,
   DailyRankHistoryResponse,
   DailyRankPrepareAck,
@@ -260,6 +262,24 @@ export const api = {
         sample_code: params.sample_code,
         date: params.date,
         sample_date: params.sample_date,
+      })}`,
+    ),
+
+  clustersOverview: (params: { date?: string; k?: number; includeMembers?: boolean } = {}) =>
+    request<ClusterOverviewOut>(
+      `/api/clusters/overview${query({
+        date: params.date,
+        k: params.k,
+        include_members: params.includeMembers === false ? 'false' : undefined,
+      })}`,
+    ),
+
+  clusterAssignment: (code: string, params: { date?: string; k?: number; topMembers?: number } = {}) =>
+    request<ClusterAssignmentOut>(
+      `/api/clusters/${code}${query({
+        date: params.date,
+        k: params.k,
+        top_members: params.topMembers,
       })}`,
     ),
 

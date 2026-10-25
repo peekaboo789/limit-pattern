@@ -290,6 +290,45 @@
 `similarity.percent()` 换成 `null`。NaN 不能带出这一层：`json.dumps` 会把它写成裸的 `NaN`，
 浏览器 `response.json()` 当场解析失败，整个页面变成空白而不是一格空值。
 
+## 形态聚类与向量检索
+
+`GET /api/clusters/overview?date=&k=&include_members=` 分组的对象是**库里已落库的涨停样本**
+（`limit_up_patterns` 在样本池那三天里的可用行），不是现算的涨停池——页面上每个组都要能指回样本库里具体的几行。
+回包给 `trade_date`、`pool_dates`、`sample_count`、`ignored_stale`（向量长度对不上 67 的旧口径行数，跳过并如实报数）、
+`k`、`selected_by`（`轮廓系数最大` / `调用方指定` / `样本不足，不分组`）、`silhouette`、`evaluated[]`、
+`clusters[]`（`cluster_id` / `name` / `size` / `share` / `description` / `intra_distance` / `nearest_other_distance` /
+`separation` / `signature` / `representative` / `members[]`）、`points[]`（散点图，样本各一点、每组一个质心）、
+`high_band`、`k_min`、`k_max`、`disclaimer`。
+
+三条硬约束写在这个模块的门口：
+
+- **组名不靠人写**。`signature` 是组内样本真实特征的中位数，组名由固定词表（涨幅、量能倍数、20 日位置、振幅四档阈值）
+  从这份中位数里生成，同名先补振幅档、还同名才加 `#n`。改阈值必须同步改测试。
+- **聚类空间就是打分空间**。分组前先把向量搬到 `RobustScaler + 权重开方` 那个空间里，缩放参数由样本池拟合，
+  权重取 `features.dimension_weights()` 归一化到和为 1——与 `similarity.score_matrix` 一个口径。
+  PCA 只服务散点图，不参与任何分组或打分。
+- **换手率缺列就是缺列**。公开源那一路 `day_details.features.turnover_rate` 整列可能是空的；
+  整组都缺时 `signature.turnover_rate` 回 `null`、画像写「T-1 换手 —」，不能让它在中位数里落成 `0.00%`。
+
+`GET /api/clusters/{code}?date=&k=&top_members=` 算的是「这只股票今天的三日形态最像哪一组」。
+分数来自 `similarity.score_components`——与首页榜、盘中榜、回测、匹配明细同一把尺子，这一页不产生第二套分数，
+也不产生任何概率。目标自己当天涨停时也在样本池里，但它那条样本**不参与**与自己这一组的比对（留着就是拿自己
+跟自己打 100 分）。回包给 `groups[]`（`cluster_id` / `name` / `size` / `avg_similarity` / `max_similarity` /
+`high_band_count` / `top_members[]`，按组内均分从高到低排）、`assigned_cluster_id` / `assigned_cluster_name` / `margin`、
+`window`、`skipped_reason`。
+
+算不出来时不编一个归属：`date` 落在没有行情的一天回 404「这一天没有行情」；代码不在沪深主板/创业板范围回 422；
+样本池不足 `CLUSTER_MIN_SAMPLES`（4）条回 400 并报出「只有 N 条…先在数据管理页重建涨停样本」；
+指定 `k` 大于等于样本数回 400「每组只剩一个样本」；目标股凑不齐三天行情则回 200，`skipped_reason` 说清原因、
+`groups` 是空表。
+
+向量检索有两种后端（`algorithms/vector_index.py`）：`numpy` 走 Gram 展开，`faiss` 走 `IndexFlatL2`。
+**两者都是精确检索，换后端只换时间，不换读数**，所以后端既不在设置里、也不在查询参数里——
+`FAISS_PAIR_THRESHOLD`（查询数 × 样本数）越过那条线就用 faiss，否则用 numpy。faiss 回的结果是**按距离升序排好**的，
+必须用 `indices` 把每一格摆回样本原来的位置，否则每行仍是「一组正确的距离」却配错了股票；
+测试里那条逐元素比对判据配了这个负向控制。实测这一批数据上两种后端的距离最大差在 `4e-6` 量级
+（float32 转换那一档），换成欧氏分是 `5e-5` 分，落在两位小数与分档阈值边界之外。
+
 ## 时间只有一个挂钟
 
 全项目只认东八区（`core/clock.py` 里 `SHANGHAI = UTC+8`，不读系统时区）。写进**不带时区**的列
@@ -304,6 +343,8 @@
 `/api/patterns/overview` 与 `/api/patterns/{code}` 落在「涨停形态样本」页（`/patterns`）。
 `/api/matches/{code}`（读库与重算）、`/api/matches/compare`、`/api/matches/export` 落在「个股相似度」页——
 那一页下面多了一块「库里落库明细」，选中左侧样本时右侧多一块「逐日对比」。
+`/api/clusters/overview` 与 `/api/clusters/{code}` 落在「形态聚类」页（`/clusters`）：统计卡、组列表、组画像与成员、
+散点图、分组数评估、目标股归属。页面上的分组数下拉与 `k` 是一件事，改下拉就地重算，两处（分组表与归属表）吃同一个 `k`。
 
 两条还没有消费方：`GET /api/patterns/top`（接口通、有测试，页面上首屏读的是 `overview`）与
 `GET /api/matches/summary`（某一天全市场汇总的分页）。后者是股票详情页与列表页要用的那一份，排在路线图的档 6。

@@ -61,6 +61,15 @@ MATCH_TOP_N = 20
 # 向量检索：样本 × 目标达到这个数才尝试 faiss，两边都是精确检索
 FAISS_PAIR_THRESHOLD = 50_000
 
+# 形态聚类（档4）。组名与分组都在相似度打分那同一个加权空间里做，见 algorithms/clustering.py。
+#: 少于这个样本数不聚类：3 个样本最多得到「每组一个」的退化结果，没有归纳意义。
+CLUSTER_MIN_SAMPLES = 4
+#: 自动选 k 的搜索范围。上下限都写死在这里，页面上的那排 chip 读的是这两个数。
+CLUSTER_MIN_K = 2
+CLUSTER_MAX_K = 6
+#: 固定随机种子：同一批样本、同一个 k 必须每次都得到同样的分组。
+CLUSTER_RANDOM_STATE = 20260927
+
 # 盘中节奏，没有开关
 FAST_REFRESH_SECONDS = 2
 FULL_ROUND_SECONDS = 120

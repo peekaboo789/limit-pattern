@@ -161,7 +161,7 @@ flowchart LR
 | ✅ | 四页导出 TXT，桌面版可走系统保存对话框 |
 | ✅ | 明细按交易日清理，设置页能看保留天数和上次清理时间 |
 | ✅ | 空库首次启动自动同步，状态接口用中文说明进度 |
-| ✅ | 十一个页面：总览、盘中监控、个股相似度、涨停池、次日预测池、每日 AI 固定榜、每日总结、历史回测、涨停形态样本、数据管理、设置 |
+| ✅ | 十二个页面：总览、盘中监控、个股相似度、涨停池、次日预测池、每日 AI 固定榜、每日总结、历史回测、涨停形态样本、形态聚类、数据管理、设置 |
 | ✅ | Windows 桌面程序：无控制台、WebView2 窗口、关闭缩到托盘 |
 | ✅ | 盘中监控：交易时段刷新榜单，榜前 50 只每 2 秒随请求重算，全市场每 120 秒由后台线程跑一轮 |
 | ✅ | 11:30 半日冻结：上午用当天现造的半日 K 线，11:30 之后不再写入、冻在文件里，下午的形态窗口读这份冻结值 |
@@ -174,12 +174,14 @@ flowchart LR
 | ✅ | 涨停形态样本页：读库里落好的样本（不是现算的涨停池），三天的原始行情加 20 项形态特征逐日摊开，向量尾部那 7 项聚合给页面直接指认 |
 | ✅ | 匹配明细落库：全市场扫描、单只现算、回测逐日重算、预测池证据共用 `backtest_service.score_day` 一把尺子；个股相似度页多出「库里落库明细」「逐日对比」两块和 CSV 导出。成交额维度整列没数据时那一格留空，不是 100 分 |
 | ✅ | 跳过账：哪一天哪只股票在哪个阶段因为什么没进库，四条线各自记账、数据管理页可按阶段和原因筛；被闸门挡下的训练行照样落库并带 `quality_passed=False` |
-| ⏳ | 聚类：把涨停前形态分成几组再看 |
+| ✅ | 形态聚类：把样本池里已涨停的三日形态分成几组，组名由组内真实特征中位数生成；另算「这只股票今天的形态最像哪一组」 |
 | ✅ | 每日 AI 固定榜：每天上午 10:00 凑好那 100 行输入（一分钱不花）、页面上点一次才让模型排出前 20 名，第二天盘中就盯这几名。它不是按历史发生率挑的预测池，也不给涨停概率 |
 | ✅ | AI 深度分析：多条证据交给模型写结论，数字仍须能对回本地统计；整榜分析和单只直评都有，页面不给模型编的数留位置 |
 | ⏳ | 多个 AI 网关切换、行业题材、封板时间、Docker 镜像 |
 
-聚类那张 ⏳ 还停在算法文件：`backend/app/algorithms/clustering.py` 有 KMeans 加轮廓系数选 k，没有服务调用、没有 HTTP 接口、页面上看不见。回测已经三层接通：`backend/app/services/backtest_service.py` 逐日重算并落库，接口在 `docs/api.md` 的「历史回测与次日预测池」一节，页面是「历史回测」和「次日预测池」两页。`ai_evidence.py` 里「相似度分档的次日发生率」这条证据也接回来了，吃的是同一份回测账——盘中 AI 分析、榜上概率列、预测页的档位项读的是同一条记录，不各算一套。
+聚类这一档三层都通了：`backend/app/algorithms/clustering.py` 在**与打分同一个加权空间**里做 KMeans、用轮廓系数挑分组数，组名来自组内样本真实特征的中位数加一张固定词表；`backend/app/services/cluster_service.py` 只吃 `limit_up_patterns` 里已落库的样本，归属那一路复用 `similarity.score_components`，全项目不产生第二把尺子；接口是 `/api/clusters/overview` 与 `/api/clusters/{code}`（见 `docs/api.md` 的「形态聚类与向量检索」一节），页面就是「形态聚类」那一页。向量检索另有 `algorithms/vector_index.py`：样本量大过 `FAISS_PAIR_THRESHOLD` 时走 faiss、否则走 numpy，两者都是精确检索、只换时间不换读数，所以这个开关既不在设置里也不在查询参数里。算不出来的时候它回 400 并报出缺几条样本、或回 200 带一句 `skipped_reason`，不给一个编出来的分组。
+
+回测已经三层接通：`backend/app/services/backtest_service.py` 逐日重算并落库，接口在 `docs/api.md` 的「历史回测与次日预测池」一节，页面是「历史回测」和「次日预测池」两页。`ai_evidence.py` 里「相似度分档的次日发生率」这条证据也接回来了，吃的是同一份回测账——盘中 AI 分析、榜上概率列、预测页的档位项读的是同一条记录，不各算一套。
 
 质量闸门那本账现在三层都齐了：`backend/app/services/quality_service.py` 的十四项检查每轮同步末尾都真跑一遍（跑不成会在同步消息里说破，不会安静地变成 0），账落进 `data_quality_errors`；`purge_service.py` 的清理默认只预演、删除比例超 5% 直接拒、删完只复查一遍不再删第二轮；数据管理页最下面那两块就是这本账和跳过账。接口见 `docs/api.md` 的「数据质量闸门」和「派生数据的四条重建线」两节。
 
@@ -210,7 +212,7 @@ flowchart LR
 
 ### 信息架构
 
-左侧固定十一个入口：总览、盘中监控、个股相似度、涨停池、次日预测池、每日 AI 固定榜、每日总结、历史回测、涨停形态样本、数据管理、设置。报警榜不单独开页，它是盘中监控页里的一张表加一个浮层。后面如果做聚类，仍加在设置上面，用同一侧栏，不另开窗口。
+左侧固定十二个入口：总览、盘中监控、个股相似度、涨停池、次日预测池、每日 AI 固定榜、每日总结、历史回测、涨停形态样本、形态聚类、数据管理、设置。报警榜不单独开页，它是盘中监控页里的一张表加一个浮层。聚类按这条路加在数据管理与设置之间，用同一侧栏，不另开窗口。
 
 顶栏从左到右是数据日期、同步状态、实际行情源、版本号。顶栏下面永远有一条声明：「相似度不是涨停概率」。侧栏底部写着「只使用已发生的行情，不预测下一交易日」。
 
@@ -288,15 +290,26 @@ AI 区：模型解读是算出来的状态，地址、模型和密钥都有才�
 
 下面是每日覆盖表（一天四列：特征、样本、汇总、训练），再下面是质量闸门账（级别和检查项两个下拉筛，「跑一次质量检查」只写账、不改行情）和跳过账（按阶段和原因筛）。清理脏行这一版页面上没有按钮，走 `POST /api/quality/purge`，默认只预演。
 
+### 形态聚类
+
+顶部一排数字：库里可用的样本数（脚注是样本池那三天，旧口径跳过的行数写在同一格）、分成几组（脚注写怎么挑的：轮廓系数最大还是调用方指定）、轮廓系数（脚注列出评估过的候选档）、最大组占比。
+
+左边是形态组列表（组名 · 几条 · 占比），点一组，右边出这组的三日形态中位数——累计涨幅、收盘趋势、三日波动、量能倍数、三日与日均振幅、T-1 换手率、T-1 在 20 日区间的位置，再加组内平均距离、与最近邻组距离、组间区分度；下面那张表是这一组的成员，行点一下跳到个股相似度页。公开源整列没有换手率时那一格写「—」，不写 0.00%。
+
+再下面是散点图（每条样本一个点、每组一个菱形质心，只用来看着分不分得开，不参与任何计算）、分组数评估表（每一档的轮廓系数与采用与否），最后是目标股归属：填一个代码，表格列出每个形态组的组内均分、组内最高分、过高分线的条数和组内最像的几条样本，上面一句写着归进哪一组、领先次优组几分。分组数那格改了，这一整页就地重算，归属表跟着用同一个分组数。
+
+样本池不足四条时这一页拿到的是 400，页面上直接显示「只有 N 条…先在数据管理页重建涨停样本」；目标股凑不齐三天行情时归属那块显示后端给的那句原因，不给一个编出来的组。
+
 ### 后续页面怎么排
 
-聚类还没有做，沿用同一套侧栏、卡片和红涨绿跌：表格加一个图，不在这些页上写「建议买入」。
+还差的是股票详情与列表页（档 6），沿用同一套侧栏、卡片和红涨绿跌：表格加图，不在这些页上写「建议买入」。
 
 ### 图表
 
 - **K 线**：阳线红、阴线绿。下方成交量用同一套颜色。对比窗口用金色半透明块标出，块上写「对比窗口」。接近涨停的收盘可以点一个小标记，标记是辅助，不代替涨停标签。
 - **叠加**：横轴是窗口里的第 1、2、3 天，不是日历日期。两条线各用各的基准。某一天没有 K 线时该点空着，不拿后一天去补。
 - **得分**：综合分用圆环，分项用横向条。不使用雷达图。三项权重并不相等，雷达会把它们画成同一个多边形，成交额又不进总分，放进雷达更容易看错。
+- **散点**：形态聚类那一页，横竖轴是 PCA 的两个主成分，每组一个颜色、组质心画成菱形。坐标只是把 67 维压给人看，不参与分组也不参与打分；样本不足以做二维投影时那块是空的，不画一张只有点的图。
 - **板块**：每日总结用横向条形，长度是家数。没有行业数据时，条的名字就是主板、创业板。科创板默认不出现。
 
 ### 免责声明放在哪
@@ -364,7 +377,7 @@ npm run build
 ## 目录结构
 
 ```
-backend/          接口、三个行情源、涨停判定、相似度、总结、导出、质量闸门、四条重建线
+backend/          接口、三个行情源、涨停判定、相似度、聚类与向量检索、总结、导出、质量闸门、四条重建线
 frontend/         Vue 页面。构建产物在 frontend/dist
 desktop/          Windows 启动器、托盘、PyInstaller
 scripts/          打包脚本
@@ -388,6 +401,6 @@ logs/launcher.log
 
 基址 `http://127.0.0.1:8765`。成功时直接返回 JSON。失败时 HTTP 4xx/5xx，正文是 `{"detail": "中文说明"}`。日期是 `YYYY-MM-DD`，股票代码是 6 位。
 
-常用路径：`/api/health`、`/api/settings`、`/api/sync`、`/api/sync/status`、`/api/limitups`、`/api/pool`、`/api/kline`、`/api/similarity`、`/api/scan`、`/api/summaries`、`/api/export`。质量那一组是 `/api/quality/summary`、`/api/quality/check`、`/api/quality/errors`、`/api/quality/purge`，四个都不敲任何上游。回测那一组是 `/api/backtest/run`、`/api/backtest/status`、`/api/backtest/latest`、`/api/backtest/runs`、`/api/backtest/runs/{id}`、`/api/backtest/observations`，删一轮用 `DELETE /api/backtest/runs/{id}`；预测池是 `/api/prediction/pool`。重建那一组是 `/api/data/status`、`/api/data/job`、`/api/data/rebuild-features`、`/api/data/rebuild-patterns`、`/api/data/scan-market`、`/api/data/build-training`、`/api/data/skips`，四个任务只写 SQLite、不读网络，槽位只有一个。样本那一组是 `/api/patterns/overview`、`/api/patterns/top`、`/api/patterns/{code}`；匹配那一组是 `/api/matches/summary`、`/api/matches/{code}`（GET 读库、POST 现算）、`/api/matches/compare`、`/api/matches/export`。盘中那一组是 `/api/realtime/top`、`/api/realtime/status`、`/api/realtime/intraday-watch`、`/api/realtime/intraday-watch/ack`；AI 那一组是 `/api/ai/analysis`、`/api/ai/single/{code}`、`/api/ai/reports`、`/api/ai/picks*`、`/api/ai/daily-rank*`。AI 组里只有三颗按钮花钱：整榜分析、单股直评、每日固定榜的「排出名次」；其余 AI 路径和本系统所有行情路径都不敲网关。回测、预测池、质量四件、样本与匹配那两组只读库里已经同步的行情，零成本。
+常用路径：`/api/health`、`/api/settings`、`/api/sync`、`/api/sync/status`、`/api/limitups`、`/api/pool`、`/api/kline`、`/api/similarity`、`/api/scan`、`/api/summaries`、`/api/export`。质量那一组是 `/api/quality/summary`、`/api/quality/check`、`/api/quality/errors`、`/api/quality/purge`，四个都不敲任何上游。回测那一组是 `/api/backtest/run`、`/api/backtest/status`、`/api/backtest/latest`、`/api/backtest/runs`、`/api/backtest/runs/{id}`、`/api/backtest/observations`，删一轮用 `DELETE /api/backtest/runs/{id}`；预测池是 `/api/prediction/pool`。重建那一组是 `/api/data/status`、`/api/data/job`、`/api/data/rebuild-features`、`/api/data/rebuild-patterns`、`/api/data/scan-market`、`/api/data/build-training`、`/api/data/skips`，四个任务只写 SQLite、不读网络，槽位只有一个。样本那一组是 `/api/patterns/overview`、`/api/patterns/top`、`/api/patterns/{code}`；匹配那一组是 `/api/matches/summary`、`/api/matches/{code}`（GET 读库、POST 现算）、`/api/matches/compare`、`/api/matches/export`；聚类那一组是 `/api/clusters/overview`（分组）与 `/api/clusters/{code}`（目标股归属）。盘中那一组是 `/api/realtime/top`、`/api/realtime/status`、`/api/realtime/intraday-watch`、`/api/realtime/intraday-watch/ack`；AI 那一组是 `/api/ai/analysis`、`/api/ai/single/{code}`、`/api/ai/reports`、`/api/ai/picks*`、`/api/ai/daily-rank*`。AI 组里只有三颗按钮花钱：整榜分析、单股直评、每日固定榜的「排出名次」；其余 AI 路径和本系统所有行情路径都不敲网关。回测、预测池、质量四件、样本与匹配那两组、聚类那两条只读库里已经同步的行情与落库的样本，零成本。
 
 每个路径的查询参数和字段见 [docs/api.md](docs/api.md)。

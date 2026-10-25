@@ -14,7 +14,7 @@ from backend.app.core.config import exports_dir, public_settings, update_setting
 from backend.app.services.export_service import content_disposition, render_export, save_copy
 from backend.app.core.database import session_scope
 from backend.app.models.tables import BacktestRun, CalcBar, DailyQuote, Stock
-from backend.app.core.constants import REALTIME_TOP_N_MAX, REALTIME_TOP_N_MIN
+from backend.app.core.constants import CLUSTER_MIN_K, REALTIME_TOP_N_MAX, REALTIME_TOP_N_MIN
 from backend.app.providers.markets import classify, is_in_scope, normalize_code, reject_reason
 from backend.app.services.intraday_watch import watcher
 from backend.app.services.intraday_watch_store import TIERS
@@ -47,6 +47,7 @@ from backend.app.services.quality_service import (
 )
 from backend.app.services.retention import quote_dates
 from backend.app.services import backtest_service
+from backend.app.services import cluster_service
 from backend.app.services import data_job
 from backend.app.services import data_service
 from backend.app.services import match_service
@@ -1035,3 +1036,59 @@ def matches_recompute(code: str, date: str | None = None) -> dict:
         if day not in quote_dates(session):
             raise HTTPException(status_code=404, detail="这一天没有行情")
         return match_service.match_target(session, normalized, day)
+
+
+# --- 形态聚类与归属（档4）----------------------------------------------------
+#
+# 两条都在样本池的落库样本上做事后归纳：分组吃 `limit_up_patterns`，
+# 归属吃同一批样本 + 同一把尺子（`similarity.score_components`）。
+# 这里不产出概率，也不因为「页面想看点什么」而编出分组。
+
+
+def _clusters(action) -> dict:
+    """样本不足是 400 并说清差几条，日期没行情是 404；不把「聚不了」伪装成一张空表。"""
+    try:
+        return action()
+    except cluster_service.ClusterUnavailable as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/clusters/overview")
+def clusters_overview(
+    date: str | None = None,
+    k: int | None = Query(
+        None,
+        ge=CLUSTER_MIN_K,
+        le=20,
+        description="分组数。留空按轮廓系数在常量那一段范围里自动挑。",
+    ),
+    include_members: bool = Query(True, description="是否带回每一组的成员清单"),
+) -> dict:
+    """样本池这几天的涨停形态分成几组、每组什么画像、散点图坐标。"""
+    day = _parse_day(date, default_latest=True)
+    with session_scope() as session:
+        if day not in quote_dates(session):
+            raise HTTPException(status_code=404, detail="这一天没有行情")
+        return _clusters(
+            lambda: cluster_service.cluster(session, day, k=k, include_members=include_members)
+        )
+
+
+@router.get("/clusters/{code}")
+def clusters_assignment(
+    code: str,
+    date: str | None = None,
+    k: int | None = Query(None, ge=CLUSTER_MIN_K, le=20),
+    top_members: int = Query(5, ge=1, le=20),
+) -> dict:
+    """一只股票的三日形态更像哪一组已涨停形态（只描述接近程度）。"""
+    normalized = _code(code)
+    day = _parse_day(date, default_latest=True)
+    with session_scope() as session:
+        if day not in quote_dates(session):
+            raise HTTPException(status_code=404, detail="这一天没有行情")
+        return _clusters(
+            lambda: cluster_service.assignment(
+                session, normalized, day, k=k, top_members=top_members
+            )
+        )
