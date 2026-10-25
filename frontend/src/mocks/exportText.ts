@@ -1,14 +1,13 @@
 import { ApiError } from '@/api/http'
 import type { ExportParams } from '@/api/types'
+import { SIMILARITY_DISCLAIMER } from '@/utils/disclaimer'
 import { formatAmount, formatPct, formatPrice, formatScore } from '@/utils/format'
 import { defaultExportFilename } from '@/utils/saveFile'
 import { buildScan, buildSimilarity, poolDates, poolItems } from './market'
 import { currentSummary, mockRuntime } from './server'
 
-const DISCLAIMER = '相似度不是涨停概率'
-
 function header(title: string, rows: string[]): string {
-  return [`${DISCLAIMER}`, '【模拟数据】正式环境的正文以后端 /api/export 为准。', title, ...rows, ''].join('\n')
+  return [`${SIMILARITY_DISCLAIMER}`, '【模拟数据】正式环境的正文以后端 /api/export 为准。', title, ...rows, ''].join('\n')
 }
 
 function requireDate(date: string): string {

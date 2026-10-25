@@ -523,12 +523,6 @@ def invalidate_caches() -> None:
         _DOCUMENT_PATH = ""
         _DOCUMENT_SIGNATURE = None
     try:
-        from backend.app.core import cache
-
-        cache.cache_clear()
-    except Exception:  # noqa: BLE001 - 清不掉缓存不该让切换失败
-        logger.info("切源后清进程缓存没有做成")
-    try:
         from backend.app.services.ai_analysis_service import board_runner, single_runner
 
         board_runner.reset()

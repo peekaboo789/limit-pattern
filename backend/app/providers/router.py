@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 
 from backend.app.core.clock import today
 from backend.app.core.logging import get_logger

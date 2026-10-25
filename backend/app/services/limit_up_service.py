@@ -14,7 +14,6 @@ GROWTH_RATIO = Decimal("0.20")
 BSE_RATIO = Decimal("0.30")
 ST_TIGHT_RATIO = Decimal("0.05")
 
-REGISTRATION_BOARDS = {"chinext", "star", "bse"}
 # 创业板注册制从这一天起，上市前 5 个交易日不设涨跌幅。
 CHINEXT_NO_LIMIT_FROM = date(2020, 8, 24)
 # 沪深主板全面注册制后的新股，同样是前 5 个交易日不设涨跌幅。
@@ -122,18 +121,6 @@ def ipo_without_limit(
         return False
     lived = trading_days_between(trading_days, list_date, trade_date)
     return 1 <= lived <= 5
-
-
-def listed_too_short(
-    list_date: date | None,
-    trade_date: date,
-    trading_days: list[date],
-    minimum: int = 20,
-) -> bool:
-    if list_date is None:
-        return False
-    lived = trading_days_between(trading_days, list_date, trade_date)
-    return lived < minimum
 
 
 class LimitUpDetector:

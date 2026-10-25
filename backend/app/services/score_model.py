@@ -31,17 +31,6 @@ LEVEL_TIERS: tuple[tuple[float, str], ...] = (
     (60, "一般"),
 )
 
-FEATURE_COLUMNS = (
-    "position_10",
-    "position_20",
-    "position_60",
-    "body_percent",
-    "close_change",
-    "volume_ratio_5",
-    "volume_ratio_10",
-    "amplitude",
-)
-
 
 def _fmt(value: float) -> str:
     return f"{value:.2f}"

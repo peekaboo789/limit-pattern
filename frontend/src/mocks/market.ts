@@ -8,6 +8,7 @@ import type {
   SimilarityResponse,
   SummaryDocument,
 } from '@/api/types'
+import { SIMILARITY_DISCLAIMER } from '@/utils/disclaimer'
 
 export const DATA_DATE = '2026-10-22'
 const HISTORY = 140
@@ -604,7 +605,7 @@ export function buildSimilarity(code: string, date: string, top: number, windowS
     target: { code, name: info.name, window: tradingDaysEnding(day, size) },
     pool_dates: dates,
     pool_size: pool.length,
-    disclaimer: '相似度不是涨停概率',
+    disclaimer: SIMILARITY_DISCLAIMER,
     matches,
   }
 }
@@ -644,7 +645,7 @@ export function buildScan(date: string, top: number, minScore: number): ScanResp
   return {
     date: day,
     pool_size: pool.length,
-    disclaimer: '相似度不是涨停概率',
+    disclaimer: SIMILARITY_DISCLAIMER,
     items,
   }
 }
@@ -737,7 +738,7 @@ export function buildSummary(date: string, model: string): SummaryDocument {
       : '当日没有连板结构。',
     `10:00 前封板 ${early} 只，其余多为盘中换手或回封。`,
     DAY_COLOR[date] ?? '结构以换手板为主。',
-    '本页是行情结构复盘，相似度不是涨停概率。',
+    `本页是行情结构复盘，${SIMILARITY_DISCLAIMER}。`,
   ]
   return {
     date,

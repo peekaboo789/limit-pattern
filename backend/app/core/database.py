@@ -184,17 +184,6 @@ def session_scope() -> Iterator[Session]:
         session.close()
 
 
-def get_db() -> Iterator[Session]:
-    """HTTP 依赖只关闭、不提交。写接口要自己 commit。"""
-    get_engine()
-    assert SessionLocal is not None
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
 def wal_checkpoint(label: str = "") -> None:
     """收尾把 WAL 边文件截断。即使没有页可搬，也要留下能对账的那一句。"""
     engine = get_engine()

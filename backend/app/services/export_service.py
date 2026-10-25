@@ -9,9 +9,10 @@ from urllib.parse import quote
 
 from backend.app.core.clock import SHANGHAI
 from backend.app.core.config import exports_dir, public_settings
+from backend.app.core.constants import SIMILARITY_DISCLAIMER
 from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import classify, is_in_scope
-from backend.app.services.similarity_service import DISCLAIMER, pool_dates, scan_market, similar_to
+from backend.app.services.similarity_service import pool_dates, scan_market, similar_to
 from backend.app.services.summary_service import get_summary, streak_of
 
 COLUMNS = ["排名", "代码", "名称", "总分", "形态分", "量能分", "量比分", "最相似涨停股", "涨停日期"]
@@ -33,7 +34,7 @@ def _header(day: date, pool: list[str], pool_size: int) -> list[str]:
         f"对比池日期\t{','.join(pool)}",
         f"对比池数量\t{pool_size}",
         f"数据源\t{source}",
-        f"免责声明\t{DISCLAIMER}",
+        f"免责声明\t{SIMILARITY_DISCLAIMER}",
         "",
     ]
 

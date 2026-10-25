@@ -31,7 +31,7 @@ from backend.app.algorithms.features import (
     DAILY_SPEC,
     build_three_day_window,
 )
-from backend.app.core.constants import BAND_HIGH, MATCH_INSERT_BATCH, MATCH_TOP_N
+from backend.app.core.constants import BAND_HIGH, MATCH_INSERT_BATCH, MATCH_TOP_N, SIMILARITY_DISCLAIMER
 from backend.app.core.logging import get_logger
 from backend.app.models.tables import DailyQuote, MatchSummary, PatternMatch, Stock
 from backend.app.providers.markets import BOARD_LABELS
@@ -39,7 +39,6 @@ from backend.app.services import pattern_service
 from backend.app.services.backtest_service import score_day
 from backend.app.services.feature_service import add_skip, record_skip
 from backend.app.services.history_backfill import load_bars, load_bars_bulk
-from backend.app.services.similarity_service import DISCLAIMER
 
 logger = get_logger("match_service")
 
@@ -180,7 +179,7 @@ def match_target(session: Session, code: str, day: date) -> dict:
             "ok": False,
             "reason": reason,
             "detail": detail,
-            "disclaimer": DISCLAIMER,
+            "disclaimer": SIMILARITY_DISCLAIMER,
             "trade_date": day.isoformat(),
             "stock_code": code,
             "stock_name": names.get(code, ""),
@@ -269,7 +268,7 @@ def stored_matches(session: Session, code: str, day: date) -> dict:
             "ok": False,
             "reason": reason,
             "detail": detail,
-            "disclaimer": DISCLAIMER,
+            "disclaimer": SIMILARITY_DISCLAIMER,
             "trade_date": day.isoformat(),
             "stock_code": code,
             "stock_name": names.get(code, ""),
@@ -298,7 +297,7 @@ def stored_matches(session: Session, code: str, day: date) -> dict:
         "ok": True,
         "reason": STORED,
         "detail": "",
-        "disclaimer": DISCLAIMER,
+        "disclaimer": SIMILARITY_DISCLAIMER,
         "trade_date": day.isoformat(),
         "stock_code": code,
         "stock_name": names.get(code, ""),
@@ -665,7 +664,7 @@ def compare_with_sample(
         },
         "differences": _differences(target_days, sample_days),
         "score": _stored_score(session, code, day, sample_code, sample_limit_date),
-        "disclaimer": DISCLAIMER,
+        "disclaimer": SIMILARITY_DISCLAIMER,
     }
 
 

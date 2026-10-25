@@ -59,7 +59,6 @@ PRICE_INNER: dict[str, float] = {
 # 主板 ST 从这一天起由 5% 放宽到 10%（当天起生效）
 ST_MAIN_BOARD_RATIO_RELAXED_DATE = date(2026, 7, 6)
 
-TOP_N_DEFAULT = 10
 MATCH_INSERT_BATCH = 20_000
 #: 每只股票落库的匹配明细条数。老工程把目标×样本的**全部**对子都写进库
 #: （实测一轮 1,558,980 行），这里改成只留前 20 条：页面要看的是「最像的那几只」，
@@ -87,7 +86,6 @@ IDLE_EXIT_SECONDS = 300
 REALTIME_TOP_N = 50
 REALTIME_TOP_N_MIN = 10
 REALTIME_TOP_N_MAX = 200
-REALTIME_LOOP_SLEEP_SECONDS = 0.5
 
 # 次日预测池
 DEFAULT_POOL_SIZE = 200
@@ -121,8 +119,6 @@ AI_RETRY_WAIT_LIMIT_SECONDS = 20.0
 AI_RAW_EXCERPT_LIMIT = 2000
 #: 结果在内存里放多久。数据库里那份存档不受它影响。
 AI_REPORT_TTL_SECONDS = 600.0
-#: 页面轮询的间隔，也是「读数不靠重进页面」的那一拍。
-AI_POLL_SECONDS = 2.0
 
 # 多套大模型网关清单（`ai_sources.json`）
 #: 清单里最多能存几条自建网关。这一张表是整份重写的，条数没有上限的话
@@ -165,9 +161,14 @@ PREDICTION_WEIGHT_CARRY = 0.3
 PREDICTION_WEIGHT_LIFT = 0.2
 PREDICTION_LIFT_CAP = 2.0
 
+#: 「相似度不是涨停概率」这一句全工程只写在这里。
+#: 相似度页、盘中榜、匹配明细、三日形态、导出表头、次日预测池读的都是它——
+#: 各页各留一份字面量时，改口径要翻六个地方，漏一个就成了两套说法。
+SIMILARITY_DISCLAIMER = "相似度不是涨停概率"
+
 PREDICTION_FORMULA = (
     "预测加权分 = 0.5×前日最高匹配度 + 0.3×相似度加权连板率 + 0.2×档位历史发生率相对基准倍数"
     "（2 倍封顶），缺了的项把权重摊给其余项；名次按它排。"
     "这是历史统计的加权，不是涨停概率，也不是下面那个综合评分。"
 )
-PREDICTION_DISCLAIMER = "相似度不是涨停概率。这一页不预测涨跌，不构成投资建议。"
+PREDICTION_DISCLAIMER = f"{SIMILARITY_DISCLAIMER}。这一页不预测涨跌，不构成投资建议。"

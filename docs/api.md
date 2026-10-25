@@ -73,7 +73,7 @@
 | GET | `/api/summaries/{date}` | 某一天的总结 JSON |
 | POST | `/api/summaries/{date}/generate` | 重新生成。没配 AI 时写统计版；配了则加上解读。模型失败时仍返回统计版，并带 `ai_error` |
 
-相似度相关接口都带 `disclaimer`，原文是「相似度不是涨停概率」。`skipped` 列出没能参加打分的涨停样本和原因。
+相似度相关接口都带 `disclaimer`，原文是「相似度不是涨停概率」。这句在后端只写一次：`backend/app/core/constants.py` 的 `SIMILARITY_DISCLAIMER`，盘中榜、匹配明细、三日形态、导出表头、次日预测池都读它。`skipped` 列出没能参加打分的涨停样本和原因。
 
 `GET /api/sync/status` 在契约字段之外，还会给出 `phase`、`done`、`total`、`saved`、`failed`。`message` 用中文说明当前步骤。
 

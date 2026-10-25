@@ -32,15 +32,14 @@ from backend.app.algorithms.features import (
     build_three_day_window,
     raw_day,
 )
-from backend.app.core.constants import MIN_LISTED_TRADING_DAYS
+from backend.app.core.constants import MIN_LISTED_TRADING_DAYS, SIMILARITY_DISCLAIMER
 from backend.app.core.logging import get_logger
 from backend.app.models.tables import DailyQuote, LimitUpPattern, SkippedRecord, Stock
 from backend.app.providers.markets import is_in_scope
 from backend.app.services.feature_service import add_skip, record_skip
 from backend.app.services.history_backfill import ensure_prior_bars, load_bars, load_bars_bulk
 from backend.app.services.quality_service import error_pairs
-from backend.app.services.retention import quote_dates
-from backend.app.services.similarity_service import DISCLAIMER, pool_dates
+from backend.app.services.similarity_service import pool_dates
 
 logger = get_logger("pattern_service")
 
@@ -282,7 +281,7 @@ def overview(session: Session, as_of: date) -> dict:
         "aggregate_names": list(AGGREGATE_NAMES),
         "dimension": VECTOR_DIM,
         "reason_labels": dict(REASON_LABELS),
-        "disclaimer": DISCLAIMER,
+        "disclaimer": SIMILARITY_DISCLAIMER,
     }
 
 
@@ -322,7 +321,7 @@ def samples_for_code(session: Session, code: str, *, with_details: bool = True) 
         "name": names.get(code, ""),
         "samples": items,
         "feature_names": day_feature_names(),
-        "disclaimer": DISCLAIMER,
+        "disclaimer": SIMILARITY_DISCLAIMER,
     }
 
 

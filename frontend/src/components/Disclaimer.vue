@@ -1,11 +1,10 @@
 <script setup lang="ts">
+import { SIMILARITY_DISCLAIMER as REQUIRED } from '@/utils/disclaimer'
 import { computed } from 'vue'
 
 const props = defineProps<{
   text?: string
 }>()
-
-const REQUIRED = '相似度不是涨停概率'
 
 const shown = computed(() => {
   const text = props.text?.trim()

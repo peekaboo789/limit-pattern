@@ -86,8 +86,6 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    redis_url: str = ""
-    cache_enabled: bool = False
     supported_exchanges: str = "SSE,SZSE"
     data_provider: str = "eastmoney"
 
@@ -100,17 +98,14 @@ class Settings(BaseSettings):
     def exchange_set(self) -> set[str]:
         return {part.strip().upper() for part in self.supported_exchanges.split(",") if part.strip()}
 
-    def redis_explicit(self) -> bool:
-        return bool(os.environ.get("REDIS_URL", "").strip() or self.redis_url.strip())
-
 
 _SETTINGS_LOCK = threading.Lock()
 _SETTINGS_CACHE: tuple[tuple[str, ...], "Settings"] | None = None
-_SETTINGS_ENV = ("REDIS_URL", "CACHE_ENABLED", "SUPPORTED_EXCHANGES", "DATA_PROVIDER")
+_SETTINGS_ENV = ("SUPPORTED_EXCHANGES", "DATA_PROVIDER")
 
 
 def get_settings() -> Settings:
-    """`Settings` 只读那四个环境变量，值没变就用同一份。
+    """`Settings` 只读那两个环境变量，值没变就用同一份。
 
     判一只股票在不在纳入范围要问它一次，一轮全市场就是四千多次；
     pydantic-settings 每次构造都要把整个环境扫一遍。

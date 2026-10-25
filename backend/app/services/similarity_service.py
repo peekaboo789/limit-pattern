@@ -9,13 +9,11 @@ import numpy as np
 from backend.app.algorithms.features import build_three_day_window
 from backend.app.algorithms.similarity import percent, score_components
 from backend.app.core.config import compare_window_days
-from backend.app.core.constants import MIN_LISTED_TRADING_DAYS
+from backend.app.core.constants import MIN_LISTED_TRADING_DAYS, SIMILARITY_DISCLAIMER
 from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import BOARD_LABELS, classify, is_in_scope
 from backend.app.services.history_backfill import ensure_prior_bars, load_bars
 from backend.app.services.retention import quote_dates
-
-DISCLAIMER = "相似度不是涨停概率"
 
 
 def pool_dates(session, as_of: date) -> list[date]:
@@ -101,7 +99,7 @@ def _empty(code: str, name: str, dates: list[date], window: list[str] | None = N
         "target": {"code": code, "name": name, "window": window or []},
         "pool_dates": [day.isoformat() for day in dates],
         "pool_size": 0,
-        "disclaimer": DISCLAIMER,
+        "disclaimer": SIMILARITY_DISCLAIMER,
         "matches": [],
         "skipped": [],
     }
@@ -165,7 +163,7 @@ def scan_market(session, as_of: date, top: int, min_score: float) -> dict:
         "date": as_of.isoformat(),
         "pool_dates": [day.isoformat() for day in dates],
         "pool_size": len(samples),
-        "disclaimer": DISCLAIMER,
+        "disclaimer": SIMILARITY_DISCLAIMER,
         "items": [],
         "skipped": skipped,
     }

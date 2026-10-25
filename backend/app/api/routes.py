@@ -16,7 +16,12 @@ from backend.app.core.config import exports_dir, public_settings, update_setting
 from backend.app.services.export_service import content_disposition, render_export, save_copy
 from backend.app.core.database import session_scope
 from backend.app.models.tables import BacktestRun, CalcBar, DailyQuote, Stock
-from backend.app.core.constants import CLUSTER_MIN_K, REALTIME_TOP_N_MAX, REALTIME_TOP_N_MIN
+from backend.app.core.constants import (
+    CLUSTER_MIN_K,
+    REALTIME_TOP_N_MAX,
+    REALTIME_TOP_N_MIN,
+    SIMILARITY_DISCLAIMER,
+)
 from backend.app.providers.markets import (
     BOARD_LABELS,
     classify,
@@ -64,7 +69,7 @@ from backend.app.services import pattern_service
 from backend.app.services import prediction_service
 from backend.app.services import skip_labels
 from backend.app.services.feature_service import skip_page
-from backend.app.services.similarity_service import DISCLAIMER, pool_dates, scan_market, similar_to
+from backend.app.services.similarity_service import pool_dates, scan_market, similar_to
 from backend.app.services.summary_service import generate_summary, get_summary, list_summaries
 from backend.app.services.sync_service import start_sync, status
 
@@ -955,7 +960,7 @@ def patterns_top(date: str | None = None, limit: int = Query(50, ge=1, le=500)) 
             "pool_dates": [item.isoformat() for item in dates],
             "sample_total": len(rows),
             "items": items,
-            "disclaimer": DISCLAIMER,
+            "disclaimer": SIMILARITY_DISCLAIMER,
         }
 
 

@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from functools import cache
 
 import numpy as np
@@ -35,10 +34,6 @@ def faiss_available() -> bool:
     except Exception:
         return False
     return True
-
-
-def available_backends() -> tuple[str, ...]:
-    return (BACKEND_NUMPY, BACKEND_FAISS) if faiss_available() else (BACKEND_NUMPY,)
 
 
 def resolve_backend(
@@ -63,14 +58,6 @@ def resolve_backend(
     if not faiss_available():
         return BACKEND_NUMPY
     return BACKEND_FAISS if n_queries * n_samples >= FAISS_PAIR_THRESHOLD else BACKEND_NUMPY
-
-
-@dataclass(frozen=True)
-class PairwiseDistances:
-    """一批查询与全部样本的欧氏距离，列与样本原始顺序对齐。"""
-
-    matrix: np.ndarray
-    backend: str
 
 
 class VectorIndex:
@@ -145,16 +132,3 @@ class VectorIndex:
         query_sq = np.sum(values * values, axis=1)[:, None]
         cross = values @ self._matrix.T
         return np.sqrt(np.maximum(query_sq + self.norms_squared()[None, :] - 2.0 * cross, 0.0))
-
-
-def pairwise(
-    queries: np.ndarray,
-    samples: np.ndarray,
-    *,
-    backend: str = BACKEND_AUTO,
-) -> PairwiseDistances:
-    """一步到位的距离查询；`auto` 时按规模选路，返回值里带上真正走了哪条路。"""
-    values = np.asarray(queries, dtype=np.float64)
-    rows = int(values.shape[0]) if values.ndim == 2 else 1
-    index = VectorIndex.build(samples, backend=backend, n_queries=rows)
-    return PairwiseDistances(matrix=index.distances(values), backend=index.backend)

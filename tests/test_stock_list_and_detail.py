@@ -191,10 +191,6 @@ def test_bad_sort_or_order_is_refused_with_the_allowed_list(client):
     assert "desc" in refused.json()["detail"]
 
     #: 服务层那道闸是给绕过路由的调用方兜底的，不是只长在接口上。
-    seed_client_day = date(2020, 1, 1)
-    assert seed_client_day not in ()
-    from sqlalchemy import select
-
     with session_scope() as session:
         try:
             match_service.summary_page(session, DAY, sort="nope")

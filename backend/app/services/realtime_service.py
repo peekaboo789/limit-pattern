@@ -26,7 +26,7 @@ from sqlalchemy import func
 from backend.app.algorithms.features import Bar, build_three_day_window
 from backend.app.algorithms.similarity import band_label, score_components
 from backend.app.core import clock
-from backend.app.core.constants import BAND_HIGH
+from backend.app.core.constants import BAND_HIGH, SIMILARITY_DISCLAIMER
 from backend.app.core.config import data_dir, read_settings_file
 from backend.app.core.logging import get_logger
 from backend.app.models.tables import CalcBar, DailyQuote, Stock
@@ -45,8 +45,6 @@ from backend.app.services.similarity_service import limit_up_samples
 from backend.app.services.sync_service import is_source_outage
 
 logger = get_logger("realtime")
-
-DISCLAIMER = "相似度不是涨停概率"
 
 MODE_AUTO = "auto"
 MODE_REALTIME = "realtime"
@@ -623,7 +621,7 @@ def scan(
         "limit_up_count": sum(1 for row in rows if row["is_limit_up"]),
         "pending_count": sum(1 for row in rows if not row["is_limit_up"]),
         "note": note,
-        "disclaimer": DISCLAIMER,
+        "disclaimer": SIMILARITY_DISCLAIMER,
         "probability": table,
         "rows": rows,
     }

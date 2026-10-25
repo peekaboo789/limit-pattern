@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { compareWindowText, initSession, session } from '@/stores/session'
+import { SIMILARITY_DISCLAIMER } from '@/utils/disclaimer'
 import { sourceLabel } from '@/utils/labels'
 import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
@@ -91,7 +92,7 @@ onMounted(() => {
         </header>
         <div class="disclaimer-bar" role="note">
           <span class="mark">声明</span>
-          <strong>相似度不是涨停概率</strong>
+          <strong>{{ SIMILARITY_DISCLAIMER }}</strong>
           <span class="sub">只衡量与{{ compareWindowText() }}涨停样本的形态接近程度，不预测之后涨跌。</span>
         </div>
       </div>

@@ -50,7 +50,6 @@ CHAIN_SINGLE = "single"
 STATUS_OK = "ok"
 STATUS_FAILED = "failed"
 STATUS_RUNNING = "running"
-STATUS_IDLE = "idle"
 
 TASK_BOARD = (
     "任务：从池子里挑出你认为「明天更值得看」的最多{limit}只，"

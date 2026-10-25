@@ -10,6 +10,7 @@ from backend.app.providers.markets import keep_code
 from backend.app.services.limit_up_service import annotate_history, ratio_for
 from backend.app.services.limit_up_service import limit_up_price
 from backend.app.services.retention import purge_expired
+from backend.app.services.summary_service import REQUIRED_KEYS
 from backend.app.services.sync_service import run_sync_now, set_fetcher
 
 
@@ -238,7 +239,7 @@ def test_retention_keeps_summaries(client, monkeypatch):
     created = client.post(f"/api/summaries/{days[0].isoformat()}/generate")
     assert created.status_code == 200, created.text
     payload = created.json()
-    for key in ("date", "limitup_count", "sectors", "ladder", "patterns", "volume_features", "key_points", "model", "generated_at"):
+    for key in REQUIRED_KEYS:
         assert key in payload
     assert "sk-test-secret-123456" not in created.text
     listed = client.get("/api/summaries").json()["items"]

@@ -46,7 +46,7 @@ logger = get_logger("ai_memory_service")
 MODEL_MEMORY_DIR_NAME = "model_memory"
 FAILURE_LOG_DIR_NAME = "failure_logs"
 
-DISCLAIMER = (
+MEMORY_DISCLAIMER = (
     "这一份文件由本机库里的真实行情渲染，不含任何合成样本；"
     "它是给模型读的历史配对样本，不是涨停概率、更不是收益预测，只供个人研究与技术验证。"
 )
@@ -171,7 +171,7 @@ def _meta(session: Session, trade_date: date, *, kind: str) -> dict[str, Any]:
         #: 判据日在库里有没有行情行；0 就是「还没入库」
         "quotes_in_library": _quotes_on(session, trade_date),
         "field_gaps": [*_null_counts(session, trade_date), *STATIC_FIELD_GAPS],
-        "disclaimer": DISCLAIMER,
+        "disclaimer": MEMORY_DISCLAIMER,
     }
 
 
@@ -621,5 +621,5 @@ def summary(session: Session) -> dict[str, Any]:
             *STATIC_FIELD_GAPS,
         ],
         "latest_quote_date": None if latest is None else latest.isoformat(),
-        "disclaimer": DISCLAIMER,
+        "disclaimer": MEMORY_DISCLAIMER,
     }
