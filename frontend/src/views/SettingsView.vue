@@ -9,7 +9,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 const FALLBACK_SOURCES = ['auto', 'eastmoney', 'tencent', 'sina']
 
 const form = reactive({
-  retention_trading_days: 5,
+  retention_trading_days: 6,
   compare_window_trading_days: 3,
   ai_base_url: '',
   ai_model: '',
@@ -17,6 +17,8 @@ const form = reactive({
   ai_api_key: '',
 })
 const meta = computed(() => session.settings)
+const retentionMin = computed(() => meta.value?.retention_min ?? 6)
+const retentionMax = computed(() => meta.value?.retention_max ?? 30)
 const sourceOptions = computed(() =>
   meta.value?.data_source_options?.length ? meta.value.data_source_options : FALLBACK_SOURCES,
 )
@@ -123,8 +125,12 @@ function activateGateway(row: AiSourceRow) {
 async function save() {
   saved.value = false
   error.value = ''
-  if (!Number.isInteger(form.retention_trading_days) || form.retention_trading_days < 3 || form.retention_trading_days > 30) {
-    error.value = '保留天数要在 3 到 30 之间'
+  if (
+    !Number.isInteger(form.retention_trading_days) ||
+    form.retention_trading_days < retentionMin.value ||
+    form.retention_trading_days > retentionMax.value
+  ) {
+    error.value = `保留天数要在 ${retentionMin.value} 到 ${retentionMax.value} 之间`
     return
   }
   const windowMin = meta.value?.compare_window_min ?? 1
@@ -190,8 +196,8 @@ onMounted(() => {
       <div class="card-head"><h2>数据</h2></div>
       <label class="field">
         <span>涨停明细保留交易日</span>
-        <input v-model.number="form.retention_trading_days" type="number" min="3" max="30" step="1" />
-        <span class="hint">默认 5，可改 3 到 30。到期明细会清理，每日总结 JSON 会留下。</span>
+        <input v-model.number="form.retention_trading_days" type="number" :min="retentionMin" :max="retentionMax" step="1" />
+        <span class="hint">可改 {{ retentionMin }} 到 {{ retentionMax }}。到期明细会清理，每日总结 JSON 会留下。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>对比窗口（交易日）</span>

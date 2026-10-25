@@ -30,6 +30,7 @@ from backend.app.algorithms.indicators import (
     compute_indicator_series,
     indicator_feature_names,
 )
+from backend.app.core.constants import TRAINING_LOOKBACK_TRADING_DAYS
 from backend.app.core.logging import get_logger
 from backend.app.models.tables import (
     DailyFeature,
@@ -52,7 +53,7 @@ from backend.app.services.retention import quote_dates
 logger = get_logger("training_service")
 
 #: T-1…T-5 五根 K 线。第十一节写死了这段回看长度。
-BAR_LAGS: tuple[int, ...] = (1, 2, 3, 4, 5)
+BAR_LAGS: tuple[int, ...] = tuple(range(1, TRAINING_LOOKBACK_TRADING_DAYS + 1))
 BAR_FIELDS: tuple[str, ...] = (
     "open",
     "high",

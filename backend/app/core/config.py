@@ -377,6 +377,8 @@ def public_settings() -> dict:
         "retention_trading_days": retention_days(),
         "compare_window_trading_days": compare_window_days(),
         "compare_window_min": COMPARE_WINDOW_MIN_TRADING_DAYS,
+        "retention_min": RETENTION_MIN_TRADING_DAYS,
+        "retention_max": RETENTION_MAX_TRADING_DAYS,
         "ai_enabled": bool(active.get("complete")),
         "ai_base_url": url,
         "ai_model": model,
@@ -438,7 +440,15 @@ def update_settings(changes: dict) -> dict:
         )
     # 两个数一起核：样本池只能落在库里留着的那几天里。窗口比保留天数还长，
     # 池子最老的那几天早被清掉了，页面上写着「5 日窗口」实际只比了 3 天。
-    retention = _whole_days(current.get("retention_trading_days", DETAIL_RETENTION_TRADING_DAYS), "保留天数")
+    # 设置文件里存的可能是老版本允许、如今已低于下限的值：按读取口径收回边界再核，
+    # 不然页面显示 6、校验却拿文件里的 5 去卡对比窗口。
+    retention = max(
+        RETENTION_MIN_TRADING_DAYS,
+        min(
+            RETENTION_MAX_TRADING_DAYS,
+            _whole_days(current.get("retention_trading_days", DETAIL_RETENTION_TRADING_DAYS), "保留天数"),
+        ),
+    )
     window = _whole_days(current.get("compare_window_trading_days", COMPARE_WINDOW_TRADING_DAYS), "对比窗口")
     if window < COMPARE_WINDOW_MIN_TRADING_DAYS or window > retention:
         raise ValueError(

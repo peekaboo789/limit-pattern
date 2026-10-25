@@ -3,6 +3,7 @@
 import json
 from datetime import date, timedelta
 
+from backend.app.core.constants import DETAIL_RETENTION_TRADING_DAYS
 from backend.app.core.database import session_scope
 from backend.app.models.tables import AiDailySummary, CalcBar, DailyQuote, Stock, TradingDay
 from backend.app.providers.markets import keep_code
@@ -148,12 +149,16 @@ def test_compare_window_is_customisable_within_retention(client):
     assert client.get("/api/settings").json()["compare_window_trading_days"] == 4, "拒收的值把旧设置改掉了"
 
     # 保留天数砍到比窗口还短，同样拒收；两项一起改、一起合法才收。
-    shrink = client.put("/api/settings", json={"retention_trading_days": 3})
+    low = settings["retention_min"]
+    assert client.put("/api/settings", json={"retention_trading_days": low + 2, "compare_window_trading_days": low + 1}).status_code == 200
+    shrink = client.put("/api/settings", json={"retention_trading_days": low})
     assert shrink.status_code == 422, shrink.text
-    both = client.put("/api/settings", json={"retention_trading_days": 3, "compare_window_trading_days": 2})
+    both = client.put("/api/settings", json={"retention_trading_days": low, "compare_window_trading_days": 2})
     assert both.status_code == 200, both.text
-    assert both.json()["retention_trading_days"] == 3
+    assert both.json()["retention_trading_days"] == low
     assert both.json()["compare_window_trading_days"] == 2
+    # 低于下限的保留天数训练集出不来行：拒收。
+    assert client.put("/api/settings", json={"retention_trading_days": low - 1}).status_code == 422
 
 
 def test_pool_follows_the_compare_window_setting(client):
@@ -241,7 +246,7 @@ def test_retention_keeps_summaries(client, monkeypatch):
     assert listed[0]["headline"] == "周一总结"
     result = purge_expired()
     assert result["deleted"]["daily_quotes"] > 0
-    assert len(result["kept_dates"]) == 5
+    assert len(result["kept_dates"]) == DETAIL_RETENTION_TRADING_DAYS
     assert days[0].isoformat() not in result["kept_dates"]
     kept = client.get("/api/summaries").json()["items"]
     assert kept[0]["date"] == days[0].isoformat()

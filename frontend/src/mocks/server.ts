@@ -13,9 +13,11 @@ import {
 } from './market'
 
 const settings: Settings = {
-  retention_trading_days: 5,
+  retention_trading_days: 6,
   compare_window_trading_days: 3,
   compare_window_min: 1,
+  retention_min: 6,
+  retention_max: 30,
   ai_enabled: true,
   ai_base_url: 'https://api.deepseek.com/v1',
   ai_model: 'deepseek-chat',
@@ -97,8 +99,8 @@ function updateSettings(body: unknown): Settings {
   const input = body as Record<string, unknown>
   if ('retention_trading_days' in input) {
     const value = input.retention_trading_days
-    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-      throw new ApiError(422, '保留天数必须是正整数')
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 6 || value > 30) {
+      throw new ApiError(422, '保留天数要在 6 到 30 之间')
     }
     settings.retention_trading_days = value
   }

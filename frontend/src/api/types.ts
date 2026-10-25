@@ -14,6 +14,9 @@ export interface Settings {
   compare_window_trading_days: number
   /** 对比窗口的下限；上限就是保留天数。 */
   compare_window_min?: number
+  /** 保留天数的上下限；下限 = 训练回看 + 1，再少训练集出不来。 */
+  retention_min?: number
+  retention_max?: number
   ai_enabled: boolean
   ai_base_url: string
   ai_model: string

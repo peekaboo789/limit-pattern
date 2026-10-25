@@ -29,6 +29,7 @@ from backend.app.algorithms.features import (
     feature_names,
 )
 from backend.app.core.clock import now_naive
+from backend.app.core.constants import DETAIL_RETENTION_TRADING_DAYS
 from backend.app.core.database import session_scope
 from backend.app.models.tables import (
     DailyQuote,
@@ -885,8 +886,8 @@ def test_retention_sweep_clears_derived_rows_that_point_at_deleted_quotes(client
 
     result = retention.purge_expired()
     cutoff = date.fromisoformat(result["cutoff"])
-    assert result["retention_trading_days"] == 5
-    assert cutoff == days[-5]
+    assert result["retention_trading_days"] == DETAIL_RETENTION_TRADING_DAYS
+    assert cutoff == days[-DETAIL_RETENTION_TRADING_DAYS]
     assert [date.fromisoformat(item) for item in result["kept_dates"]] == [
         item for item in days if item >= cutoff
     ]
@@ -959,7 +960,7 @@ def test_changing_the_compare_window_rebuilds_the_latest_pool_and_scan(client):
     assert pattern_dates() == [days[7], days[8], days[9]], "放宽窗口后新纳入那两天的样本没建"
 
     # 没改窗口的保存不起任务：只改保留天数不该把全市场扫描再跑一遍。
-    same = client.put("/api/settings", json={"retention_trading_days": 6})
+    same = client.put("/api/settings", json={"retention_trading_days": 7})
     assert same.status_code == 200 and "window_refresh" not in same.json()
 
 

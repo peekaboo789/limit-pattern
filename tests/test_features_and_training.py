@@ -655,3 +655,37 @@ def test_training_skips_a_code_that_left_the_master_table(client):
         rows = session.query(StockTrainingRow).filter(StockTrainingRow.stock_code == "600009").count()
     assert rows == 0
     assert stats["skipped"][training_service.SKIP_NOT_IN_MASTER] == 1
+
+
+def test_the_default_retention_leaves_the_training_set_non_empty(client):
+    """按默认保留天数清过一遍库，训练集仍要出得来行；设置里留着老版本的 5 天也一样。
+
+    T-5…T-1 只认全市场行情，保留天数少于回看 + 1 时训练集一行都出不来。
+    这件事以前只在跳过账里留一句话，页面上看是「训练行 0」的静默空。"""
+    from backend.app.core.config import public_settings, read_settings_file, retention_days, write_settings_file
+    from backend.app.services import retention
+
+    days = seed()
+    retention.purge_expired()
+    with session_scope() as session:
+        kept = sorted({row.trade_date for row in session.query(DailyQuote)})
+    assert len(kept) == retention_days() >= training_service.REQUIRED_PRIOR_BARS + 1
+    with session_scope() as session:
+        stats = feature_service.new_stats("build_training", kept[0], kept[-1])
+        training_service.build_training(session, kept[0], kept[-1], stats=stats)
+        written = {row.label_date for row in session.query(StockTrainingRow)}
+    assert written == {kept[-1]}, f"默认保留 {len(kept)} 天，训练行落在 {sorted(written)}"
+
+    # 老版本允许存 5：读出来按下限收回，接口与清理都按收回后的值走。
+    legacy = read_settings_file()
+    legacy["retention_trading_days"] = training_service.REQUIRED_PRIOR_BARS
+    write_settings_file(legacy)
+    assert retention_days() == training_service.REQUIRED_PRIOR_BARS + 1
+    view = public_settings()
+    assert view["retention_trading_days"] == view["retention_min"] == training_service.REQUIRED_PRIOR_BARS + 1
+    rejected = client.put("/api/settings", json={"retention_trading_days": training_service.REQUIRED_PRIOR_BARS})
+    assert rejected.status_code == 422, rejected.text
+    # 文件里是 5、读口径是 6：对比窗口填 6 要按 6 核，不能被文件里那个 5 卡掉。
+    widened = client.put("/api/settings", json={"compare_window_trading_days": view["retention_min"]})
+    assert widened.status_code == 200, widened.text
+    del days

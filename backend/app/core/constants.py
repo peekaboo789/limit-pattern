@@ -13,9 +13,14 @@ SHAPE_WINDOW_TRADING_DAYS = 3
 COMPARE_WINDOW_TRADING_DAYS = 3
 COMPARE_WINDOW_MIN_TRADING_DAYS = 1
 
-# 行情、标签等明细默认只留最近 5 个交易日。设置页可以改，见 retention 范围。
-DETAIL_RETENTION_TRADING_DAYS = 5
-RETENTION_MIN_TRADING_DAYS = 3
+#: 训练宽表每个标签日要往回看几根全市场 K 线（T-1…T-N）。
+#: 这些 K 线只认 `daily_quotes` 里留着的全市场行情，所以保留天数至少 N+1 天才会出训练行。
+TRAINING_LOOKBACK_TRADING_DAYS = 5
+
+# 行情、标签等明细保留几个交易日。设置页可以改，但下限跟着训练回看走：
+# 再少，训练集就一行都出不来，那是一个看起来能选、选了却让整块功能静默空掉的值。
+RETENTION_MIN_TRADING_DAYS = TRAINING_LOOKBACK_TRADING_DAYS + 1
+DETAIL_RETENTION_TRADING_DAYS = RETENTION_MIN_TRADING_DAYS
 RETENTION_MAX_TRADING_DAYS = 30
 
 # 三日窗口本身只要 3 根 K 线。明细只留大约一周，不再要求 20 日历史。
