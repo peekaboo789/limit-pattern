@@ -366,6 +366,54 @@ def test_previous_trade_date_ignores_today_and_the_future(client):
         assert previous_trade_date(session, TODAY) == PREV
 
 
+def test_a_board_ranked_today_enters_the_pool_today(client):
+    """排完名当天就该进盘中监控：等到「明天」的话，用户看到的正是「榜排好了、监控还是空的」。"""
+    codes = ["600000", "600001"]
+    _calendar(PREV, TODAY)
+    _ranked_board(TODAY, codes)
+    with session_scope() as session:
+        pool = build_pool(session, TODAY)
+    assert pool.status == POOL_READY and pool.pool_date == TODAY.isoformat(), pool.note
+    assert sorted(row["stock_code"] for row in pool.rows) == sorted(codes)
+    #: 降级必须留名：说破「前一交易日那份没排好名的名次表」，不许把「用的是别的日期的榜」藏起来
+    assert PREV.isoformat() in pool.note and "没有排好名" in pool.note, pool.note
+
+
+def test_the_newest_ranked_board_fills_a_day_that_was_only_prepared(client):
+    """前一交易日只备了输入时，库里最近一份排好名的榜顶上，两个日期都要在句子里。"""
+    older = PREV - timedelta(days=1)
+    _calendar(older, PREV, TODAY)
+    _ranked_board(older, ["000002"])
+    _prepared_board(PREV, ["600000"])
+    with session_scope() as session:
+        pool = build_pool(session, TODAY)
+    assert pool.status == POOL_READY, pool.note
+    assert pool.pool_date == older.isoformat()
+    assert [row["stock_code"] for row in pool.rows] == ["000002"]
+    assert PREV.isoformat() in pool.note and f"池子 = {older.isoformat()}" in pool.note
+
+
+def test_a_ranked_previous_day_is_never_replaced_by_an_older_board(client):
+    """回退只用来填空档：前一交易日那份排好名时，再有几份旧榜也不许顶掉它。"""
+    _calendar(PREV, TODAY)
+    _ranked_board(PREV, ["600000"])
+    _ranked_board(PREV - timedelta(days=2), ["000002"])
+    with session_scope() as session:
+        pool = build_pool(session, TODAY)
+    assert pool.pool_date == PREV.isoformat() and [row["stock_code"] for row in pool.rows] == ["600000"]
+    assert "顶上用的是" not in pool.note, pool.note
+
+
+def test_a_board_from_the_future_does_not_become_todays_pool(client):
+    """榜的交易日晚于今天时不拿它当池子：只认「交易日不晚于今天」的那几份。"""
+    _calendar(PREV, TODAY)
+    _ranked_board(TODAY + timedelta(days=3), ["600000"])
+    with session_scope() as session:
+        pool = build_pool(session, TODAY)
+    assert pool.status == POOL_ABSENT and pool.rows == []
+    assert "没有可盯" in pool.note, pool.note
+
+
 # --- 账本 -------------------------------------------------------------------
 
 
@@ -613,7 +661,7 @@ def test_no_source_answers_is_said_in_words(watch_env):
 
 
 def test_an_empty_pool_says_why_and_watches_nothing(watch_env):
-    """库里没有前一天的榜时：这一档是空池 + 一句原因，绝不拿更早的榜充数。"""
+    """库里一份排好名的榜都没有时：这一档是空池 + 一句原因，不敲上游也不报任何警。"""
     _calendar(PREV, TODAY)
     _clear_boards()
     watch_env["holder"]["rows"] = [_quote("600000", 9.9)]
@@ -709,6 +757,10 @@ def test_the_ledger_survives_a_restart_of_the_watcher(watch_env):
 def test_watch_disclaimer_names_who_owns_the_rank():
     pool = WatchPool(trade_date=TODAY.isoformat(), pool_date=PREV.isoformat(), status=POOL_ABSENT, note="")
     payload = watcher._payload("no_pool", pool=pool, rows=[], note="", at=time.monotonic())
-    assert "前一交易日" in payload["disclaimer"]
+    assert "AI 固定榜" in payload["disclaimer"]
+    #: 池子可能来自前一交易日，也可能来自库里最近一份排好名的榜：那句话里不许写死「前一交易日」，
+    #: 日期由 `note` 现说（口径只留一处，页面与桌面读的都是这一份）。
+    assert "前一交易日" not in payload["disclaimer"]
+    assert "盯的是哪一天那一份" in payload["disclaimer"]
     assert "不是涨停概率" in payload["disclaimer"]
     assert "每只股票每一档每天只报一次" in payload["disclaimer"]

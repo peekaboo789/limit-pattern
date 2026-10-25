@@ -131,6 +131,20 @@ def get_board(session, day: str | date | None = None):
     return query.order_by(AiDailyRankBoard.trade_date.desc()).first()
 
 
+def latest_done_board(session, *, upto: date | None = None):
+    """库里**最近一份排好名**的固定榜（`status=done`），交易日不晚于 `upto`。
+
+    盘中报警榜拿它兜底：某一天只备了输入、没点排名，不该让这一整档变成空池。
+    这条查询只认 `done`，因为 `prepared` 那份里没有名次表，捞回来也盯不了。
+    """
+    from backend.app.models.tables import AiDailyRankBoard
+
+    query = session.query(AiDailyRankBoard).filter(AiDailyRankBoard.status == STATUS_DONE)
+    if upto is not None:
+        query = query.filter(AiDailyRankBoard.trade_date <= upto)
+    return query.order_by(AiDailyRankBoard.trade_date.desc()).first()
+
+
 def upsert_prepared(session, *, trade_date: str, base_date: str, window_mode: str, metric: str,
                     metric_label: str, model: str, board_rows: int, feed_rows: int,
                     feed: list[dict], extra: dict) -> Any:
@@ -919,6 +933,7 @@ __all__ = [
     "failed_outcome",
     "get_board",
     "history",
+    "latest_done_board",
     "parse_ranking",
     "persist_outcome",
     "prepare_board",

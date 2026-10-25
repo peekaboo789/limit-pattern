@@ -387,7 +387,7 @@ def realtime_status() -> dict:
     return tracker.status()
 
 
-# --- 盘中涨幅报警榜（前一交易日固定榜那几名，今天盯涨幅）--------------------
+# --- 盘中涨幅报警榜（固定榜排好的那几名，今天盯涨幅）------------------------
 
 
 @router.get("/realtime/intraday-watch", response_model=dict)

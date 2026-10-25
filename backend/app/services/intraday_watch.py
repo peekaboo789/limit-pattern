@@ -1,4 +1,4 @@
-"""盘中「涨幅报警榜」：前一交易日 AI 固定榜排出的那几名，今天单拎出来盯涨幅。
+"""盘中「涨幅报警榜」：AI 固定榜排出的那几名，今天单拎出来盯涨幅。
 
 需求原话与四条拍板：
 
@@ -21,9 +21,11 @@
 
 四条纪律决定了这个模块的形状：
 
-* **池子是「前一交易日」那一份，不是「最新那一份」**。库里没有前一天的榜时，这一档就是空池 +
-  一句原因，绝不退回到「最近一次跑出来的榜」充数：那可能是十天前的名次表，
-  盯它的股票报今天的警，等于拿旧尺子量新行情。
+* **池子优先「前一交易日」那一份；那一天没排过名时用库里最近一份排好名的，并把这天说破**。
+  固定榜的「备输入」定时自己跑，「排名次」那一下要人点、要花钱，漏点一天的效果原本是
+  **第二天整档空池**——用户看到的正是「排好的固定榜没进盘中监控」。现在只要库里有任意一份
+  `status=done` 的榜就顶上空档，但 `note` 必须写明「前一交易日 X 那份没排好名，顶上用的是 Y」：
+  降级要留名，拿旧名次表盯今天的行情是一件说得出来的事，不是一件偷偷做的事。
 * **只认今天的报价**（`round_date == 今天`）。休市日/盘前数据源回的还是上一个交易日的收盘价，
   那一份价格里「涨 3%」是**前天**发生的事，报出来就是假报警。
 * **采样不足 3 分钟时 `rise_3min=None`**，不是 0。服务 10:30 重启、10:31 读到一个 6.5%，
@@ -60,7 +62,7 @@ from backend.app.core.database import session_scope
 from backend.app.core.logging import get_logger
 from backend.app.models.tables import DailyQuote, TradingDay
 from backend.app.services.ai_daily_rank_service import STATUS_DONE, STATUS_PREPARED
-from backend.app.services.ai_daily_rank_service import board_view, get_board
+from backend.app.services.ai_daily_rank_service import board_view, get_board, latest_done_board
 from backend.app.services.ai_evidence import AI_DISCLAIMER
 from backend.app.services.intraday_watch_store import TIER_ALERT, TIER_SPIKE
 from backend.app.services.intraday_watch_store import ack_alerts, alerts_of, record_alert
@@ -88,24 +90,25 @@ STATE_AFTER_CLOSE = "after_close"
 STATE_UNAVAILABLE = "unavailable"
 
 WATCH_DISCLAIMER = (
-    "这里的「名次」与「分数」是前一交易日那份 AI 固定榜的输出（外部大模型给的相对判断分，"
-    "没有回测校准、没有历史命中率、不是涨停概率）；报警说的只是「今天到这一刻真的涨过了"
+    "这里的「名次」与「分数」是 AI 固定榜排出来的那一份名次表（外部大模型给的相对判断分，"
+    "没有回测校准、没有历史命中率、不是涨停概率）；盯的是哪一天那一份，写在上面那句池子说明里；"
+    "报警说的只是「今天到这一刻真的涨过了"
     f"{ALERT_POPUP_PERCENT:.0f}%／{ALERT_PIN_PERCENT:.0f}%」这一件已经发生的事，不是明日预测。"
     "每只股票每一档每天只报一次；置顶要手动点「知道了」才解除。不构成投资建议。"
     + AI_DISCLAIMER
 )
 
 
-# --- 池子（前一交易日那份固定榜）--------------------------------------------
+# --- 池子（固定榜排好的那几名）------------------------------------------------
 
 
 @dataclass(frozen=True)
 class WatchPool:
-    """今天这一档要盯的那批股票，来自**前一交易日**那份固定榜的名次表。"""
+    """今天这一档要盯的那批股票，来自**那份固定榜的名次表**（优先前一交易日，见 `build_pool`）。"""
 
     #: 盯的是哪一个交易日（= 今天的交易日，报警去重的键）
     trade_date: str
-    #: 名次表来自哪一天（前一交易日）；None = 连这一天都定不出来
+    #: 名次表来自哪一天（优先前一交易日，缺的时候是库里最近一份排好名的那天）；None = 定不出日期
     pool_date: str | None
     status: str
     note: str
@@ -146,12 +149,24 @@ def _picks_of(view: dict) -> list[dict[str, Any]]:
     return [item for item in picks if isinstance(item, dict)]
 
 
+def _day_of(row: Any) -> str:
+    """那一行的交易日字符串（表里存的是 `date`，池子对外一律说 `YYYY-MM-DD`）。"""
+    day = getattr(row, "trade_date", None)
+    return day.isoformat() if isinstance(day, date) else str(day or "")
+
+
 def build_pool(session: Session, today: date) -> WatchPool:
     """凑出今天要盯的那批股票，并把「凑不齐」的原因说清楚。
 
-    四种缺池状态各有自己的话，因为它们对用户是四件不同的事：库里根本没有更早的行情 /
-    前一天压根没有那份榜 / 榜只备了输入没花钱排名 / 那一次排名跑失败了。
-    把四种都写成「暂无数据」，用户就永远不知道该去点哪一下。
+    第一选择永远是**前一交易日**那份排好名的榜（这条链路一开始拍板的口径）。但那一天完全可能
+    没排过名：固定榜的「备输入」定时自己跑，「排名次」那一下要人点、还要花钱。只认前一交易日的
+    后果是那天没点、第二天整档就是空的，用户看到的正是「排好的固定榜没进盘中监控」。所以库里
+    只要有**任何一份排好名的榜**（交易日不晚于今天）就顶上，并且把「本来该用哪天、实际用的是
+    哪天」写在 `note` 里——**降级必须留名**，不许悄悄把旧尺子当新尺子用。
+
+    缺池的几种状态各有自己的话，因为它们对用户是不同的几件事：库里根本没有更早的行情 /
+    一份排好名的榜都没有 / 那一天只备了输入没花钱排名 / 那一次排名跑失败了 / 榜标着成功但存档读不动。
+    把这些都写成「暂无数据」，用户就永远不知道该去点哪一下。
     """
     trade_date = today.isoformat()
     previous = previous_trade_date(session, today)
@@ -167,15 +182,24 @@ def build_pool(session: Session, today: date) -> WatchPool:
         )
     pool_date = previous.isoformat()
     row = get_board(session, pool_date)
+    #: 前一交易日那份不是「排好名」的那一份时，退到库里最近一份排好名的榜。
+    #: `substitute_from` 记住被顶掉的是哪天：这句话要出现在池子说明里，不藏着。
+    substitute_from = ""
+    if row is None or str(row.status or "") != STATUS_DONE:
+        newest = latest_done_board(session, upto=today)
+        if newest is not None:
+            substitute_from = pool_date
+            row = newest
+            pool_date = _day_of(row)
     if row is None:
         return WatchPool(
             trade_date=trade_date,
             pool_date=pool_date,
             status=POOL_ABSENT,
             note=(
-                f"库里没有 {pool_date} 这天的 AI 固定榜，所以今天没有可盯的 {WATCH_POOL_SIZE} 只。"
-                f"固定榜是按当天备输入、当天排名的（在「每日 AI 固定榜」那一页点两下，"
-                f"排名那一下才花钱），跑出来之后明天这一档就有池子了。"
+                f"库里既没有 {pool_date}（前一交易日）那天的 AI 固定榜，也没有任何一份排好名的榜可以顶上，"
+                f"所以今天没有可盯的 {WATCH_POOL_SIZE} 只。在「每日 AI 固定榜」那一页点两下"
+                "（排名那一下才花钱），排出来之后这一档马上就能盯它的名次。"
             ),
         )
     view = board_view(row)
@@ -186,8 +210,8 @@ def build_pool(session: Session, today: date) -> WatchPool:
             status=POOL_PREPARED,
             note=(
                 f"{pool_date} 那份固定榜只备了输入、没有排名（状态是 prepared）："
-                "名次表要敲一次外部大模型才有，那一天的输入已经过期，现在也补不出来。"
-                f"请把 {trade_date} 这一份排名跑出来，明天这一档就能盯它的前 {WATCH_POOL_SIZE} 名。"
+                "名次表要敲一次外部大模型才有，而库里再没有第二份排好名的榜可以顶上。"
+                f"请把 {pool_date} 这一份排名跑出来，跑完这一档就盯它的名次。"
             ),
         )
     if view.get("status") != STATUS_DONE:
@@ -199,7 +223,7 @@ def build_pool(session: Session, today: date) -> WatchPool:
             note=(
                 f"{pool_date} 那一次固定榜排名没有成功（状态是 {view.get('status') or '未知'}）"
                 + (f"：{error}" if error else "")
-                + "。没有名次表，今天这一档没有可盯的池子。"
+                + "。库里也没有第二份排好名的榜，今天这一档没有可盯的池子。"
             ),
         )
     picks = _picks_of(view)
@@ -240,7 +264,13 @@ def build_pool(session: Session, today: date) -> WatchPool:
         pool_date=pool_date,
         status=POOL_READY,
         note=(
-            f"池子 = {pool_date} 那份 AI 固定榜的前 {len(rows)} 名（名次按当天模型给的分排，"
+            (
+                f"前一交易日 {substitute_from} 那份没有排好名的名次表，"
+                f"这一档顶上用的是库里最近一份排好名的 {pool_date}："
+                if substitute_from
+                else ""
+            )
+            + f"池子 = {pool_date} 那份 AI 固定榜的前 {len(rows)} 名（名次按当天模型给的分排，"
             "本系统不改它的顺序、不重打分）。今天盯的是这些股票的涨幅，与它们现在的相似度无关。"
         ),
         rows=rows,
@@ -428,7 +458,7 @@ class IntradayWatcher:
 
     def _loop(self) -> None:
         logger.info(
-            "涨幅报警榜线程启动：盯前一交易日固定榜前 %s 名，每 %s 秒采一轮，"
+            "涨幅报警榜线程启动：盯固定榜挑出的前 %s 名，每 %s 秒采一轮，"
             "涨过 %s%% 报一次、涨过 %s%% 且 %s 秒内跳升 %s 个点以上置顶窗口",
             WATCH_POOL_SIZE,
             ALERT_POLL_SECONDS,
@@ -580,7 +610,7 @@ class IntradayWatcher:
                 trade_date=today.isoformat(),
                 pool_date=None,
                 status=POOL_BROKEN,
-                note=f"读前一交易日的固定榜失败：{error}（这一轮没有可盯的池子）",
+                note=f"读固定榜那一份名次表失败：{error}（这一轮没有可盯的池子）",
             )
         if self._pool is None or self._pool.trade_date != fresh.trade_date:
             #: 换天了就把采样序列丢掉：3 分钟窗口不许跨交易日拼（昨天最后 3 分钟

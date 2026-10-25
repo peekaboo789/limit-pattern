@@ -5,7 +5,7 @@ import { formatClock, formatPct, formatPrice, formatScore, pctClass } from '@/ut
 import { computed } from 'vue'
 
 /**
- * 盘中「涨幅报警榜」：前一交易日 AI 固定榜的那几名，今天单拎出来盯涨幅。
+ * 盘中「涨幅报警榜」：AI 固定榜排好的那几名，今天单拎出来盯涨幅（盯哪天那份由后端那句池子说明说）。
  *
  * 这一层只读**后端已经采好的那一份**（`GET /api/realtime/intraday-watch`），不在请求里敲行情源：
  * 采样是后台线程按 `poll_seconds` 的节奏在跑的，所以「页面没开」和「窗口收进托盘」都不影响报警。
