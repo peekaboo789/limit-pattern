@@ -332,7 +332,9 @@ class IntradayWatcher:
         self._round_lock = threading.Lock()
         self._thread_lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._last_read_at = 0.0
+        #: None = 没人在看（从没读过，或 `stop()` 叫停了）。别拿 0.0 当哨兵：`monotonic()` 在 Linux 上
+        #: 是开机秒数，刚开机 5 分钟内 `monotonic() - 0.0` 还没过 `IDLE_EXIT_SECONDS`，线程叫不停。
+        self._last_read_at: float | None = None
 
         #: 池子按交易日缓存一份：盘中不许因为「昨天那份榜被重跑了」而换成员
         #: （用户要的是固定榜）。只有跨到下一个交易日才换。
@@ -400,8 +402,8 @@ class IntradayWatcher:
         }
 
     def stop(self) -> None:
-        """把「没人看」做成一次读超时，线程在下一个检查点自己退出（测试收尾用）。"""
-        self._last_read_at = 0.0
+        """叫停监控线程：它在下一个检查点自己退出（测试收尾用）。"""
+        self._last_read_at = None
 
     def reset(self) -> None:
         """丢掉池子、采样与结果。**只在测试里用**：换交易日、换内存库时不留上一例的串台。"""
@@ -437,9 +439,8 @@ class IntradayWatcher:
         )
         try:
             while True:
-                #: `_last_read_at` 是 0.0 时它是「没人读过」这个哨兵，不是一个时刻——
-                #: 拿 `monotonic()` 减它会对出一句「4221 秒内无人读取」的瞎话。
-                if time.monotonic() - self._last_read_at > IDLE_EXIT_SECONDS:
+                last_read = self._last_read_at
+                if last_read is None or time.monotonic() - last_read > IDLE_EXIT_SECONDS:
                     logger.info("涨幅报警榜没人再读取，监控线程退出")
                     return
                 self.run_round()

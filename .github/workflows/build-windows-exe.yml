@@ -53,7 +53,10 @@ jobs:
             Write-Host "zip 大小 $($item.Length) 字节"
             Write-Host "zip md5 $((Get-FileHash -Algorithm MD5 $zip).Hash.ToLower())"
             Write-Host "zip sha256 $((Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower())"
-            python -c "import zipfile; print('zip 条目数', len(zipfile.ZipFile('desktop/dist/LimitPattern-win64.zip').namelist()))"
+            # 中文标签由 PowerShell 打：runner 上 python 的 stdout 是 cp1252，print 汉字会 UnicodeEncodeError 把这步打红。
+            $entries = python -c "import zipfile; print(len(zipfile.ZipFile('desktop/dist/LimitPattern-win64.zip').namelist()))"
+            if ($LASTEXITCODE -ne 0) { throw "读不动 zip 条目" }
+            Write-Host "zip 条目数 $entries"
           } else {
             Write-Host "zip 不存在，本趟没出件"
           }

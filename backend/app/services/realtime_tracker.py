@@ -114,7 +114,9 @@ class RealtimeTracker:
         self._fast_busy = threading.Lock()
         self._thread_lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._last_read_at = 0.0
+        #: None = 没人在看。别拿 0.0 当哨兵：`monotonic()` 在 Linux 上是开机秒数，
+        #: 刚开机那几分钟里 `monotonic() - 0.0` 还小于闲置阈值，`stop()` 叫不停线程。
+        self._last_read_at: float | None = None
 
         self.leader_codes: list[str] = []
         self.live_board: dict[str, Any] | None = None
@@ -245,8 +247,8 @@ class RealtimeTracker:
         self._run_full_round()
 
     def stop(self) -> None:
-        """把「没人看」的信号做成一次读超时，线程自己在下一轮检查时退出。"""
-        self._last_read_at = 0.0
+        """叫停监控线程：它在下一轮检查时自己退出。"""
+        self._last_read_at = None
 
     # --- 线程 --------------------------------------------------------------
 
@@ -267,11 +269,17 @@ class RealtimeTracker:
         )
         try:
             while True:
-                idle_for = time.monotonic() - self._last_read_at
+                last_read = self._last_read_at
+                if last_read is None:
+                    logger.info("实时监控被叫停，线程退出")
+                    return
+                idle_for = time.monotonic() - last_read
                 if idle_for > IDLE_EXIT_SECONDS:
                     logger.info("实时监控 %s 秒内无人读取，线程退出", round(idle_for))
                     return
-                if time.monotonic() - (self.last_full_attempt_at or 0.0) >= FULL_ROUND_SECONDS:
+                #: 从没尝试过 = 立刻跑第一轮。写成 `or 0.0` 的话，刚开机两分钟内打开程序要白等。
+                last_attempt = self.last_full_attempt_at
+                if last_attempt is None or time.monotonic() - last_attempt >= FULL_ROUND_SECONDS:
                     self._run_full_round()
                 time.sleep(0.5)
         except Exception as exc:  # pragma: no cover - 线程绝不能静默死掉
