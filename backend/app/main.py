@@ -46,20 +46,34 @@ def _mount_static(app: FastAPI) -> None:
         raise HTTPException(status_code=404, detail="没有这个页面")
 
 
-def bootstrap_if_empty() -> None:
-    """库里还没有行情时，后台拉一次，不挡住服务启动。"""
+def bootstrap_data(moment: datetime | None = None) -> None:
+    """启动时把库里缺的补齐：行情缺就补行情，派生层缺就补派生层。
+
+    过去这一格只管「空库拉一次」，于是很常见的两种情形会一直卡在旧数据上：
+    上一进程没赶上 17:10 那班车（电脑关着），行情就少一天；行情明明有这一天，
+    可没人点过数据管理页的重建按钮，样本池里就是没有它。用户看到的都是同一句话
+    ——「数据不会自动更新」。
+
+    `LP_AUTO_SYNC=0` 是「开机什么都别自己动」那一档，两条路一起关掉。
+    补行情那条把抓取上限钉在「已经收盘的那一天」：早上打开软件时当天那根线还没走完，
+    把它当成一个完整交易日落进库里，三天形态窗口就多出半个日子。
+    同步的收尾本来就会跑派生层，所以补了行情的那条路不再另起线程。
+    `moment` 是判「收盘了没有」用的那把时钟，留空读真表；判据要用假时钟钉住日子。
+    """
     import os
 
     if os.environ.get("LP_AUTO_SYNC", "1") == "0":
         return
     from backend.app.core.database import session_scope
-    from backend.app.models.tables import DailyQuote
+    from backend.app.services import freshness
     from backend.app.services.sync_service import start_sync
 
     with session_scope() as session:
-        exists = session.query(DailyQuote.id).first()
-    if exists is None:
-        start_sync()
+        verdict = freshness.gaps(session, moment)
+    if verdict["quotes_behind"]:
+        start_sync(end=verdict["expected_quote_day"])
+        return
+    freshness.start_derive(moment)
 
 
 def create_app() -> FastAPI:
@@ -76,7 +90,7 @@ def create_app() -> FastAPI:
         with session_scope() as session:
             backtest_service.retire_stale_runs(session)
         start_scheduler()
-        bootstrap_if_empty()
+        bootstrap_data()
         yield
         stop_scheduler()
 

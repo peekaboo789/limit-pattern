@@ -132,37 +132,38 @@ def test_sync_retries_and_writes_a_statistics_summary(client):
     assert "sectors" in detail and "ladder" in detail and "volume_features" in detail
 
 
-def test_empty_database_starts_a_sync(tmp_path, monkeypatch):
+def test_startup_catch_up_syncs_an_empty_database(tmp_path, monkeypatch):
+    """开机那一步：空库补行情，而且抓取上限钉在「已经收盘的那一天」。
+
+    行情齐了之后走的是另一条路（补派生层），那部分的判据在 `test_freshness_auto.py`。
+    """
     monkeypatch.setenv("LP_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LP_SCHEDULER", "0")
     monkeypatch.setenv("LP_AUTO_SYNC", "1")
     monkeypatch.setenv("LP_STATIC_DIR", str(tmp_path / "missing"))
     calls = []
-    monkeypatch.setattr("backend.app.services.sync_service.start_sync", lambda: calls.append("go") or "task-1")
+    derived = []
+    monkeypatch.setattr(
+        "backend.app.services.sync_service.start_sync",
+        lambda end=None: calls.append(end) or "task-1",
+    )
+    monkeypatch.setattr(
+        "backend.app.services.freshness.start_derive",
+        lambda moment=None: derived.append(moment),
+    )
     reset_engine()
     init_db()
     from backend.app.main import create_app
 
     with TestClient(create_app()) as client:
         assert client.get("/api/health").json()["data_date"] is None
-    assert calls == ["go"]
-    with session_scope() as session:
-        session.add(
-            DailyQuote(
-                stock_code="600000",
-                trade_date=date(2026, 6, 1),
-                open=10,
-                high=11,
-                low=10,
-                close=11,
-                volume=100,
-                source="test",
-            )
-        )
+    assert len(calls) == 1, "空库开机没有自动补行情"
+    assert calls[0] is not None, "补行情没有钉住已收盘的那天，开盘半小时也会当成一整个交易日"
+    assert derived == [], "补了行情的那条路又另起一个派生线程"
     calls.clear()
     with TestClient(create_app()):
         pass
-    assert calls == []
+    assert len(calls) == 1
     reset_engine()
 
 

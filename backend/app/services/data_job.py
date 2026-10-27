@@ -32,6 +32,7 @@ _LABELS: dict[str, str] = {
     "scan": "全市场匹配扫描",
     "training": "构造训练集",
     "window": "按新对比窗口重建样本与扫描",
+    "derive": "自动补齐特征、涨停样本与匹配扫描",
 }
 
 _LOCK = threading.Lock()
@@ -82,24 +83,20 @@ def reset_state() -> None:
         )
 
 
-def start(kind: str, *, dates: list[date], work: Callable[[Any, date, dict], None]) -> dict:
-    """起一个任务。`work(session, day, accumulator)` 在自己的 session 里写库。
-
-    `dates` 是这个任务要处理的交易日列表（一次扫描一天、一次区间重建可以是几十天）：
-    列表为空时调用方就该当场报错，不该起一个跑完才发现无事可做的线程。
-    `accumulator` 是跨天累加的那份账，任务跑完就是页面上看到的结果卡片。
-    """
+def _acquire(kind: str, dates: list[date]) -> tuple[str, str]:
+    """占住那个唯一的槽位。占不到就 `JobBusy`，绝不和别人的写库线程撞在一起。"""
     label = _LABELS.get(kind, kind)
     if not dates:
         raise ValueError(f"{label}：没有要处理的交易日，先同步行情")
     with _LOCK:
         if _STATE["running"]:
             raise JobBusy(f"后端任务「{_STATE['label'] or _STATE['kind']}」正在运行，请等它跑完")
+        task_id = uuid.uuid4().hex[:12]
         _STATE.update(
             running=True,
             kind=kind,
             label=label,
-            task_id=uuid.uuid4().hex[:12],
+            task_id=task_id,
             started_at=datetime.now(SHANGHAI).isoformat(timespec="seconds"),
             finished_at="",
             progress=0,
@@ -108,11 +105,34 @@ def start(kind: str, *, dates: list[date], work: Callable[[Any, date, dict], Non
             error="",
             result=None,
         )
-        task_id = str(_STATE["task_id"])
+    return task_id, label
+
+
+def start(kind: str, *, dates: list[date], work: Callable[[Any, date, dict], None]) -> dict:
+    """起一个任务。`work(session, day, accumulator)` 在自己的 session 里写库。
+
+    `dates` 是这个任务要处理的交易日列表（一次扫描一天、一次区间重建可以是几十天）：
+    列表为空时调用方就该当场报错，不该起一个跑完才发现无事可做的线程。
+    `accumulator` 是跨天累加的那份账，任务跑完就是页面上看到的结果卡片。
+    """
+    task_id, label = _acquire(kind, dates)
     thread = threading.Thread(
         target=_run, args=(task_id, kind, label, dates, work), name=f"lp-{kind}", daemon=True
     )
     thread.start()
+    return {"task_id": task_id, "label": label, "days_total": len(dates), **_public()}
+
+
+def run(kind: str, *, dates: list[date], work: Callable[[Any, date, dict], None]) -> dict:
+    """在**当前线程**里跑完一个任务，但照样占那个槽位。
+
+    自动补齐（同步收尾、启动追赶）跑在别人的线程里，可它写的是同一批表：
+    不占槽位就会和用户手点的那个按钮同时写 SQLite，撞成 `database is locked`，
+    两边一起 500——那正是这个模块只留一个槽的理由。占槽还有第二个好处：
+    数据管理页看得见它在做什么、做到哪一步，而不是库里悄悄多了些行。
+    """
+    task_id, label = _acquire(kind, dates)
+    _run(task_id, kind, label, dates, work)
     return {"task_id": task_id, "label": label, "days_total": len(dates), **_public()}
 
 
@@ -159,4 +179,4 @@ def _public() -> dict:
     }
 
 
-__all__ = ["JobBusy", "current_job", "reset_state", "start", "state"]
+__all__ = ["JobBusy", "current_job", "reset_state", "run", "start", "state"]

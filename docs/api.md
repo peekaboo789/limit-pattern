@@ -76,6 +76,8 @@
 相似度相关接口都带 `disclaimer`，原文是「相似度不是涨停概率」。这句在后端只写一次：`backend/app/core/constants.py` 的 `SIMILARITY_DISCLAIMER`，盘中榜、匹配明细、三日形态、导出表头、次日预测池都读它。`skipped` 列出没能参加打分的涨停样本和原因。
 
 `GET /api/sync/status` 在契约字段之外，还会给出 `phase`、`done`、`total`、`saved`、`failed`。`message` 用中文说明当前步骤。
+收尾那一格 `phase` 走到 `derive` 时补的是特征、涨停样本、匹配扫描这三层（判据 `freshness.py`），完成那句消息会把补了哪几天、
+各写了多少行带出来；抢不到数据管理那一个槽位时它写「自动补齐让路」，跑砸了写「自动补齐派生数据没有跑成：…」，不会变成一个安静的 0。
 
 `last_sync_sources` 是上一轮同步留下的出数来源账：`at`、`active_source`、`chain`、`sources`（每个源各出了多少只）、`saved`、`failed`、`switched`、`quality_errors`、`quality_warnings`、`quality_scanned_days`、`quality_skipped`。从没跑完过一轮时它是 `null`，不是空对象——「查过且没问题」和「没查过」不能读成同一个数。
 
@@ -249,6 +251,9 @@
 槽位只有一个。这些活都在写 SQLite，两个请求一起把写锁撞成 `database is locked` 的话两边都 500、用户完全不知道发生了什么；
 所以现在第二个任务直接 409，消息里写清是谁在占用这个槽位（「后端任务「重建涨停样本」正在运行，请等它跑完」）。
 `GET /api/data/status` 里的 `running_job` 给的就是这个名字。
+占用者不止这四个按钮：还有第五个 `derive`（「自动补齐特征、涨停样本与匹配扫描」），由每轮同步的收尾和每次开机追赶在后台线程里发起，
+它补的是特征、涨停样本、匹配扫描这三层（训练集不在内），上限只到最新那个**已收盘**的交易日；抢不到槽位时这一轮整条路不走，
+同步完成那句消息里写「自动补齐让路」，下一轮同步或下一次开机再补。判据在 `freshness.py`，只读库里的真行数，不另立「跑过没跑过」的记号。
 
 `GET /api/data/job` 的 `result` 是这一轮的记账，`counts` 是任务跑完之后**重新数库**得到的行数。两份都要给：
 记账里的 `stock_count`、`pool_size`、`universe_count` 是单日快照，区间任务加不出总量（三天加出来的「样本池 180 条」

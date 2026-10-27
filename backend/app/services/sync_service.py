@@ -261,22 +261,26 @@ def fetch_kline_retry(code: str, start: date, end: date) -> list[dict]:
     raise last
 
 
-def run_sync_now() -> dict:
-    """给测试和手动补数用：在当前线程跑完一轮。"""
+def run_sync_now(end: date | None = None) -> dict:
+    """给测试和手动补数用：在当前线程跑完一轮。
+
+    `end` 是抓线的最后一天，留空就是今天。启动追赶那条路会把它钉在「已经收盘的那天」，
+    免得一开盘就把当天那半根线当成一个完整交易日写进库里。
+    """
     with _LOCK:
         task_id = uuid.uuid4().hex[:12]
         _STATE.update(running=True, progress=0, message="开始同步", task_id=task_id)
-    _run(task_id)
+    _run(task_id, end)
     return status()
 
 
-def start_sync() -> str:
+def start_sync(end: date | None = None) -> str:
     with _LOCK:
         if _STATE["running"]:
             return str(_STATE["task_id"])
         task_id = uuid.uuid4().hex[:12]
         _STATE.update(running=True, progress=0, message="开始同步", task_id=task_id)
-    thread = threading.Thread(target=_run, args=(task_id,), name="lp-sync", daemon=True)
+    thread = threading.Thread(target=_run, args=(task_id, end), name="lp-sync", daemon=True)
     thread.start()
     return task_id
 
@@ -309,7 +313,7 @@ def _set(**values) -> None:
         _STATE.update(values)
 
 
-def _run(task_id: str) -> None:
+def _run(task_id: str, end_day: date | None = None) -> None:
     global _CHAIN
     _clear_source_health()
     try:
@@ -342,7 +346,7 @@ def _run(task_id: str) -> None:
             _CHAIN = source_chain(configured, active)
         stocks = [(code, name) for code, name in stocks if keep_code(code)]
         _set(active_source=active, message=f"使用数据源 {active}，正在下载股票列表")
-        end = today()
+        end = end_day or today()
         start = end - timedelta(days=max(20, retention_days() * 3))
         total = len(stocks)
         done = 0
@@ -422,6 +426,12 @@ def _run(task_id: str) -> None:
         except Exception as exc:
             quality_note = f"，质量检查没有跑成：{exc or type(exc).__name__}"
             logger.exception("质量检查没有跑成")
+        #: 派生三层（特征 → 涨停样本 → 匹配扫描）跟着行情一起长。页面上那句
+        #: 「这一天库里没有样本」十次有九次不是少了行情，而是没人点过数据管理页那几个重建按钮：
+        #: 同步只写 `daily_quotes`，另外三张表过去只有人手点才会动。
+        #: 排在质量检查之后，是因为建样本要吃 `error_pairs` 那道闸门。
+        _set(progress=94, phase="derive", message="正在补齐特征、涨停样本与匹配扫描")
+        derive_note = _derive_pass()
         #: 收盘后那两步收尾（对账 + 每日 JSON 快照）排在同步之后：判据读的是判据日那天的
         #: `is_limit_up`，那个数只有等今天的行情落了库才存在。这一步不敲网关、不花钱。
         memory_note = ""
@@ -472,7 +482,7 @@ def _run(task_id: str) -> None:
             saved=saved,
             failed=failed,
             active_source=read_settings_file().get("active_source") or active,
-            message=f"同步完成：写入 {saved} 只，失败 {failed} 只{switch_note}{backfill_note}{quality_note}{memory_note}{summary_note}",
+            message=f"同步完成：写入 {saved} 只，失败 {failed} 只{switch_note}{backfill_note}{quality_note}{derive_note}{memory_note}{summary_note}",
         )
     except Exception as exc:
         _set(running=False, progress=0, message=str(exc) or "同步失败")
@@ -500,6 +510,22 @@ def _backfill_pass() -> str:
         return f"，样本池补拉没有跑成：{exc or type(exc).__name__}"
     missing = len(result["failed"])
     return f"，样本池有 {missing} 只涨停票补不齐涨停前三根" if missing else ""
+
+
+def _derive_pass() -> str:
+    """把特征、涨停样本、匹配扫描这三层派生数据补到最新那个已收盘的日子。
+
+    不联网、不敲网关：算的全是库里已有的行情。跑砸了不算同步失败，但要在消息里说破，
+    不能让它变成一个安静的 0。槽位被页面上的手动任务占着时这一轮直接让路，
+    下一轮同步或下一次开机再补——两边一起写 SQLite 才是真麻烦。
+    """
+    from backend.app.services import freshness
+
+    try:
+        return freshness.derive_pass().get("note", "")
+    except Exception as exc:
+        logger.exception("自动补齐派生数据没有跑成")
+        return f"，自动补齐派生数据没有跑成：{exc or type(exc).__name__}"
 
 
 def _memory_pass(saved: int) -> str:
