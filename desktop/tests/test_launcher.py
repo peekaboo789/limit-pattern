@@ -271,13 +271,131 @@ def test_export_api_save_file_uses_save_dialog(monkeypatch, tmp_path):
 
     window = FakeWindow()
     api = ExportApi()
-    api.window = window
+    api._window = window
     saved = api.save_file("pool", "甲")
     assert window.kwargs["dialog_type"] == 30
     assert window.kwargs["directory"] == str(desktop)
     assert window.kwargs["save_filename"] == "pool.txt"
     assert saved == str(desktop / "pool.txt")
     assert (desktop / "pool.txt").read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+class _SelfSimilar:
+    """一个「看着无害、爬进去就没完」的对象：像 CLR 的 `Rectangle`，公开属性指回自己。
+
+    pywebview 的 js_api 扫描遇到这种对象会一路递归到 Python 栈顶（生产日志里那条
+    `window.native.AccessibilityObject.Bounds.Empty.Empty...: maximum recursion depth exceeded`
+    就是这么来的），所以扫描步数就是这一档要钉住的东西。
+    """
+
+    def __init__(self) -> None:
+        self.Empty = None
+
+    @property
+    def native(self) -> "_SelfSimilar":
+        child = _SelfSimilar()
+        child.Empty = self
+        return child
+
+
+def _pywebview_scan(api) -> tuple[int, list[str]]:
+    """照 `webview.util.inject_pywebview.get_functions` 的规则走一遍，返回（步数，函数名）。
+
+    规则只有三条：公开名（不以下划线开头）才看；是函数就登记；
+    不是函数、不是可调用、但带 `__module__` 的**对象就递归进去**。
+    第三条是把窗口挂成公开属性时出事的那一条。
+    """
+    steps = 0
+    found: list[str] = []
+
+    def walk(obj, prefix, depth):
+        nonlocal steps
+        if depth > 12:
+            return
+        for name in dir(obj):
+            if name.startswith("_"):
+                continue
+            steps += 1
+            attr = getattr(obj, name, None)
+            full = f"{prefix}.{name}" if prefix else name
+            if callable(attr):
+                found.append(full)
+            elif hasattr(attr, "__module__"):
+                walk(attr, full, depth + 1)
+
+    walk(api, "", 0)
+    return steps, sorted(set(found))
+
+
+def test_js_api_surface_cannot_be_walked_into_the_window(monkeypatch, tmp_path):
+    """交给 pywebview 的那个对象上，公开名下不许坐着一个能被抓取的对象。
+
+    窗口引用只能放 `_window`：这是「打开就是未响应」的根因（实测见 launcher.ExportApi
+    的说明），不是风格问题。这里连两条一起钉住：扫描一步都不许多走，登记到的函数只有
+    `save_file`；同时窗口引用确实还在（只是换了个扫描看不见的名）。
+    """
+    api = ExportApi()
+    handle = _SelfSimilar()
+    api._window = handle
+
+    steps, functions = _pywebview_scan(api)
+    assert functions == ["save_file"]
+    assert steps == 1
+    assert api._window is handle
+    assert not [name for name in vars(api) if not name.startswith("_")]
+
+
+def test_run_webview_wires_the_window_off_the_scanned_surface(monkeypatch):
+    """`run_webview` 真实装配出来的那份 js_api，公开属性必须还是空的。
+
+    只查类不够：谁都能在 `run_webview` 里补一句 `export_api.window = window`，
+    类里的 `_window` 照样在、扫描却多出一整棵 WinForms 树。这条跑的是真的装配路径。
+    """
+    import types
+
+    fake_webview = types.ModuleType("webview")
+    fake_webview.settings = {"ALLOW_DOWNLOADS": False}
+
+    class _Slot:
+        def __init__(self) -> None:
+            self.handlers = []
+
+        def __iadd__(self, handler):
+            self.handlers.append(handler)
+            return self
+
+    class _Events:
+        def __init__(self) -> None:
+            self.closing = _Slot()
+
+    class _Window:
+        def __init__(self) -> None:
+            self.events = _Events()
+
+    created: dict = {}
+
+    def create_window(title, url, **kwargs):
+        created["kwargs"] = kwargs
+        return _Window()
+
+    started: list[bool] = []
+    fake_webview.create_window = create_window
+    fake_webview.start = lambda *a, **k: started.append(True)
+    monkeypatch.setitem(sys.modules, "webview", fake_webview)
+
+    from desktop.launcher import AppState, run_webview
+
+    state = AppState()
+    state.url = "http://127.0.0.1:8765/"
+    run_webview(state)
+
+    assert started == [True]
+    api = created["kwargs"]["js_api"]
+    steps, functions = _pywebview_scan(api)
+    assert functions == ["save_file"]
+    assert steps == 1
+    assert isinstance(api._window, _Window)
+    assert state.window is api._window
 
 
 def test_enable_webview_downloads():

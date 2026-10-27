@@ -786,15 +786,28 @@ def save_text_as(filename: str, text: str, ask_path) -> str | None:
 
 
 class ExportApi:
-    """pywebview js_api。页面调用 ``window.pywebview.api.save_file(filename, text)``。"""
+    """pywebview js_api。页面调用 ``window.pywebview.api.save_file(filename, text)``。
+
+    **窗口引用只能挂在 `_window` 这种下划线名下，不能挂在公开名下。**
+    pywebview 在每次注入时会对这个对象做一次扫描（`webview.util.inject_pywebview` 里的
+    `get_functions`）：公开名逐个 `getattr`，遇到「不是函数、又不是类、但带 `__module__`」
+    的属性就**递归进去**。把真窗口挂到 `api.window` 时，递归从 `window` 走到
+    `window.native`（一个 WinForms 窗体），再把那个 CLR 对象的整张属性表从头到尾
+    `getattr` 一遍——`Rectangle.Empty` 这种自引用属性还会一路递归到 Python 栈顶。
+    这段循环跑在 pywebview 自己的线程上，握着 GIL 不放，同时又等 UI 线程回话；
+    UI 线程那头正握着 GIL 等消息处理，两边互等，**用户看到的就是「打开就是未响应」**
+    （实测：扫描一开工，本进程所有 Python 线程 0.1 秒内全冻住，窗口 `Responding=False`，
+    只有杀进程才解；把引用改放到 `_window` 后同一趟扫描 0.000 秒、1 个属性、窗口全程应答）。
+    """
 
     def __init__(self) -> None:
-        self.window = None
+        #: 下划线名 = pywebview 的扫描第一步就跳过；这里存的是 `webview.Window`
+        self._window = None
 
     def save_file(self, filename: str, text: str) -> str | None:
         import webview
 
-        window = self.window
+        window = self._window
 
         def ask_path(directory: Path, name: str) -> str | None:
             if window is None:
@@ -859,7 +872,8 @@ def run_webview(state: AppState) -> None:
     )
     if window is None:
         raise RuntimeError("pywebview 没有创建窗口")
-    export_api.window = window
+    #: 走 `_window`：见 `ExportApi` 的说明，公开名会被 pywebview 爬进 WinForms 对象图
+    export_api._window = window
     state.window = window
     window.events.closing += on_closing
     logger.info("启动 pywebview，加载 %s", state.url)
