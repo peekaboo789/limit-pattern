@@ -21,6 +21,8 @@ export function defaultExportFilename(type: string, date: string, code?: string,
   if (type === 'scan') return `scan-${date}-top${top ?? 50}.txt`
   if (type === 'similarity') return `similarity-${code ?? 'unknown'}-${date}-top${top ?? 20}.txt`
   if (type === 'pool') return `pool-${date}.txt`
+  if (type === 'next_day_pool') return `next_day_pool-${date}.txt`
+  if (type === 'backtest') return `backtest-${date}.txt`
   if (type === 'ai_ranking') return `ai_ranking-${date}.txt`
   return `summary-${date}.txt`
 }

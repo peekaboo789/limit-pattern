@@ -36,11 +36,18 @@ async function open(date?: string) {
   }
 }
 
-async function generate() {
+const snapshotLabel: Record<string, string> = {
+  intraday: '盘中实时快照',
+  morning_freeze: '11:30 冻结快照',
+  close: '收盘报价（正式日线未同步）',
+  daily: '正式日线',
+}
+
+async function generate(snapshot?: 'morning') {
   generating.value = true
   error.value = ''
   try {
-    ranking.value = await api.generateAiRanking()
+    ranking.value = await api.generateAiRanking(snapshot ? { snapshot } : {})
     selected.value = ranking.value.date
     await loadDates()
   } catch (reason) {
@@ -68,7 +75,8 @@ onMounted(async () => {
       <select v-if="dates.length" v-model="selected" @change="open(selected)">
         <option v-for="day in dates" :key="day" :value="day">{{ day }}</option>
       </select>
-      <button class="btn" type="button" :disabled="generating" @click="generate">{{ generating ? 'AI 打分中…' : '立即生成' }}</button>
+      <button class="btn" type="button" :disabled="generating" @click="generate()">{{ generating ? 'AI 打分中…' : '立即生成' }}</button>
+      <button class="btn btn-ghost" type="button" :disabled="generating" title="下午用上午 11:30 收盘时冻结的快照打分" @click="generate('morning')">用 11:30 冻结快照</button>
       <ExportButton :params="exportParams" />
     </div>
   </header>
@@ -80,6 +88,7 @@ onMounted(async () => {
       <span v-if="ranking" class="muted">
         候选 {{ ranking.candidate_count }} 只 · 样本池 {{ ranking.pool_size }} 条 · 生成于 {{ ranking.run_at.replace('T', ' ').slice(0, 19) }}
         <template v-if="ranking.model"> · {{ ranking.model }}</template>
+        <template v-if="ranking.snapshot"> · 行情：{{ snapshotLabel[ranking.snapshot.kind] ?? ranking.snapshot.kind }}<template v-if="ranking.snapshot.taken_at && ranking.snapshot.kind !== 'daily'"> {{ ranking.snapshot.taken_at.slice(11, 16) }}</template></template>
       </span>
     </div>
     <Disclaimer :text="ranking?.disclaimer" />

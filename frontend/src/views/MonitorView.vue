@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { api, ApiError, isAbort } from '@/api/client'
-import type { MonitorSnapshot } from '@/api/types'
+import type { CalendarInfo, MonitorSnapshot } from '@/api/types'
 import { monitorState, setSound } from '@/stores/monitor'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 const snap = ref<MonitorSnapshot | null>(null)
+const calendar = ref<CalendarInfo | null>(null)
 const error = ref('')
 let timer: number | undefined
 
@@ -25,6 +26,7 @@ function pctText(value: number | null) {
 }
 
 onMounted(() => {
+  void api.calendar().then((value) => (calendar.value = value)).catch(() => undefined)
   void load()
   timer = window.setInterval(load, 5000)
 })
@@ -46,6 +48,10 @@ onUnmounted(() => {
   </header>
 
   <p v-if="error" class="alert">{{ error }}</p>
+  <p v-if="calendar" class="muted" style="margin: 0">
+    交易日历：今天 {{ calendar.today }} {{ calendar.today_is_trading_day ? '是交易日' : '休市' }} · 上一交易日 {{ calendar.previous_trading_day }} · 下一交易日 {{ calendar.next_trading_day }}
+    <template v-if="calendar.estimated">（{{ calendar.year }} 年休市安排为推算，公告后请核对）</template>
+  </p>
   <section class="card monitor-panel" :class="{ 'panel-alert': hasAlert }">
     <div class="card-head">
       <h2>{{ snap?.ranking_date ? `${snap.ranking_date} 的 AI 前 20 名` : '上一交易日 AI 前 20 名' }}</h2>

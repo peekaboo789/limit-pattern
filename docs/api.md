@@ -39,3 +39,12 @@
 
 - `GET /api/monitor`：`date`、`market_open`、`status_text`（交易中 / 休市）、`ranking_date`（被监控的上一交易日榜单日期）、`thresholds`、`source`、`error`、`updated_at`、`warn_count`、`alert_count`、`items[]`（`rank`、`code`、`name`、`ai_score`、`reason`、`price`、`pre_close`、`pct`、`level`：normal / warn ≥3% / alert ≥6%）。
 - `GET /api/monitor/events?since=<id>`：当天新事件，每只每级每天一次。`last_id` 用作下一次的 `since`。只在交易时段记录。
+
+## 交易日历、快照、回测、观察池
+
+- `GET /api/calendar?year=`：`holidays`、`estimated`（2027 为推算）、`today_is_trading_day`、`market_open`、`previous_trading_day`、`next_trading_day`。数据目录 `holidays.json`（`{"closed": [...], "open": [...]}`）可覆盖。
+- `POST /api/ai-ranking/generate` 正文可加 `"snapshot": "morning"`：下午用 11:30 冻结快照。返回里 `snapshot.kind` 为 intraday / morning_freeze / close / daily。
+- `GET /api/snapshot/status`：此刻会用哪种快照，以及今天的 11:30 冻结快照。
+- `GET /api/backtest?kind=similarity&top=50`：分档 `bands[]` 与逐日 `days[]`（`limit_up_rate`、`up3_rate`、`avg_next_pct`）。`kind=ai_ranking` 看每份榜单的下一交易日。
+- `GET /api/next-day-pool?top=30&date=`：观察池，每只附 `band`、`band_samples`、`band_limit_up_rate`、`band_up3_rate`。
+- 导出类型新增 `next_day_pool`、`backtest`。

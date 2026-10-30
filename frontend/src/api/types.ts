@@ -162,7 +162,7 @@ export interface SummaryListResponse {
  * 每日总结至少包含契约列出的字段。
  * 嵌套结构在 docs/summary_schema.md 落地前按宽松形态解析，见 utils/summary.ts。
  */
-export type ExportType = 'scan' | 'similarity' | 'pool' | 'summary' | 'ai_ranking'
+export type ExportType = 'scan' | 'similarity' | 'pool' | 'summary' | 'ai_ranking' | 'next_day_pool' | 'backtest'
 
 export interface ExportParams {
   type: ExportType
@@ -210,6 +210,7 @@ export interface AiRanking {
   disclaimer: string
   items: AiRankingItem[]
   runs?: string[]
+  snapshot?: { kind: 'intraday' | 'morning_freeze' | 'close' | 'daily'; taken_at: string | null; count: number }
 }
 
 export type MonitorLevel = 'normal' | 'warn' | 'alert'
@@ -255,4 +256,64 @@ export interface MonitorEvents {
   market_open: boolean
   last_id: number
   items: MonitorEvent[]
+}
+
+export interface BandStat {
+  band: string
+  count: number
+  limit_up: number
+  limit_up_rate: number | null
+  up3_rate: number | null
+  avg_next_pct: number | null
+}
+
+export interface BacktestDay extends BandStat {
+  date: string
+  next_date: string
+  hits?: string[]
+}
+
+export interface SimilarityBacktest {
+  kind: 'similarity'
+  top: number
+  disclaimer: string
+  days: BacktestDay[]
+  bands: BandStat[]
+}
+
+export interface RankingBacktest {
+  kind: 'ai_ranking'
+  disclaimer: string
+  days: BacktestDay[]
+  total: BandStat
+}
+
+export interface NextDayPoolItem {
+  code: string
+  name: string
+  score: number
+  band: string
+  band_samples: number
+  band_limit_up_rate: number | null
+  band_up3_rate: number | null
+  best_match: { code: string; name: string; limit_date: string }
+}
+
+export interface NextDayPool {
+  date: string | null
+  pool_dates?: string[]
+  disclaimer: string
+  bands: BandStat[]
+  items: NextDayPoolItem[]
+}
+
+export interface CalendarInfo {
+  year: number
+  estimated: boolean
+  holidays: string[]
+  today: string
+  today_is_trading_day: boolean
+  market_open: boolean
+  previous_trading_day: string
+  next_trading_day: string
 }

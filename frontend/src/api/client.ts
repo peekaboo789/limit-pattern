@@ -1,5 +1,9 @@
 import { ApiError, formatDetail, request } from './http'
 import type {
+  CalendarInfo,
+  NextDayPool,
+  RankingBacktest,
+  SimilarityBacktest,
   AiRanking,
   MonitorEvents,
   MonitorSnapshot,
@@ -78,8 +82,16 @@ export const api = {
 
   aiRankingDates: () => request<{ dates: string[] }>('/api/ai-ranking/dates'),
 
-  generateAiRanking: (date?: string) =>
-    request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(date ? { date } : {}) }),
+  generateAiRanking: (options: { date?: string; snapshot?: 'morning' } = {}) =>
+    request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(options) }),
+
+  calendar: (year?: number) => request<CalendarInfo>(`/api/calendar${query({ year })}`),
+
+  similarityBacktest: (top = 50) => request<SimilarityBacktest>(`/api/backtest${query({ kind: 'similarity', top })}`),
+
+  rankingBacktest: () => request<RankingBacktest>('/api/backtest?kind=ai_ranking'),
+
+  nextDayPool: (top = 30) => request<NextDayPool>(`/api/next-day-pool${query({ top })}`),
 
   monitor: () => request<MonitorSnapshot>('/api/monitor'),
 
