@@ -1,3 +1,4 @@
+import ClusterView from '@/views/ClusterView.vue'
 import BacktestView from '@/views/BacktestView.vue'
 import NextDayPoolView from '@/views/NextDayPoolView.vue'
 import AiRankingView from '@/views/AiRankingView.vue'
@@ -20,6 +21,7 @@ export const router = createRouter({
     { path: '/ai-ranking', name: 'ai-ranking', component: AiRankingView, meta: { title: 'AI 榜单' } },
     { path: '/monitor', name: 'monitor', component: MonitorView, meta: { title: '实时监控' } },
     { path: '/next-day', name: 'next-day', component: NextDayPoolView, meta: { title: '次日观察池' } },
+    { path: '/cluster', name: 'cluster', component: ClusterView, meta: { title: '聚类分析' } },
     { path: '/backtest', name: 'backtest', component: BacktestView, meta: { title: '回测' } },
     { path: '/pool', name: 'pool', component: PoolView, meta: { title: '涨停池' } },
     { path: '/summaries', name: 'summaries', component: SummaryView, meta: { title: '每日总结' } },

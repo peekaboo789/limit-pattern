@@ -1,4 +1,4 @@
-import { BarChart, CandlestickChart } from 'echarts/charts'
+import { BarChart, CandlestickChart, LineChart, ScatterChart } from 'echarts/charts'
 import {
   DataZoomComponent,
   GridComponent,
@@ -15,6 +15,8 @@ use([
   CanvasRenderer,
   CandlestickChart,
   BarChart,
+  LineChart,
+  ScatterChart,
   GridComponent,
   TooltipComponent,
   DataZoomComponent,

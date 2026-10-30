@@ -162,7 +162,7 @@ export interface SummaryListResponse {
  * 每日总结至少包含契约列出的字段。
  * 嵌套结构在 docs/summary_schema.md 落地前按宽松形态解析，见 utils/summary.ts。
  */
-export type ExportType = 'scan' | 'similarity' | 'pool' | 'summary' | 'ai_ranking' | 'next_day_pool' | 'backtest'
+export type ExportType = 'scan' | 'similarity' | 'pool' | 'summary' | 'ai_ranking' | 'next_day_pool' | 'backtest' | 'cluster'
 
 export interface ExportParams {
   type: ExportType
@@ -316,4 +316,35 @@ export interface CalendarInfo {
   market_open: boolean
   previous_trading_day: string
   next_trading_day: string
+}
+
+export interface ClusterPatternRow {
+  day: string
+  close_change: number | null
+  volume_ratio_5: number | null
+  amplitude: number | null
+}
+
+export interface ClusterGroup {
+  id: number
+  name: string
+  size: number
+  members: { code: string; name: string; limit_date: string }[]
+  pattern: ClusterPatternRow[]
+  return_3d: number | null
+}
+
+export interface ClusterResult {
+  date: string
+  pool_dates: string[]
+  method: string
+  requested_k: number | string
+  sample_count: number
+  k?: number
+  silhouette?: number | null
+  disclaimer: string
+  generated_at: string
+  note?: string
+  clusters: ClusterGroup[]
+  points: { code: string; name: string; cluster: number; x: number; y: number }[]
 }

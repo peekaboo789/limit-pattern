@@ -144,14 +144,14 @@ def export_file(
     top: int = Query(50, ge=1, le=500),
 ):
     kind = (type or "").strip().lower()
-    if kind not in {"scan", "similarity", "pool", "summary", "ai_ranking", "next_day_pool", "backtest"}:
-        raise HTTPException(status_code=422, detail="导出类型只能是 scan、similarity、pool、summary、ai_ranking、next_day_pool、backtest")
+    if kind not in {"scan", "similarity", "pool", "summary", "ai_ranking", "next_day_pool", "backtest", "cluster"}:
+        raise HTTPException(status_code=422, detail="导出类型只能是 scan、similarity、pool、summary、ai_ranking、next_day_pool、backtest、cluster")
     day = _parse_day(date, default_latest=True)
     normalized = _code(code) if code else None
     if kind == "similarity" and not normalized:
         raise HTTPException(status_code=422, detail="导出相似度需要股票代码")
     with session_scope() as session:
-        if kind not in {"summary", "ai_ranking", "backtest"} and day not in quote_dates(session):
+        if kind not in {"summary", "ai_ranking", "backtest", "cluster"} and day not in quote_dates(session):
             raise HTTPException(status_code=404, detail="这一天没有行情")
         try:
             text, filename = render_export(session, kind, day, normalized, top)
@@ -430,3 +430,61 @@ def get_next_day_pool(date: str | None = None, top: int = Query(30, ge=5, le=100
     day = _parse_day(date, default_latest=False) if date else None
     with session_scope() as session:
         return next_day_pool(session, day, top)
+
+
+@router.get("/cluster/status")
+def get_cluster_status() -> dict:
+    from backend.app.algorithms.clustering import MISSING_MESSAGE, sklearn_available
+
+    ok = sklearn_available()
+    return {"available": ok, "message": "" if ok else MISSING_MESSAGE}
+
+
+@router.post("/cluster/run")
+def post_cluster_run(body: dict | None = None) -> dict:
+    from backend.app.services.cluster_service import ClusterUnavailable, run_cluster
+
+    body = body or {}
+    day = _parse_day(body.get("date"), default_latest=True)
+    raw_k = body.get("k", "auto")
+    try:
+        k = None if raw_k in (None, "", "auto") else int(raw_k)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="k 应为 2~6 或 auto") from exc
+    method = str(body.get("method") or "kmeans")
+    with session_scope() as session:
+        try:
+            return run_cluster(session, day, k, method)
+        except ClusterUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/cluster")
+def get_cluster_result(date: str | None = None) -> dict:
+    from backend.app.services.cluster_service import get_cluster
+
+    day = _parse_day(date, default_latest=False) if date else None
+    payload = get_cluster(day)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="还没有聚类结果")
+    return payload
+
+
+@router.get("/cluster/features")
+def get_cluster_features(date: str | None = None, format: str = "json"):
+    import json as _json
+
+    from backend.app.services.cluster_service import build_dataset, dataset_to_csv
+
+    day = _parse_day(date, default_latest=True)
+    with session_scope() as session:
+        dataset = build_dataset(session, day)
+    if format == "csv":
+        body = dataset_to_csv(dataset).encode("utf-8-sig")
+        name, media = f"features_{day.isoformat()}.csv", "text/csv; charset=utf-8"
+    else:
+        body = (_json.dumps(dataset, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        name, media = f"features_{day.isoformat()}.json", "application/json"
+    return Response(content=body, media_type=media, headers={"Content-Disposition": content_disposition(name)})

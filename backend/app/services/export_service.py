@@ -244,8 +244,22 @@ def render_export(session, kind: str, day: date, code: str | None, top: int) -> 
             cells = [row["date"], row["next_date"], row["count"], row["limit_up"], row["limit_up_rate"], row["up3_rate"], row["avg_next_pct"], ",".join(row["hits"])]
             lines.append("\t".join(_cell(cell) for cell in cells))
         body.append("\n".join(lines))
+    elif kind == "cluster":
+        from backend.app.services.cluster_service import get_cluster
+
+        payload = get_cluster(day)
+        if payload is None:
+            raise LookupError("这一天还没有聚类结果")
+        body = _header(day, payload.get("pool_dates") or [], int(payload.get("sample_count") or 0))
+        body.append(f"方法\t{payload.get('method')}\tk\t{payload.get('k')}\t轮廓系数\t{payload.get('silhouette')}")
+        body.append(payload.get("disclaimer") or "")
+        for cluster in payload.get("clusters") or []:
+            body.append("")
+            body.append(f"组{cluster['id'] + 1}\t{cluster['name']}\t{cluster['size']} 只\t三日涨幅均值 {cluster.get('return_3d')}")
+            for member in cluster["members"]:
+                body.append(f"\t{member['code']}\t{member.get('name', '')}\t{member.get('limit_date', '')}")
     else:
-        raise ValueError("导出类型只能是 scan、similarity、pool、summary、ai_ranking、next_day_pool、backtest")
+        raise ValueError("导出类型只能是 scan、similarity、pool、summary、ai_ranking、next_day_pool、backtest、cluster")
     filename = f"{kind}_{day.isoformat()}{suffix}.txt"
     return "\n".join(body) + "\n", filename
 

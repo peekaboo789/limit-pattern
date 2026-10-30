@@ -147,6 +147,27 @@ flowchart LR
 
 周末和节假日没有新行情时，同步可能失败或写不进新的一天。已有的总结不会被删。
 
+### 聚类分析（本地运行）
+
+对最近 3 个交易日的涨停样本，用和相似度同一套涨停前三日向量（K 线形态、成交量、量比，标准化后）做 KMeans 或层次聚类，k 可选 2~6 或自动（按轮廓系数挑）。不含涨停当天，不看未来，分组不是涨停概率。
+
+scikit-learn 是可选依赖，Windows 绿色版 EXE 不打包它（体积保持约 90 MB），EXE 里打开聚类页会显示「scikit-learn 未安装」。在本地源码运行：
+
+```bat
+cd limit-pattern
+py -3.12 -m venv .venv
+.venv\Scripts\pip install -r backend\requirements.txt -r desktop\requirements.txt -r requirements-cluster.txt
+rem 离线：对导出的特征数据跑聚类
+.venv\Scripts\python -m backend.app.tools.cluster --input cluster-data\features.json --k auto --out cluster-result.json
+rem 从自己的库导出某天特征数据（JSON 或 CSV）
+.venv\Scripts\python -m backend.app.tools.export_features --date 2026-10-29 --out features.csv
+rem 启动程序（源码方式，聚类页可用）
+set LP_STATIC_DIR=%CD%\frontend\dist
+.venv\Scripts\python -m desktop
+```
+
+或者直接双击 `run_cluster_windows.bat`。接口：`GET /api/cluster/status`、`POST /api/cluster/run`（`date`、`k`=2~6 或 auto、`method`=kmeans / agglomerative，缺依赖时 503）、`GET /api/cluster?date=`、`GET /api/cluster/features?date=&format=json|csv`，导出类型 `cluster`。结果存在数据目录 `clusters/YYYY-MM-DD.json`。
+
 ## 开发路线图
 
 第一阶段是现在仓库里能双击或用源码跑起来的部分。后面的阶段按产品说明书归纳，这一版没有页面，也没有对应接口。
@@ -171,7 +192,7 @@ flowchart LR
 | ✅ | 11:30 冻结：交易日 11:30 存上午快照，午间和下午可选用它给 AI 榜单打分 |
 | ✅ | 交易日历：内置 2025-2027 休市安排（2027 为推算），数据目录 holidays.json 可覆盖；定时任务、监控开市判断、上一交易日都按日历 |
 | ✅ | 回测：相似度分档和 AI 前 20 榜单的下一交易日涨停率、冲 3% 率、平均涨幅，严格不看未来（受一周明细保留限制）|
-| ⏳ | 聚类：需要 scikit-learn，会让 EXE 明显变大，这一版不打包 |
+| ✅ | 聚类分析（本地运行）：KMeans / 层次聚类、PCA 散点、组中心形态图、导出 TXT 和特征数据；scikit-learn 可选，EXE 不打包 |
 | ✅ | 次日观察池：按相似度挑选并附分档历史发生率，不是单只股票的概率；可导出 TXT |
 | ⏳ | AI 深度分析：多条证据交给模型写结论，数字仍须能对回本地统计 |
 | ⏳ | 行业题材、首次封板时间：现有免费日线/快照接口拿不到可靠数据，暂不做；多个 AI 网关切换、Docker 镜像 |

@@ -1,5 +1,6 @@
 import { ApiError, formatDetail, request } from './http'
 import type {
+  ClusterResult,
   CalendarInfo,
   NextDayPool,
   RankingBacktest,
@@ -84,6 +85,13 @@ export const api = {
 
   generateAiRanking: (options: { date?: string; snapshot?: 'morning' } = {}) =>
     request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(options) }),
+
+  clusterStatus: () => request<{ available: boolean; message: string }>('/api/cluster/status'),
+
+  cluster: (date?: string) => request<ClusterResult>(`/api/cluster${query({ date })}`),
+
+  runCluster: (body: { date?: string; k: number | 'auto'; method: string }) =>
+    request<ClusterResult>('/api/cluster/run', { method: 'POST', body: JSON.stringify(body) }),
 
   calendar: (year?: number) => request<CalendarInfo>(`/api/calendar${query({ year })}`),
 
