@@ -48,11 +48,11 @@ function ensureSyncPoll(): void {
   }, 1000)
 }
 
-export async function startSync(): Promise<void> {
+export async function startSync(full = false): Promise<void> {
   session.startingSync = true
   session.syncError = ''
   try {
-    await api.startSync()
+    await api.startSync(full)
     await loadSync()
     ensureSyncPoll()
   } catch (error) {

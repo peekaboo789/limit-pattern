@@ -7,6 +7,8 @@ export interface Health {
   data_source?: string
   active_source?: string
   exports_dir?: string
+  stored_days?: number
+  earliest_date?: string | null
 }
 
 export interface Settings {

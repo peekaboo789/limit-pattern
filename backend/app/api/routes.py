@@ -108,6 +108,8 @@ def health() -> dict:
         "version": __version__,
         "data_date": days[-1].isoformat() if days else None,
         "data_source": settings["data_source"],
+        "stored_days": len(days),
+        "earliest_date": days[0].isoformat() if days else None,
         "active_source": settings.get("active_source") or "",
         "exports_dir": str(exports_dir()),
     }
@@ -124,6 +126,16 @@ def put_settings(body: dict) -> dict:
         return update_settings(body or {})
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/sync/full")
+def post_sync_full() -> dict:
+    """补全历史：重新下载整个保留窗口（即使今天已有数据），并补写缺失日期的统计版总结。"""
+    from backend.app.services.sync_service import start_sync, status as sync_status
+
+    already = bool(sync_status().get("running"))
+    task_id = start_sync(full=True)
+    return {"task_id": task_id, "already_running": already, "full": True}
 
 
 @router.post("/sync")
@@ -231,12 +243,13 @@ def pool() -> dict:
                 .order_by(DailyQuote.stock_code)
                 .all()
             )
-        for row in rows:
-            if not is_in_scope(row.stock_code):
-                continue
-            item = _limit_item(row, names, streaks.get(row.stock_code, 1))
-            item["limit_date"] = day.isoformat()
-            items.append(item)
+            # 必须在按日循环里面：以前缩进错了，只收了最后一天（今天）的涨停
+            for row in rows:
+                if not is_in_scope(row.stock_code):
+                    continue
+                item = _limit_item(row, names, streaks.get(row.stock_code, 1))
+                item["limit_date"] = day.isoformat()
+                items.append(item)
     return {"dates": [day.isoformat() for day in dates], "items": items}
 
 

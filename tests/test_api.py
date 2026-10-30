@@ -390,3 +390,35 @@ def test_kline_does_not_return_future_bars(client):
     assert bars[0]["pct_chg"] == 2.6667
     same_day = next(bar for bar in bars if bar["date"] == anchor_day)
     assert same_day["close"] == anchor_close
+
+
+def test_multi_day_sync_keeps_history_and_pool_lists_every_day(client):
+    """回归：同步 + 清理后应保留 ≥ 样本池天数；涨停池要列出每一天的涨停，而不只是最后一天。"""
+    days = weekdays(45)
+    limit_days = {5, 20, 35, 44}
+
+    def list_fn():
+        return [("600519", "贵州茅台"), ("000001", "平安银行")]
+
+    def kline_fn(code, start, end):
+        rows = _series(days, limit_on=limit_days if code == "600519" else set(), start=20 if code == "600519" else 8)
+        return [row for row in rows if start <= row["trade_date"] <= end] or rows
+
+    set_fetcher(list_fn, kline_fn)
+    assert run_sync_now()["progress"] == 100
+    purge_expired()
+    health = client.get("/api/health").json()
+    assert health["stored_days"] >= 30
+    assert health["earliest_date"] < health["data_date"]
+    pool = client.get("/api/pool").json()
+    assert len(pool["dates"]) == 30
+    dates = {item["limit_date"] for item in pool["items"]}
+    assert len(dates) >= 2, dates  # 以前只有最后一天
+    summaries = [item["date"] for item in client.get("/api/summaries").json()["items"]]
+    assert len(summaries) > 1
+    from backend.app.services import sync_service
+
+    run_sync_now_full = sync_service._FULL
+    run_sync_now_full.set()  # 补全历史：同步一轮后统计总结全部重写
+    assert run_sync_now()["progress"] == 100
+    assert not run_sync_now_full.is_set()

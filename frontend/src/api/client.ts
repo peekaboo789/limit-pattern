@@ -48,7 +48,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  startSync: () => request<SyncTask>('/api/sync', { method: 'POST' }),
+  startSync: (full = false) => request<SyncTask>(full ? '/api/sync/full' : '/api/sync', { method: 'POST' }),
 
   testAi: (body: { ai_base_url?: string; ai_model?: string; ai_api_key?: string; ai_thinking?: string }) =>
     request<{ ok: boolean; error?: string; reply?: string; endpoint: string; note?: string; latency_ms: number; thinking?: string }>(

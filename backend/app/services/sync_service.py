@@ -358,7 +358,12 @@ def run_sync_now() -> dict:
     return status()
 
 
-def start_sync() -> str:
+_FULL = threading.Event()
+
+
+def start_sync(full: bool = False) -> str:
+    if full:
+        _FULL.set()
     with _LOCK:
         if _STATE["running"]:
             return str(_STATE["task_id"])
@@ -547,8 +552,14 @@ def _run(task_id: str) -> None:
 
             if refresh_latest_summary() is not None:
                 summary_note = "，已写当日总结"
+            from backend.app.services.summary_service import backfill_summaries
+
+            filled = backfill_summaries(rewrite=_FULL.is_set())
+            if filled:
+                summary_note += f"，补写 {filled} 天统计总结"
         except Exception:
             summary_note = "，当日总结没有写成"
+        _FULL.clear()
         moment = datetime.now(SHANGHAI).isoformat(timespec="seconds")
         stamp("last_sync_at", moment)
         if used_sources:

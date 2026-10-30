@@ -330,6 +330,24 @@ def refresh_latest_summary() -> dict | None:
         return generate_summary(session, days[-1])
 
 
+def backfill_summaries(rewrite: bool = False) -> int:
+    """样本池里没有总结的日子补一份统计版（不调 AI，省钱省时）；最新一天由 refresh_latest_summary 写。"""
+    from backend.app.core.clock import today
+    from backend.app.core.config import sample_pool_days
+    from backend.app.core.database import session_scope
+    from backend.app.services.retention import quote_dates
+
+    count = 0
+    with session_scope() as session:
+        days = [d for d in quote_dates(session) if d <= today()][-sample_pool_days():-1]
+        for day in days:
+            if not rewrite and session.get(AiDailySummary, day) is not None:
+                continue
+            _save_summary(session, day, _statistics_payload(build_facts(session, day)))
+            count += 1
+    return count
+
+
 def ensure_daily_summary(day: date | None = None) -> dict | None:
     """没有这一天的总结才写。给收盘后的定时任务补漏。"""
     from backend.app.core.clock import today

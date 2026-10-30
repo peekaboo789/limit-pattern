@@ -73,6 +73,10 @@ async function syncNow() {
   await startSync()
 }
 
+async function syncFull() {
+  await startSync(true)
+}
+
 onMounted(async () => {
   if (!session.health) await loadHealth()
   date.value = session.health?.data_date ?? ''
@@ -122,6 +126,7 @@ watch(
       <button class="btn" type="button" :disabled="busy" @click="syncNow">
         {{ busy ? '同步中…' : '同步行情' }}
       </button>
+      <button class="btn btn-ghost" type="button" :disabled="busy" title="重新下载整个保留窗口的日线，并补写缺失日期的统计总结" @click="syncFull">补全历史</button>
       <button v-if="session.sync?.running" class="btn btn-ghost" type="button" :disabled="session.sync?.cancelling" @click="cancelSync">
         {{ session.sync?.cancelling ? '取消中…' : '取消同步' }}
       </button>
@@ -130,6 +135,9 @@ watch(
       <span v-if="syncDetail" class="muted">{{ syncDetail }}</span>
       <span v-if="sourceText" class="muted">数据源 {{ sourceText }}</span>
     </div>
+    <p class="muted" style="margin: 8px 0 0">
+      已存行情 {{ session.health?.stored_days ?? 0 }} 个交易日<template v-if="session.health?.earliest_date">（{{ session.health.earliest_date }} ~ {{ session.health.data_date }}）</template>
+    </p>
     <div class="progress" :class="{ running: session.sync?.running }" style="margin-top: 12px" role="progressbar" :aria-valuenow="progress">
       <i :style="{ '--w': `${progress}%` }" />
     </div>
