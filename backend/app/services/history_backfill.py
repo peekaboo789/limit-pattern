@@ -37,8 +37,51 @@ def _to_bar(day: date, row) -> Bar | None:
     )
 
 
+from collections import namedtuple
+from contextlib import contextmanager
+
+_Row = namedtuple("_Row", "open high low close pre_close volume amount turnover_rate")
+_COLS = ("open", "high", "low", "close", "pre_close", "volume", "amount", "turnover_rate")
+
+
+@contextmanager
+def bulk_bars(session, as_of: date):
+    """扫描全市场前一次性把 ≤as_of 的日线读进内存（两条查询），避免每只股票各查一次。"""
+    if session.info.get("lp_bulk") is not None:
+        yield
+        return
+    data: dict[str, dict[date, Bar]] = {}
+    for table in (CalcBar, DailyQuote):  # 正式行情后放，覆盖计算表
+        columns = [table.stock_code, table.trade_date] + [getattr(table, name) for name in _COLS]
+        for row in session.query(*columns).filter(table.trade_date <= as_of):
+            bar = _to_bar(row[1], _Row(*row[2:]))
+            if bar is not None:
+                data.setdefault(row[0], {})[row[1]] = bar
+    session.info["lp_bulk"] = (as_of, data)
+    try:
+        yield
+    finally:
+        session.info.pop("lp_bulk", None)
+
+
+def _forget_bulk(session, code: str) -> None:
+    bulk = session.info.get("lp_bulk")
+    if bulk is not None:
+        bulk[1].pop(code, None)
+
+
 def load_bars(session, code: str, as_of: date) -> list[Bar]:
     """正式行情优先。晚于 as_of 的一律不要。"""
+    bulk = session.info.get("lp_bulk")
+    if bulk is not None and as_of <= bulk[0] and code in bulk[1]:
+        merged_bulk = {d: b for d, b in bulk[1][code].items() if d <= as_of}
+        with _LOCK:
+            for (cached_code, cached_day), payload in _MEMORY.items():
+                if cached_code == code and cached_day <= as_of and cached_day not in merged_bulk:
+                    bar = _to_bar(cached_day, _DictRow(payload))
+                    if bar is not None:
+                        merged_bulk[cached_day] = bar
+        return [merged_bulk[day] for day in sorted(merged_bulk)]
     merged: dict[date, Bar] = {}
     calc_rows = (
         session.query(CalcBar)
@@ -127,6 +170,8 @@ def ensure_prior_bars(session, code: str, limit_date: date, as_of: date) -> str 
     prior = [bar for bar in load_bars(session, code, cap) if bar.trade_date < limit_date]
     if len(prior) >= WANTED_PRIOR_BARS or (len(prior) >= 3 and (code, limit_date) in _TRIED):
         return None
+    if session.info.get("lp_no_backfill"):
+        return None if len(prior) >= 3 else "回测时不联网补拉，涨停前K线不足"
     with _LOCK:
         _TRIED.add((code, limit_date))
     start = limit_date - timedelta(days=30)
@@ -147,6 +192,7 @@ def ensure_prior_bars(session, code: str, limit_date: date, as_of: date) -> str 
         if isinstance(day, date) and day < limit_date and day <= as_of:
             usable.append(item)
     _store(session, code, usable, as_of)
+    _forget_bulk(session, code)
     prior = [bar for bar in load_bars(session, code, cap) if bar.trade_date < limit_date]
     if len(prior) >= 3:
         return None

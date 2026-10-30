@@ -51,6 +51,8 @@ class DailyQuote(Base):
     __table_args__ = (
         UniqueConstraint("stock_code", "trade_date", name="uq_quote"),
         Index("ix_quote_date", "trade_date"),
+        Index("ix_quote_limit", "is_limit_up", "trade_date"),
+        Index("ix_quote_date_limit", "trade_date", "is_limit_up"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

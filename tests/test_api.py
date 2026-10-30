@@ -486,3 +486,42 @@ def test_full_sync_days_validation_and_retention_raise(client, monkeypatch):
         assert (_d(2026, 10, 30) - start).days >= 250  # 保留 250 生效
     finally:
         sync_service._FULL_DAYS["days"] = 0
+
+
+def _sina_bars(days, limit_on, start=10.0):
+    """新浪日线风格：没有 pre_close / 涨跌幅 / 换手 / 成交额。"""
+    bars, close = [], start
+    for index, day in enumerate(days):
+        pre = close
+        close = round(pre * 1.1, 2) if index in limit_on else round(pre * (1.01 if index % 2 else 0.99), 2)
+        bars.append({"trade_date": day, "open": pre, "high": max(pre, close), "low": min(pre, close) * 0.99,
+                     "close": close, "volume": 1_000_000.0 + index * 1000, "source": "sina"})
+    return bars
+
+
+def test_sina_bars_without_pre_close_feed_pool_scan_and_streaks(client):
+    import time as _time
+
+    days = weekdays(40)
+    stocks = [(f"60{i:04d}", f"股{i}") for i in range(60)]
+
+    def kline_fn(code, start, end):
+        n = int(code[2:])
+        limits = {35, 36} if n % 10 == 0 else ({20} if n % 7 == 0 else set())
+        return [b for b in _sina_bars(days, limits, start=8 + n % 5) if start <= b["trade_date"] <= end] or _sina_bars(days, limits)
+
+    set_fetcher(lambda: stocks, kline_fn)
+    assert run_sync_now()["progress"] == 100
+    started = _time.time()
+    pool = client.get("/api/pool").json()
+    assert _time.time() - started < 2.0
+    assert pool["items"], pool.get("empty_reason")
+    assert pool["counts"][days[35].isoformat()] == 6 and pool["counts"][days[36].isoformat()] == 6
+    streaks = {(i["code"], i["limit_date"]): i["consecutive_boards"] for i in pool["items"]}
+    assert streaks[("600000", days[36].isoformat())] == 2 and streaks[("600000", days[35].isoformat())] == 1
+    only = client.get("/api/pool", params={"date": days[36].isoformat()}).json()
+    assert {i["limit_date"] for i in only["items"]} == {days[36].isoformat()}
+    weekend = client.get("/api/pool", params={"date": "2026-06-13"}).json()
+    assert weekend["items"] == [] and "不是交易日" in weekend["empty_reason"]
+    scan = client.get("/api/scan", params={"date": days[-1].isoformat(), "top": 20}).json()
+    assert scan["pool_size"] > 0 and scan["items"]

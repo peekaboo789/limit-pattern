@@ -75,7 +75,7 @@ export const api = {
 
   limitups: (date?: string) => request<LimitUpsResponse>(`/api/limitups${query({ date })}`),
 
-  pool: () => request<PoolResponse>('/api/pool'),
+  pool: (date?: string) => request<PoolResponse>(`/api/pool${query({ date })}`, undefined, 60000),
 
   kline: (code: string, days = 60) =>
     request<KlineResponse>(`/api/kline${query({ code, days })}`),

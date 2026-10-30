@@ -103,6 +103,9 @@ export interface PoolItem extends LimitUpItem {
 export interface PoolResponse {
   dates: string[]
   items: PoolItem[]
+  counts?: Record<string, number>
+  latest?: string | null
+  empty_reason?: string
 }
 
 export interface KBar {

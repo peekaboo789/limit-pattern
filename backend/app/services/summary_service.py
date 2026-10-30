@@ -39,30 +39,30 @@ def _median(values: list[float]) -> float | None:
     return round((ordered[mid - 1] + ordered[mid]) / 2, 4)
 
 
+def streak_map(session) -> dict[tuple[str, date], int]:
+    """一次查询算出所有涨停记录的连板数，按会话缓存（数据变化时自动重算）。
+    以前每条涨停都单独扫一遍全表 distinct 日期，30 日 × 全市场会慢到超时。"""
+    from sqlalchemy import func
+
+    key = session.query(func.count(DailyQuote.id), func.max(DailyQuote.trade_date)).filter(DailyQuote.is_limit_up.is_(True)).one()
+    cache = session.info.get("lp_streaks")
+    if cache and cache[0] == tuple(key):
+        return cache[1]
+    days = [row[0] for row in session.query(DailyQuote.trade_date).distinct().order_by(DailyQuote.trade_date)]
+    index = {day: i for i, day in enumerate(days)}
+    by_code: dict[str, set[int]] = {}
+    for code, day in session.query(DailyQuote.stock_code, DailyQuote.trade_date).filter(DailyQuote.is_limit_up.is_(True)):
+        by_code.setdefault(code, set()).add(index[day])
+    result: dict[tuple[str, date], int] = {}
+    for code, owned in by_code.items():
+        for i in sorted(owned):
+            result[(code, days[i])] = result.get((code, days[i - 1]), 0) + 1 if i > 0 and (i - 1) in owned else 1
+    session.info["lp_streaks"] = (tuple(key), result)
+    return result
+
+
 def _streak(session, code: str, day: date) -> int:
-    rows = (
-        session.query(DailyQuote.trade_date)
-        .filter(DailyQuote.stock_code == code, DailyQuote.is_limit_up.is_(True), DailyQuote.trade_date <= day)
-        .all()
-    )
-    owned = {row[0] for row in rows}
-    days = [
-        row[0]
-        for row in session.query(DailyQuote.trade_date)
-        .filter(DailyQuote.trade_date <= day)
-        .distinct()
-        .order_by(DailyQuote.trade_date)
-    ]
-    if day not in owned:
-        return 0
-    index = days.index(day) if day in days else None
-    if index is None:
-        return 1
-    streak = 1
-    while index > 0 and days[index - 1] in owned:
-        streak += 1
-        index -= 1
-    return streak
+    return streak_map(session).get((code, day), 0)
 
 
 def _market_review_facts(session, day: date) -> tuple[dict, list[dict], list[dict]]:

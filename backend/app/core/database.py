@@ -66,6 +66,12 @@ def init_db() -> None:
     engine = get_engine()
     Base.metadata.create_all(engine)
     upgrade_existing_tables(engine)
+    with engine.begin() as conn:  # 老库 create_all 不会补索引
+        for sql in (
+            "CREATE INDEX IF NOT EXISTS ix_quote_limit ON daily_quotes (is_limit_up, trade_date)",
+            "CREATE INDEX IF NOT EXISTS ix_quote_date_limit ON daily_quotes (trade_date, is_limit_up)",
+        ):
+            conn.execute(text(sql))
 
 
 def upgrade_existing_tables(engine=None) -> list[str]:

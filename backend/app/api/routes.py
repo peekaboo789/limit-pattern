@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date as date_type
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
@@ -88,14 +89,9 @@ def _limit_item(row: DailyQuote, names: dict[str, str], streak: int) -> dict:
 
 
 def _streaks(session, day: date) -> dict[str, int]:
-    from backend.app.services.summary_service import _streak
+    from backend.app.services.summary_service import streak_map
 
-    rows = (
-        session.query(DailyQuote.stock_code)
-        .filter(DailyQuote.trade_date == day, DailyQuote.is_limit_up.is_(True))
-        .all()
-    )
-    return {code: _streak(session, code, day) for (code,) in rows}
+    return {code: n for (code, d), n in streak_map(session).items() if d == day}
 
 
 @router.get("/health")
@@ -247,31 +243,59 @@ def limitups(date: str | None = None) -> dict:
 
 
 @router.get("/pool")
-def pool() -> dict:
+def pool(date: str | None = None) -> dict:
+    """样本池涨停：一次按日期区间 + is_limit_up 的索引查询，连板数一次算好。
+    date 给定时只返回那一天；默认返回整池，counts 为每日家数。"""
+    from backend.app.core.calendar import is_trading_day
+    from backend.app.services.summary_service import streak_map
+
     with session_scope() as session:
         days = quote_dates(session)
         if not days:
-            return {"dates": [], "items": []}
+            return {"dates": [], "items": [], "counts": {}, "latest": None, "empty_reason": "还没有行情数据，请先在总览同步"}
         as_of = days[-1]
         dates = pool_dates(session, as_of)
-        names = {row.code: row.name for row in session.query(Stock)}
+        names = {row.code: row.name for row in session.query(Stock.code, Stock.name)}
+        streaks = streak_map(session)
+        rows = (
+            session.query(DailyQuote)
+            .filter(DailyQuote.trade_date >= dates[0], DailyQuote.trade_date <= dates[-1], DailyQuote.is_limit_up.is_(True))
+            .order_by(DailyQuote.trade_date, DailyQuote.stock_code)
+            .all()
+        )
         items = []
-        for day in dates:
-            streaks = _streaks(session, day)
-            rows = (
-                session.query(DailyQuote)
-                .filter(DailyQuote.trade_date == day, DailyQuote.is_limit_up.is_(True))
-                .order_by(DailyQuote.stock_code)
-                .all()
-            )
-            # 必须在按日循环里面：以前缩进错了，只收了最后一天（今天）的涨停
-            for row in rows:
-                if not is_in_scope(row.stock_code):
-                    continue
-                item = _limit_item(row, names, streaks.get(row.stock_code, 1))
-                item["limit_date"] = day.isoformat()
-                items.append(item)
-    return {"dates": [day.isoformat() for day in dates], "items": items}
+        counts = {d.isoformat(): 0 for d in dates}
+        for row in rows:
+            if not is_in_scope(row.stock_code):
+                continue
+            key = row.trade_date.isoformat()
+            counts[key] = counts.get(key, 0) + 1
+            if date and key != date:
+                continue
+            item = _limit_item(row, names, streaks.get((row.stock_code, row.trade_date), 1))
+            item["limit_date"] = key
+            items.append(item)
+    reason = ""
+    if date and not items:
+        try:
+            asked = date_type.fromisoformat(date)
+            if not is_trading_day(asked):
+                reason = f"{date} 不是交易日（周末或节假日休市）"
+            elif date not in counts:
+                reason = f"{date} 没有行情数据，可能还没同步或已超出样本池"
+            else:
+                reason = f"{date} 没有涨停股"
+        except ValueError:
+            reason = "日期格式不对"
+    elif not items:
+        reason = "样本池里一只涨停都没有：可能行情源没带昨收价、涨停没识别出来，请到总览点「补全历史」重算"
+    return {
+        "dates": [d.isoformat() for d in dates],
+        "items": items,
+        "counts": counts,
+        "latest": as_of.isoformat(),
+        "empty_reason": reason,
+    }
 
 
 def _pct_chg(close: float | None, pre_close: float | None) -> float | None:

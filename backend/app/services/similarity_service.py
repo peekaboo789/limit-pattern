@@ -10,7 +10,7 @@ from backend.app.algorithms.features import build_three_day_window
 from backend.app.algorithms.similarity import score_components
 from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import BOARD_LABELS, classify, is_in_scope
-from backend.app.services.history_backfill import ensure_prior_bars, load_bars
+from backend.app.services.history_backfill import bulk_bars, ensure_prior_bars, load_bars
 from backend.app.services.retention import quote_dates
 
 DISCLAIMER = "相似度不是涨停概率"
@@ -87,6 +87,11 @@ def _empty(code: str, name: str, dates: list[date], window: list[str] | None = N
 
 
 def similar_to(session, code: str, as_of: date, top: int) -> dict:
+    with bulk_bars(session, as_of):
+        return _similar_to(session, code, as_of, top)
+
+
+def _similar_to(session, code: str, as_of: date, top: int) -> dict:
     names = _names(session)
     dates, samples, skipped = _samples(session, as_of)
     window = build_three_day_window(load_bars(session, code, as_of), as_of, include_as_of_date=True)
@@ -128,6 +133,11 @@ def similar_to(session, code: str, as_of: date, top: int) -> dict:
 
 
 def scan_market(session, as_of: date, top: int, min_score: float) -> dict:
+    with bulk_bars(session, as_of):
+        return _scan_market(session, as_of, top, min_score)
+
+
+def _scan_market(session, as_of: date, top: int, min_score: float) -> dict:
     dates, samples, skipped = _samples(session, as_of)
     names = _names(session)
     base = {

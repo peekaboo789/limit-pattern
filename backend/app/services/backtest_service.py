@@ -63,8 +63,33 @@ def _add(stats: dict, outcome: dict | None) -> None:
         stats["pct_n"] += 1
 
 
+BACKTEST_DAYS = 10
+_CACHE: dict = {}
+
+
 def similarity_backtest(session, top: int = 50) -> dict:
+    """最近 10 个评估日；一次性读入日线、不联网补拉；结果按 (最新日, 行数, top) 缓存。"""
+    from sqlalchemy import func
+
+    from backend.app.services.history_backfill import bulk_bars
+
     days = [day for day in quote_dates(session)]
+    if not days:
+        return {"kind": "similarity", "top": top, "disclaimer": DISCLAIMER, "days": [], "bands": [_finish(_empty_band(l)) for _x, l in BANDS]}
+    key = (days[-1], session.query(func.count(DailyQuote.id)).scalar(), top)
+    if _CACHE.get("key") == key:
+        return _CACHE["value"]
+    session.info["lp_no_backfill"] = True
+    try:
+        with bulk_bars(session, days[-1]):
+            value = _similarity_backtest(session, days[-(BACKTEST_DAYS + 1):], top)
+    finally:
+        session.info.pop("lp_no_backfill", None)
+    _CACHE.update(key=key, value=value)
+    return value
+
+
+def _similarity_backtest(session, days: list, top: int) -> dict:
     bands = {label: _empty_band(label) for _low, label in BANDS}
     per_day = []
     for index in range(len(days) - 1):
@@ -125,7 +150,7 @@ def next_day_pool(session, day: date | None = None, top: int = 30) -> dict:
     if not days:
         return {"date": None, "items": [], "bands": [], "disclaimer": DISCLAIMER}
     day = day or days[-1]
-    history = similarity_backtest(session, top=max(top, 50))
+    history = similarity_backtest(session, top=50)
     rates = {band["band"]: band for band in history["bands"]}
     scan = scan_market(session, day, top, 0)
     items = []

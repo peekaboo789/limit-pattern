@@ -17,6 +17,8 @@ const keyword = ref('')
 const minBoards = ref(1)
 const loading = ref(false)
 const error = ref('')
+const emptyReason = ref('')
+const loaded = ref(false)
 
 const kinds = computed(() => [...new Set(items.value.map((item) => item.limit_type))])
 const exportParams = computed<ExportParams | null>(() => {
@@ -37,6 +39,15 @@ const filtered = computed(() => {
   })
 })
 
+const emptyText = computed(() => {
+  if (loading.value) return '加载中…'
+  if (!loaded.value) return error.value || '还没加载'
+  if (!dates.value.length) return emptyReason.value || '还没有行情数据，请先在总览同步'
+  if (!items.value.length) return emptyReason.value || '样本池里没有涨停'
+  if (day.value !== 'all' && !items.value.some((item) => item.limit_date === day.value)) return `${day.value} 没有涨停股`
+  return '这个筛选条件下没有涨停（试试把市场/形态/连板/关键字放宽）'
+})
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -44,6 +55,11 @@ async function load() {
     const pool = await api.pool()
     dates.value = pool.dates
     items.value = pool.items
+    emptyReason.value = pool.empty_reason || ''
+    // 默认看最近一个有数据的交易日；那天没涨停就看全部
+    const latest = pool.latest || pool.dates[pool.dates.length - 1]
+    day.value = latest && items.value.some((item) => item.limit_date === latest) ? latest : 'all'
+    loaded.value = true
   } catch (reason) {
     if (isAbort(reason)) return
     error.value = reason instanceof ApiError ? reason.detail : '涨停池加载失败'
@@ -125,7 +141,7 @@ onMounted(() => {
         <ExportButton :params="exportParams" />
       </div>
     </div>
-    <div v-if="!filtered.length" class="empty">这个筛选条件下没有涨停</div>
+    <div v-if="!filtered.length" class="empty">{{ emptyText }}</div>
     <div v-else class="table-wrap" style="max-height: calc(100vh - 280px)">
       <table>
         <thead>

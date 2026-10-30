@@ -34,9 +34,11 @@ def clusters_dir():
 
 
 def build_dataset(session, day: date) -> dict:
+    from backend.app.services.history_backfill import bulk_bars
     from backend.app.services.similarity_service import _names, _samples
 
-    dates, samples, skipped = _samples(session, day)
+    with bulk_bars(session, day):
+        dates, samples, skipped = _samples(session, day)
     names = _names(session)
     return {
         "format": "limit-pattern-features/1",
