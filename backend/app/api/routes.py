@@ -144,14 +144,14 @@ def export_file(
     top: int = Query(50, ge=1, le=500),
 ):
     kind = (type or "").strip().lower()
-    if kind not in {"scan", "similarity", "pool", "summary", "ai_ranking"}:
-        raise HTTPException(status_code=422, detail="导出类型只能是 scan、similarity、pool、summary、ai_ranking")
+    if kind not in {"scan", "similarity", "pool", "summary", "ai_ranking", "next_day_pool", "backtest"}:
+        raise HTTPException(status_code=422, detail="导出类型只能是 scan、similarity、pool、summary、ai_ranking、next_day_pool、backtest")
     day = _parse_day(date, default_latest=True)
     normalized = _code(code) if code else None
     if kind == "similarity" and not normalized:
         raise HTTPException(status_code=422, detail="导出相似度需要股票代码")
     with session_scope() as session:
-        if kind not in {"summary", "ai_ranking"} and day not in quote_dates(session):
+        if kind not in {"summary", "ai_ranking", "backtest"} and day not in quote_dates(session):
             raise HTTPException(status_code=404, detail="这一天没有行情")
         try:
             text, filename = render_export(session, kind, day, normalized, top)
@@ -328,10 +328,12 @@ def post_ai_ranking(body: dict | None = None) -> dict:
 
     if not ai_ready():
         raise HTTPException(status_code=409, detail="未配置AI接口，请先在设置里填写")
-    day = _parse_day((body or {}).get("date"), default_latest=True)
+    raw_day = (body or {}).get("date")
+    day = _parse_day(raw_day, default_latest=False) if raw_day else None
+    prefer = "morning" if (body or {}).get("snapshot") == "morning" else "auto"
     with session_scope() as session:
         try:
-            return generate_ranking(session, day, trigger="manual")
+            return generate_ranking(session, day, trigger="manual", prefer=prefer)
         except AiNotConfigured as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except AiFailed as exc:
@@ -376,3 +378,55 @@ def get_monitor_events(since: int = Query(0, ge=0)) -> dict:
 
     with session_scope() as session:
         return events(session, since)
+
+
+@router.get("/calendar")
+def get_calendar(year: int | None = None) -> dict:
+    from backend.app.core.calendar import calendar_info, is_trading_day, market_open, next_trading_day, previous_trading_day
+
+    day = today()
+    info = calendar_info(year or day.year)
+    info.update(
+        {
+            "today": day.isoformat(),
+            "today_is_trading_day": is_trading_day(day),
+            "market_open": market_open(),
+            "previous_trading_day": previous_trading_day(day).isoformat(),
+            "next_trading_day": next_trading_day(day).isoformat(),
+        }
+    )
+    return info
+
+
+@router.get("/snapshot/status")
+def get_snapshot_status() -> dict:
+    from backend.app.core.clock import now
+    from backend.app.services.intraday_service import load_morning_freeze, snapshot_kind
+
+    moment = now()
+    frozen = load_morning_freeze(moment.date())
+    return {
+        "kind_now": snapshot_kind(moment),
+        "morning_freeze": None if not frozen else {"taken_at": frozen["taken_at"], "count": len(frozen["rows"])},
+    }
+
+
+@router.get("/backtest")
+def get_backtest(kind: str = "similarity", top: int = Query(50, ge=5, le=200)) -> dict:
+    from backend.app.services.backtest_service import ranking_backtest, similarity_backtest
+
+    with session_scope() as session:
+        if kind == "ai_ranking":
+            return ranking_backtest(session)
+        if kind == "similarity":
+            return similarity_backtest(session, top)
+    raise HTTPException(status_code=422, detail="kind 只能是 similarity 或 ai_ranking")
+
+
+@router.get("/next-day-pool")
+def get_next_day_pool(date: str | None = None, top: int = Query(30, ge=5, le=100)) -> dict:
+    from backend.app.services.backtest_service import next_day_pool
+
+    day = _parse_day(date, default_latest=False) if date else None
+    with session_scope() as session:
+        return next_day_pool(session, day, top)

@@ -109,12 +109,31 @@ def _latest_day(session) -> date:
     return days[-1]
 
 
-def generate_ranking(session, day: date | None = None, *, chat=None, trigger: str = "manual") -> dict:
+def generate_ranking(
+    session,
+    day: date | None = None,
+    *,
+    chat=None,
+    trigger: str = "manual",
+    moment: datetime | None = None,
+    prefer: str = "auto",
+) -> dict:
+    """day 为空时用「此刻」：交易时段用盘中快照当临时日线。指定 day 时只用那天及以前的正式日线。"""
+    from backend.app.services.intraday_service import provisional_day
+
     if chat is None and not ai_ready():
         raise AiNotConfigured("未配置AI接口")
-    day = day or _latest_day(session)
-    if day > today():
-        raise ValueError("不能用未来的日期")
+    if day is not None:
+        if day > today():
+            raise ValueError("不能用未来的日期")
+        return _rank(session, day, chat, trigger, {"kind": "daily", "taken_at": None, "count": 0})
+    with provisional_day(session, moment, prefer) as (as_of, info):
+        if as_of is None:
+            raise LookupError("还没有行情")
+        return _rank(session, as_of, chat, trigger, info)
+
+
+def _rank(session, day: date, chat, trigger: str, snapshot: dict) -> dict:
     pool = candidates(session, day)
     items = pool["items"]
     if not items:
@@ -153,6 +172,7 @@ def generate_ranking(session, day: date | None = None, *, chat=None, trigger: st
         "trigger": trigger,
         "model": "" if chat is not None else str(read_settings_file().get("ai_model") or ""),
         "candidate_count": len(items),
+        "snapshot": snapshot,
         "pool_dates": pool["pool_dates"],
         "pool_size": pool["pool_size"],
         "disclaimer": DISCLAIMER,
@@ -195,15 +215,32 @@ def ranking_dates(session) -> list[str]:
 
 
 def previous_ranking(session, moment_day: date | None = None) -> dict | None:
-    """监控用：今天之前最近一个交易日的最终榜单（当天最后一次运行）。"""
+    """监控用：按交易日历取上一交易日的最终榜单（当天最后一次运行）。
+    上一交易日没有榜单时，退回到更早最近的一份，并在 payload 里标 stale。"""
+    from backend.app.core.calendar import previous_trading_day
+
     moment_day = moment_day or today()
+    target = previous_trading_day(moment_day)
+    exact = (
+        session.query(AiRanking)
+        .filter(AiRanking.trade_date == target)
+        .order_by(AiRanking.id.desc())
+        .first()
+    )
+    if exact is not None:
+        return dict(exact.payload)
     row = (
         session.query(AiRanking)
-        .filter(AiRanking.trade_date < moment_day)
+        .filter(AiRanking.trade_date < target)
         .order_by(AiRanking.trade_date.desc(), AiRanking.id.desc())
         .first()
     )
-    return None if row is None else dict(row.payload)
+    if row is None:
+        return None
+    payload = dict(row.payload)
+    payload["stale"] = True
+    payload["expected_date"] = target.isoformat()
+    return payload
 
 
 def scheduled_ranking(trigger: str = "schedule") -> dict | None:
@@ -212,7 +249,10 @@ def scheduled_ranking(trigger: str = "schedule") -> dict | None:
     if not ai_ready():
         logger.info("没配 AI，跳过定时榜单")
         return None
-    if today().weekday() >= 5:
+    from backend.app.core.calendar import is_trading_day
+
+    if not is_trading_day(today()):
+        logger.info("今天休市，跳过定时榜单")
         return None
     try:
         with session_scope() as session:

@@ -47,9 +47,9 @@ def level_for(pct: float | None) -> str:
 
 
 def market_open(moment: datetime | None = None) -> bool:
-    moment = moment or now()
-    moment = moment.astimezone(SHANGHAI) if moment.tzinfo else moment.replace(tzinfo=SHANGHAI)
-    return moment.weekday() < 5 and in_session(moment)
+    from backend.app.core.calendar import market_open as calendar_open
+
+    return calendar_open(moment or now())
 
 
 def _spot_chain() -> list[str]:

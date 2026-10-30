@@ -48,6 +48,15 @@ def _safe_ranking() -> None:
         logger.exception("定时 AI 榜单失败")
 
 
+def _safe_freeze() -> None:
+    try:
+        from backend.app.services.intraday_service import save_morning_freeze
+
+        save_morning_freeze()
+    except Exception:
+        logger.exception("11:30 冻结快照失败")
+
+
 def start_scheduler() -> None:
     global _SCHEDULER
     if os.environ.get("LP_SCHEDULER", "1") == "0":
@@ -61,6 +70,7 @@ def start_scheduler() -> None:
     scheduler.add_job(_safe_sync, "cron", hour=17, minute=10, id="daily-sync")
     scheduler.add_job(_safe_purge, "cron", hour=17, minute=40, id="daily-purge")
     scheduler.add_job(_safe_summary, "cron", hour=18, minute=10, id="daily-summary")
+    scheduler.add_job(_safe_freeze, "cron", day_of_week="mon-fri", hour=11, minute=30, second=20, id="morning-freeze")
     scheduler.add_job(_safe_ranking, "cron", day_of_week="mon-fri", hour=14, minute=50, id="ai-ranking-1450")
     scheduler.add_job(_safe_ranking, "cron", day_of_week="mon-fri", hour=15, minute=10, id="ai-ranking-1510")
     scheduler.start()

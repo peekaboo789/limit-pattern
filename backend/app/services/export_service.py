@@ -211,8 +211,41 @@ def render_export(session, kind: str, day: date, code: str | None, top: int) -> 
             ]
             lines.append("\t".join(_cell(cell) for cell in cells))
         body.append("\n".join(lines))
+    elif kind == "next_day_pool":
+        from backend.app.services.backtest_service import next_day_pool
+
+        payload = next_day_pool(session, day, top)
+        pool = payload.get("pool_dates") or []
+        body = _header(day, pool, len(payload["items"]))
+        body.append(payload["disclaimer"])
+        body.append("")
+        lines = ["\t".join(["排名", "代码", "名称", "相似度", "分档", "分档样本", "分档历史涨停率%", "分档历史冲3%率%"])]
+        for index, item in enumerate(payload["items"], start=1):
+            cells = [index, item["code"], item["name"], item["score"], item["band"], item["band_samples"], item["band_limit_up_rate"], item["band_up3_rate"]]
+            lines.append("\t".join(_cell(cell) for cell in cells))
+        body.append("\n".join(lines))
+    elif kind == "backtest":
+        from backend.app.services.backtest_service import ranking_backtest, similarity_backtest
+
+        sim = similarity_backtest(session, top)
+        ai = ranking_backtest(session)
+        body = _header(day, [], 0)
+        body.append(sim["disclaimer"])
+        body.append("")
+        body.append("相似度分档（评估日扫描前 %s，看下一交易日）" % top)
+        lines = ["\t".join(["分档", "样本", "涨停", "涨停率%", "冲3%率%", "次日平均涨幅%"])]
+        for band in sim["bands"]:
+            lines.append("\t".join(_cell(band[key]) for key in ("band", "count", "limit_up", "limit_up_rate", "up3_rate", "avg_next_pct")))
+        body.append("\n".join(lines))
+        body.append("")
+        body.append("AI 前 20 榜单（看下一交易日）")
+        lines = ["\t".join(["榜单日", "次日", "样本", "涨停", "涨停率%", "冲3%率%", "次日平均涨幅%", "涨停代码"])]
+        for row in ai["days"]:
+            cells = [row["date"], row["next_date"], row["count"], row["limit_up"], row["limit_up_rate"], row["up3_rate"], row["avg_next_pct"], ",".join(row["hits"])]
+            lines.append("\t".join(_cell(cell) for cell in cells))
+        body.append("\n".join(lines))
     else:
-        raise ValueError("导出类型只能是 scan、similarity、pool、summary、ai_ranking")
+        raise ValueError("导出类型只能是 scan、similarity、pool、summary、ai_ranking、next_day_pool、backtest")
     filename = f"{kind}_{day.isoformat()}{suffix}.txt"
     return "\n".join(body) + "\n", filename
 

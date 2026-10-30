@@ -69,6 +69,11 @@ def create_app() -> FastAPI:
         from backend.app.services.retention import purge_excluded_boards
 
         purge_excluded_boards()
+        from backend.app.core.database import session_scope
+        from backend.app.services.intraday_service import purge_provisional
+
+        with session_scope() as session:
+            purge_provisional(session)
         start_scheduler()
         bootstrap_if_empty()
         yield
