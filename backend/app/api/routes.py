@@ -128,7 +128,27 @@ def put_settings(body: dict) -> dict:
 
 @router.post("/sync")
 def post_sync() -> dict:
-    return {"task_id": start_sync()}
+    already = bool(status().get("running"))
+    task_id = start_sync()
+    return {"task_id": task_id, "already_running": already}
+
+
+@router.post("/sync/cancel")
+def post_sync_cancel() -> dict:
+    from backend.app.services.sync_service import cancel_sync
+
+    return cancel_sync()
+
+
+@router.post("/sources/test")
+def post_sources_test(body: dict | None = None) -> dict:
+    from backend.app.providers.router import SOURCE_ORDER, test_sources
+
+    names = (body or {}).get("sources") or list(SOURCE_ORDER)
+    names = [name for name in names if name in SOURCE_ORDER]
+    timeout = float((body or {}).get("timeout") or 8.0)
+    timeout = max(2.0, min(timeout, 20.0))
+    return {"timeout": timeout, "results": test_sources(timeout, names)}
 
 
 @router.get("/sync/status")

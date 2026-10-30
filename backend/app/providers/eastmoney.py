@@ -63,8 +63,10 @@ def parse_kline(payload: dict) -> list[dict]:
     return bars
 
 
-def _client() -> httpx.Client:
-    return httpx.Client(timeout=20.0, headers=HEADERS, follow_redirects=True)
+def _client():
+    from backend.app.providers.http import shared_client
+
+    return shared_client("eastmoney", HEADERS)
 
 
 def fetch_stock_list() -> list[tuple[str, str]]:

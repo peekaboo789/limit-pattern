@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { api, ApiError } from '@/api/client'
-import type { Settings } from '@/api/types'
+import type { Settings, SourceTestResult } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { sourceLabel } from '@/utils/labels'
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -32,6 +32,41 @@ function apply(settings: Settings) {
   form.ai_model = settings.ai_model
   form.data_source = settings.data_source || 'auto'
   form.ai_api_key = ''
+}
+
+const switching = ref(false)
+const switchHint = ref('')
+const testing = ref(false)
+const testResults = ref<SourceTestResult[]>([])
+
+async function chooseSource(item: string) {
+  if (switching.value) return
+  const previous = form.data_source
+  form.data_source = item
+  switching.value = true
+  switchHint.value = ''
+  try {
+    const next = await api.saveSettings({ data_source: item })
+    meta.value = next
+    switchHint.value = `已切换到「${sourceLabel(item)}」并保存，正在进行的同步会对后面的股票立即改用它。`
+  } catch (reason) {
+    form.data_source = previous
+    switchHint.value = reason instanceof ApiError ? reason.detail : '切换失败'
+  } finally {
+    switching.value = false
+  }
+}
+
+async function testSources() {
+  testing.value = true
+  try {
+    testResults.value = (await api.testSources(8)).results
+  } catch (reason) {
+    testResults.value = []
+    switchHint.value = reason instanceof ApiError ? reason.detail : '测试失败'
+  } finally {
+    testing.value = false
+  }
 }
 
 async function load() {
@@ -123,13 +158,29 @@ onMounted(() => {
             type="button"
             role="radio"
             :aria-checked="form.data_source === item"
-            @click="form.data_source = item"
+            :disabled="switching"
+            @click="chooseSource(item)"
           >
             {{ sourceLabel(item) }}
           </button>
         </div>
-        <span class="hint">当前选择「{{ sourceLabel(form.data_source) }}」。实际连上的源是「{{ sourceLabel(meta?.active_source || '') || '还没有' }}」。</span>
+        <span class="hint">当前选择「{{ sourceLabel(form.data_source) }}」。实际连上的源是「{{ sourceLabel(meta?.active_source || '') || '还没有' }}」。点选即生效并保存。</span>
+        <span v-if="switchHint" class="hint">{{ switchHint }}</span>
       </label>
+      <div class="toolbar" style="margin-top: 8px">
+        <button class="btn btn-ghost" type="button" :disabled="testing" @click="testSources">{{ testing ? '测试中（最多 8 秒）…' : '测试数据源' }}</button>
+      </div>
+      <table v-if="testResults.length" style="margin-top: 8px">
+        <thead><tr><th>数据源</th><th>状态</th><th class="right">耗时</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr v-for="row in testResults" :key="row.source">
+            <td>{{ sourceLabel(row.source) }}</td>
+            <td :class="row.ok ? 'down' : 'up'">{{ row.ok ? '可用' : '不可用' }}</td>
+            <td class="right">{{ row.latency_ms }} ms</td>
+            <td class="wrap muted">{{ row.ok ? `最新 ${row.latest}` : row.error }}</td>
+          </tr>
+        </tbody>
+      </table>
       <div class="readonly">
         <span class="muted">纳入范围</span>
         <b>{{ meta?.market_scope || '上证主板、深证主板、创业板' }}</b>

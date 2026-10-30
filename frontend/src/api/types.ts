@@ -52,6 +52,19 @@ export interface SyncStatus {
   failed?: number
   data_source?: string
   active_source?: string
+  current_source?: string
+  errors?: string[]
+  sources?: Record<string, { failures: number; paused: boolean }>
+  cancelling?: boolean
+}
+
+export interface SourceTestResult {
+  source: string
+  ok: boolean
+  latency_ms: number
+  bars?: number
+  latest?: string
+  error: string
 }
 
 export interface LimitUpItem {

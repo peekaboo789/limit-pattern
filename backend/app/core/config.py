@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import os
 import sys
 from pathlib import Path
@@ -119,14 +121,43 @@ def default_settings() -> dict:
     }
 
 
+_SETTINGS_LOCK = threading.RLock()
+_SETTINGS_CACHE: dict = {"path": None, "mtime": None, "payload": None}
+
+
+def _load_settings_payload(path: Path):
+    """Windows 上写文件和读文件撞在一起会 PermissionError，重试几次；仍失败就用上一次读到的内容，
+    不能悄悄退回默认值（那会让数据源看起来「切换不生效」）。"""
+    with _SETTINGS_LOCK:
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        cache = _SETTINGS_CACHE
+        if cache["path"] == str(path) and cache["mtime"] == mtime and cache["payload"] is not None:
+            return cache["payload"]
+        last_error = None
+        for attempt in range(5):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                cache.update(path=str(path), mtime=mtime, payload=payload)
+                return payload
+            except (OSError, json.JSONDecodeError) as exc:
+                last_error = exc
+                time.sleep(0.02 * (attempt + 1))
+        if cache["path"] == str(path) and cache["payload"] is not None:
+            return cache["payload"]
+        _ = last_error
+        return None
+
+
 def read_settings_file() -> dict:
     path = settings_path()
     merged = default_settings()
     if not path.exists():
         return merged
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    payload = _load_settings_payload(path)
+    if payload is None:
         return merged
     if isinstance(payload, dict):
         for key in merged:
@@ -139,10 +170,23 @@ def write_settings_file(payload: dict) -> None:
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    tmp = path.with_suffix(".json.tmp")
-    with tmp.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(text)
-    tmp.replace(path)
+    with _SETTINGS_LOCK:
+        tmp = path.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        for attempt in range(10):
+            try:
+                tmp.replace(path)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        _SETTINGS_CACHE.update(path=str(path), mtime=mtime, payload=json.loads(text))
 
 
 def excluded_boards() -> set[str]:
@@ -193,6 +237,11 @@ def _market_scope_text() -> str:
 
 
 def update_settings(changes: dict) -> dict:
+    with _SETTINGS_LOCK:
+        return _update_settings(changes)
+
+
+def _update_settings(changes: dict) -> dict:
     current = read_settings_file()
     if "compare_window_trading_days" in changes and changes["compare_window_trading_days"] not in (
         None,
@@ -221,9 +270,10 @@ def update_settings(changes: dict) -> dict:
 
 
 def stamp(field: str, value: str) -> None:
-    current = read_settings_file()
-    current[field] = value
-    write_settings_file(current)
+    with _SETTINGS_LOCK:
+        current = read_settings_file()
+        current[field] = value
+        write_settings_file(current)
 
 
 def retention_days() -> int:

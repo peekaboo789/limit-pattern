@@ -1,5 +1,6 @@
 import { ApiError, formatDetail, request } from './http'
 import type {
+  SourceTestResult,
   ClusterResult,
   CalendarInfo,
   NextDayPool,
@@ -48,6 +49,14 @@ export const api = {
     }),
 
   startSync: () => request<SyncTask>('/api/sync', { method: 'POST' }),
+
+  cancelSync: () => request<SyncStatus>('/api/sync/cancel', { method: 'POST' }),
+
+  testSources: (timeout = 8) =>
+    request<{ timeout: number; results: SourceTestResult[] }>('/api/sources/test', {
+      method: 'POST',
+      body: JSON.stringify({ timeout }),
+    }),
 
   syncStatus: () => request<SyncStatus>('/api/sync/status'),
 

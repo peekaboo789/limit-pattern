@@ -136,8 +136,10 @@ def parse_rank(payload: dict) -> list[dict]:
     return found
 
 
-def _client() -> httpx.Client:
-    return httpx.Client(timeout=12.0, headers=HEADERS, follow_redirects=True)
+def _client():
+    from backend.app.providers.http import shared_client
+
+    return shared_client("tencent", HEADERS)
 
 
 def fetch_stock_list() -> list[tuple[str, str]]:

@@ -5,7 +5,7 @@ import Disclaimer from '@/components/Disclaimer.vue'
 import ExportButton from '@/components/ExportButton.vue'
 import type { ExportParams } from '@/api/types'
 import type { PoolResponse, ScanResponse } from '@/api/types'
-import { loadHealth, session, startSync } from '@/stores/session'
+import { cancelSync, loadHealth, session, startSync } from '@/stores/session'
 import { boardLabel, clampPercent, formatDateTime, formatScore, scoreColor, shortDate } from '@/utils/format'
 import { sourceLabel } from '@/utils/labels'
 import { computed, onMounted, ref, watch } from 'vue'
@@ -89,6 +89,12 @@ watch(
   },
 )
 
+const pausedSources = computed(() =>
+  Object.entries(session.sync?.sources ?? {})
+    .filter(([, info]) => info.paused)
+    .map(([name]) => name),
+)
+
 watch(
   () => session.sync?.running,
   (running, previous) => {
@@ -116,7 +122,11 @@ watch(
       <button class="btn" type="button" :disabled="busy" @click="syncNow">
         {{ busy ? '同步中…' : '同步行情' }}
       </button>
+      <button v-if="session.sync?.running" class="btn btn-ghost" type="button" :disabled="session.sync?.cancelling" @click="cancelSync">
+        {{ session.sync?.cancelling ? '取消中…' : '取消同步' }}
+      </button>
       <span class="muted">{{ session.sync?.message || '等待同步' }}</span>
+      <span v-if="session.sync?.running && session.sync?.current_source" class="muted">当前源 {{ sourceLabel(session.sync.current_source) }}</span>
       <span v-if="syncDetail" class="muted">{{ syncDetail }}</span>
       <span v-if="sourceText" class="muted">数据源 {{ sourceText }}</span>
     </div>
@@ -124,6 +134,11 @@ watch(
       <i :style="{ '--w': `${progress}%` }" />
     </div>
     <p v-if="session.syncError" class="alert" style="margin-top: 10px">{{ session.syncError }}</p>
+    <p v-if="pausedSources.length" class="muted" style="margin-top: 8px">暂停使用（连续失败，约 90 秒后再试）：{{ pausedSources.map(sourceLabel).join('、') }}</p>
+    <details v-if="session.sync?.errors?.length" style="margin-top: 8px">
+      <summary class="muted">最近错误 {{ session.sync.errors.length }} 条</summary>
+      <div v-for="(line, index) in session.sync.errors" :key="index" class="muted mono" style="font-size: 12px">{{ line }}</div>
+    </details>
   </section>
 
   <AiOverviewCard />

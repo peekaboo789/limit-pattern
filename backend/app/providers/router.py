@@ -109,3 +109,54 @@ def cross_check(active: str, rows: list[dict]) -> list[str]:
     for note in notes:
         logger.warning(note)
     return notes
+
+
+def test_sources(deadline: float = 8.0, names: list[str] | None = None) -> list[dict]:
+    """并行快速检查每个源：拉一只沪市、一只深市的近 10 天日线。每个源有总时限，不会卡住接口。"""
+    import threading
+    import time as _time
+
+    names = names or list(SOURCE_ORDER)
+    results: dict[str, dict] = {}
+    end = today()
+    start = end - timedelta(days=12)
+
+    def check(name: str) -> None:
+        began = _time.monotonic()
+        try:
+            module = _module(name)
+            counts = []
+            for code in ("600000", "000001"):
+                bars = module.fetch_kline(code, start, end)
+                if not bars:
+                    raise ProviderError(f"{code} 没有返回日线")
+                counts.append(len(bars))
+            results[name] = {
+                "source": name,
+                "ok": True,
+                "latency_ms": int((_time.monotonic() - began) * 1000),
+                "bars": sum(counts),
+                "latest": str(max(bar["trade_date"] for bar in bars)),
+                "error": "",
+            }
+        except Exception as exc:  # noqa: BLE001
+            results[name] = {
+                "source": name,
+                "ok": False,
+                "latency_ms": int((_time.monotonic() - began) * 1000),
+                "error": str(exc)[:200] or exc.__class__.__name__,
+            }
+
+    threads = [threading.Thread(target=check, args=(name,), daemon=True) for name in names]
+    for thread in threads:
+        thread.start()
+    stop = _time.monotonic() + deadline
+    for thread in threads:
+        thread.join(max(0.0, stop - _time.monotonic()))
+    out = []
+    for name in names:
+        out.append(
+            results.get(name)
+            or {"source": name, "ok": False, "latency_ms": int(deadline * 1000), "error": f"{int(deadline)} 秒内没有响应"}
+        )
+    return out

@@ -48,3 +48,12 @@
 - `GET /api/backtest?kind=similarity&top=50`：分档 `bands[]` 与逐日 `days[]`（`limit_up_rate`、`up3_rate`、`avg_next_pct`）。`kind=ai_ranking` 看每份榜单的下一交易日。
 - `GET /api/next-day-pool?top=30&date=`：观察池，每只附 `band`、`band_samples`、`band_limit_up_rate`、`band_up3_rate`。
 - 导出类型新增 `next_day_pool`、`backtest`。
+
+## 同步任务和数据源测试
+
+- `POST /api/sync`：`{"task_id", "already_running"}`。同一时间只跑一个同步，重复请求返回正在跑的任务。
+- `GET /api/sync/status`：另有 `current_source`、`errors`（最近 10 条）、`sources`（每个源的连续失败次数、是否暂停）、`cancelling`，`phase` 可能是 cancelled / failed。
+- `POST /api/sync/cancel`：取消正在跑的同步（已写入的保留）。
+- `POST /api/sources/test`，正文 `{"timeout": 8}`：并行检查三个源（各拉 600000、000001 近 10 天日线），每个源最多等 timeout 秒，返回 `ok`、`latency_ms`、`latest`、`error`。
+- 换源 `PUT /api/settings {"data_source": ...}` 立即保存；同步进行中，后续股票按新设置取源。
+- 每次请求连接 5 秒、读取 10 秒超时；单个源连续失败 3 次（或返回 5xx/429）暂停 90 秒；拉股票列表总时限 45 秒；8 个并发。

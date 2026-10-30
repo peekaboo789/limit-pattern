@@ -23,6 +23,7 @@ def _make_engine():
     connect_args = {}
     if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+        connect_args["timeout"] = 30
     engine = create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
     if url.startswith("sqlite"):
 
@@ -31,6 +32,7 @@ def _make_engine():
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 

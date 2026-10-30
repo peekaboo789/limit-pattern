@@ -126,8 +126,10 @@ def parse_list(payload) -> list[dict]:
     return found
 
 
-def _client() -> httpx.Client:
-    return httpx.Client(timeout=12.0, headers=HEADERS, follow_redirects=True)
+def _client():
+    from backend.app.providers.http import shared_client
+
+    return shared_client("sina", HEADERS)
 
 
 def list_page(payload, page_size: int = 100) -> tuple[list[tuple[str, str]], bool]:

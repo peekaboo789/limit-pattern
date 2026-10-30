@@ -30,13 +30,21 @@ _STATE = {
     "saved": 0,
     "failed": 0,
     "active_source": "",
+    "current_source": "",
 }
 _PACE_LOCK = threading.Lock()
 _NEXT_FETCH = 0.0
 _FETCH_GAP = 1 / 16
 _SICK_LOCK = threading.Lock()
-_SICK: set[str] = set()
+# 熔断：每个源记连续失败次数和冷却截止时间。超时、断连、5xx 都算失败。
+_BREAKER: dict[str, dict] = {}
+BREAKER_THRESHOLD = 3
+BREAKER_COOLDOWN = 90.0
 _CHAIN: list[str] = []
+_CHAIN_KEY: str = ""
+_CANCEL = threading.Event()
+_ERRORS: list[str] = []
+MAX_WORKERS = 8
 
 
 def status() -> dict:
@@ -52,6 +60,13 @@ def status() -> dict:
     settings = read_settings_file()
     snapshot["data_source"] = settings.get("data_source") or "auto"
     snapshot["active_source"] = snapshot.get("active_source") or settings.get("active_source") or ""
+    with _SICK_LOCK:
+        snapshot["errors"] = list(_ERRORS[-10:])
+        snapshot["sources"] = {
+            name: {"failures": info["fails"], "paused": info["until"] > time.monotonic()}
+            for name, info in _BREAKER.items()
+        }
+    snapshot["cancelling"] = _CANCEL.is_set() and snapshot["running"]
     return snapshot
 
 
@@ -112,10 +127,18 @@ def _pace() -> None:
 
 
 def _clear_source_health() -> None:
-    global _CHAIN
+    global _CHAIN, _CHAIN_KEY
     with _SICK_LOCK:
-        _SICK.clear()
+        _BREAKER.clear()
+        _ERRORS.clear()
     _CHAIN = []
+    _CHAIN_KEY = ""
+
+
+def _note_error(text: str) -> None:
+    with _SICK_LOCK:
+        _ERRORS.append(text[:200])
+        del _ERRORS[:-50]
 
 
 def is_source_outage(exc: BaseException) -> bool:
@@ -132,47 +155,100 @@ def is_source_outage(exc: BaseException) -> bool:
 
 def _mark_sick(name: str) -> None:
     with _SICK_LOCK:
-        _SICK.add(name)
+        info = _BREAKER.setdefault(name, {"fails": 0, "until": 0.0})
+        info["fails"] = max(info["fails"], BREAKER_THRESHOLD)
+        info["until"] = time.monotonic() + BREAKER_COOLDOWN
+
+
+def _record_failure(name: str, exc: BaseException) -> bool:
+    """记一次失败。连续失败到阈值或明显是服务端故障就熔断。返回是否刚熔断。"""
+    with _SICK_LOCK:
+        info = _BREAKER.setdefault(name, {"fails": 0, "until": 0.0})
+        info["fails"] += 1
+        tripped = is_source_outage(exc) or info["fails"] >= BREAKER_THRESHOLD
+        if tripped and info["until"] <= time.monotonic():
+            info["until"] = time.monotonic() + BREAKER_COOLDOWN
+            return True
+    return False
+
+
+def _record_success(name: str) -> None:
+    with _SICK_LOCK:
+        info = _BREAKER.get(name)
+        if info is not None:
+            info["fails"] = 0
+            info["until"] = 0.0
 
 
 def _is_sick(name: str) -> bool:
     with _SICK_LOCK:
-        return name in _SICK
+        info = _BREAKER.get(name)
+        return bool(info and info["until"] > time.monotonic())
+
+
+def cancel_sync() -> dict:
+    with _LOCK:
+        running = bool(_STATE["running"])
+    if running:
+        _CANCEL.set()
+        _set(message="正在取消同步…")
+    return status()
 
 
 def _source_chain() -> list[str]:
     if _OVERRIDE:
         return []
-    if _CHAIN:
-        return list(_CHAIN)
+    global _CHAIN, _CHAIN_KEY
     from backend.app.providers.router import source_chain
 
-    configured = str(read_settings_file().get("data_source") or "auto")
-    active = str(read_settings_file().get("active_source") or "")
-    return source_chain(configured, active.split(",")[0] if active else "")
+    settings = read_settings_file()
+    configured = str(settings.get("data_source") or "auto")
+    if _CHAIN and _CHAIN_KEY == configured:
+        return list(_CHAIN)
+    # 同步途中换了源：立刻按新设置重排，后面的股票用新源
+    active = str(settings.get("active_source") or "")
+    first = active.split(",")[0] if active else ""
+    try:
+        chain = source_chain(configured, first if configured == "auto" else "")
+    except ValueError:
+        chain = source_chain("auto", first)
+    if _CHAIN_KEY and _CHAIN_KEY != configured:
+        logger.info("同步途中数据源改成 %s，后面的股票按 %s 拉", configured, chain)
+    _CHAIN, _CHAIN_KEY = chain, configured
+    return list(chain)
 
 
 def fetch_from_chain(code: str, start: date, end: date, chain: list[str] | None = None) -> tuple[str, list[dict]]:
     """逐只换源。某个源一旦 5xx 或限流，后面的股票不再用它。"""
     sources = list(chain or _source_chain())
+    healthy = [name for name in sources if not _is_sick(name)]
+    if not healthy and sources:
+        # 全部熔断：只试冷却最快结束的那一个，不在每只股票上把所有源轮一遍
+        with _SICK_LOCK:
+            healthy = [min(sources, key=lambda name: _BREAKER.get(name, {}).get("until", 0.0))]
     last: Exception | None = None
-    for name in sources:
-        if _is_sick(name):
-            continue
+    for name in healthy:
+        if _CANCEL.is_set():
+            raise SyncCancelled()
         try:
             _pace()
             bars = _kline_of(name)(code, start, end)
+            _record_success(name)
             return name, list(bars or [])
         except Exception as exc:
             last = exc
-            if is_source_outage(exc):
-                _mark_sick(name)
-                logger.warning("数据源 %s 返回异常，剩余股票改用下一个源：%s", name, exc)
+            if _record_failure(name, exc):
+                logger.warning("数据源 %s 连续失败，暂停 %ss，改用下一个源：%s", name, int(BREAKER_COOLDOWN), exc)
+                _note_error(f"{name} 暂停：{exc}")
             else:
                 logger.info("数据源 %s 拉取 %s 失败：%s", name, code, exc)
     if last is not None:
         raise last
     return "", []
+
+
+class SyncCancelled(RuntimeError):
+    pass
 
 
 def average_price(bar: dict) -> float | None:
@@ -205,12 +281,14 @@ def fill_missing_fields(
         for name in sources:
             if not need_amount and not need_turnover:
                 break
+            if _CANCEL.is_set():
+                break
             try:
                 _pace()
                 extra = _kline_of(name)(code, start, end) or []
+                _record_success(name)
             except Exception as exc:
-                if is_source_outage(exc):
-                    _mark_sick(name)
+                _record_failure(name, exc)
                 continue
             by_day = {item.get("trade_date"): item for item in extra}
             for bar in bars:
@@ -248,6 +326,8 @@ def fetch_kline_retry(code: str, start: date, end: date) -> list[dict]:
             return fill_missing_fields(code, bars, _source, chain)
     last: Exception | None = None
     for attempt in range(3):
+        if _CANCEL.is_set():
+            raise SyncCancelled()
         try:
             _pace()
             return _FETCH_KLINE(code, start, end)
@@ -260,6 +340,7 @@ def fetch_kline_retry(code: str, start: date, end: date) -> list[dict]:
 
 def run_sync_now() -> dict:
     """给测试和手动补数用：在当前线程跑完一轮。"""
+    _CANCEL.clear()
     with _LOCK:
         task_id = uuid.uuid4().hex[:12]
         _STATE.update(running=True, progress=0, message="开始同步", task_id=task_id)
@@ -272,7 +353,8 @@ def start_sync() -> str:
         if _STATE["running"]:
             return str(_STATE["task_id"])
         task_id = uuid.uuid4().hex[:12]
-        _STATE.update(running=True, progress=0, message="开始同步", task_id=task_id)
+        _CANCEL.clear()
+        _STATE.update(running=True, progress=0, message="开始同步", task_id=task_id, phase="list", done=0, total=0, saved=0, failed=0)
     thread = threading.Thread(target=_run, args=(task_id,), name="lp-sync", daemon=True)
     thread.start()
     return task_id
@@ -307,7 +389,7 @@ def _set(**values) -> None:
 
 
 def _run(task_id: str) -> None:
-    global _CHAIN
+    global _CHAIN, _CHAIN_KEY
     _clear_source_health()
     try:
         from backend.app.providers.router import normalize_source, order_for, probe, source_chain
@@ -322,9 +404,11 @@ def _run(task_id: str) -> None:
             active = ""
             errors: list[str] = []
             for name in order_for(configured):
+                if _CANCEL.is_set():
+                    raise SyncCancelled()
                 try:
                     _set(message=f"正在尝试数据源 {name}")
-                    stocks = probe(name)
+                    stocks = _probe_with_deadline(probe, name)
                     active = name
                     global _FETCH_KLINE
                     _FETCH_KLINE = _kline_of(name)
@@ -332,11 +416,13 @@ def _run(task_id: str) -> None:
                 except Exception as exc:
                     logger.warning("数据源 %s 不可用：%s", name, exc)
                     errors.append(f"{name}：{exc}")
+                    _note_error(f"{name} 不可用：{exc}")
             if not active or stocks is None:
                 raise RuntimeError("行情源都不可用：" + "；".join(errors))
         stamp("active_source", active)
         if not _OVERRIDE:
             _CHAIN = source_chain(configured, active)
+            _CHAIN_KEY = configured
         stocks = [(code, name) for code, name in stocks if keep_code(code)]
         _set(active_source=active, message=f"使用数据源 {active}，正在下载股票列表")
         end = today()
@@ -360,17 +446,32 @@ def _run(task_id: str) -> None:
 
         def _one(item: tuple[str, str]):
             code, name = item
+            if _CANCEL.is_set():
+                raise SyncCancelled()
             bars = fetch_kline_retry(code, start, end)
             return code, name, bars
 
-        with ThreadPoolExecutor(max_workers=12) as pool:
+        cancelled = False
+        pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+        try:
             futures = [pool.submit(_one, item) for item in stocks]
             for future in as_completed(futures):
+                if _CANCEL.is_set() and not cancelled:
+                    cancelled = True
+                    for pending in futures:
+                        pending.cancel()
+                if future.cancelled():
+                    continue
                 done += 1
                 try:
                     code, name, bars = future.result()
-                except Exception:
+                except SyncCancelled:
+                    done -= 1
+                    continue
+                except Exception as exc:
                     failed += 1
+                    if failed <= 20 or failed % 100 == 0:
+                        _note_error(f"{item_code(future, futures, stocks)} 失败：{exc}")
                 else:
                     if bars:
                         source_name = str(bars[0].get("source") or primary or active)
@@ -383,7 +484,9 @@ def _run(task_id: str) -> None:
                     else:
                         failed += 1
                 progress = 8 + int(80 * done / max(total, 1))
+                chain_now = next((name for name in _CHAIN if not _is_sick(name)), _CHAIN[0] if _CHAIN else active)
                 _set(
+                    current_source=chain_now,
                     progress=progress,
                     phase="kline",
                     done=done,
@@ -392,6 +495,19 @@ def _run(task_id: str) -> None:
                     failed=failed,
                     message=f"正在下载日线 {done}/{total}，已写入 {saved} 只，失败 {failed} 只",
                 )
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+        if cancelled or _CANCEL.is_set():
+            _set(
+                running=False,
+                phase="cancelled",
+                done=done,
+                total=total,
+                saved=saved,
+                failed=failed,
+                message=f"同步已取消：已写入 {saved} 只，失败 {failed} 只",
+            )
+            return
         _set(progress=92, phase="cleanup", message="正在清理过期明细")
         purge_expired()
         _refresh_limit_counts()
@@ -427,8 +543,48 @@ def _run(task_id: str) -> None:
             active_source=read_settings_file().get("active_source") or active,
             message=f"同步完成：写入 {saved} 只，失败 {failed} 只{switch_note}{summary_note}",
         )
+    except SyncCancelled:
+        _set(running=False, phase="cancelled", message="同步已取消")
     except Exception as exc:
-        _set(running=False, progress=0, message=str(exc) or "同步失败")
+        _note_error(str(exc))
+        _set(running=False, progress=0, phase="failed", message=str(exc) or "同步失败")
+    finally:
+        _CANCEL.clear()
+
+
+def item_code(future, futures, stocks) -> str:
+    try:
+        return stocks[futures.index(future)][0]
+    except (ValueError, IndexError):
+        return "?"
+
+
+PROBE_DEADLINE = 45.0
+
+
+def _probe_with_deadline(probe, name: str):
+    """探测（拉股票列表）有总时限。超时就当这个源不可用，换下一个。"""
+    result: dict = {}
+
+    def target():
+        try:
+            result["value"] = probe(name)
+        except Exception as exc:  # noqa: BLE001
+            result["error"] = exc
+
+    thread = threading.Thread(target=target, name=f"lp-probe-{name}", daemon=True)
+    thread.start()
+    waited = 0.0
+    while thread.is_alive() and waited < PROBE_DEADLINE:
+        if _CANCEL.is_set():
+            raise SyncCancelled()
+        thread.join(0.25)
+        waited += 0.25
+    if thread.is_alive():
+        raise TimeoutError(f"{name} 股票列表 {int(PROBE_DEADLINE)} 秒没有返回")
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
 
 
 def _save_stock(code: str, name: str, bars: list[dict], source: str = "eastmoney") -> None:

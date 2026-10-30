@@ -45,7 +45,7 @@ function ensureSyncPoll(): void {
         void loadHealth()
       }
     })
-  }, 700)
+  }, 1000)
 }
 
 export async function startSync(): Promise<void> {
@@ -65,4 +65,13 @@ export async function startSync(): Promise<void> {
 export async function initSession(): Promise<void> {
   await Promise.all([loadHealth(), loadSync()])
   if (session.sync?.running) ensureSyncPoll()
+}
+
+export async function cancelSync(): Promise<void> {
+  try {
+    session.sync = await api.cancelSync()
+    ensureSyncPoll()
+  } catch (error) {
+    session.syncError = error instanceof ApiError ? error.detail : '取消失败'
+  }
 }
