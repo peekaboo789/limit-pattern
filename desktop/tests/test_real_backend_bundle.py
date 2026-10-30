@@ -33,4 +33,10 @@ def test_hiddenimports_cover_backend_providers_and_scheduler():
     assert missing == []
     for name in ("numpy", "httpx", "apscheduler.schedulers.background", "sqlalchemy.dialects.sqlite"):
         assert name in hidden, name
-    assert "sklearn" in built["excludes"]
+    import os
+
+    if os.environ.get("LP_WITH_CLUSTER") == "1":
+        assert "sklearn" not in built["excludes"]
+        assert "sklearn.cluster" in hidden
+    else:
+        assert "sklearn" in built["excludes"]
