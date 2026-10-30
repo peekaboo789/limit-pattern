@@ -29,7 +29,7 @@ def test_metrics_no_future_and_fields():
     bars = _bars()
     m = stock_metrics(bars, 30)
     assert m["limit_count"] == 2 and m["streak"] == 0 and m["last_limit"] == bars[31].trade_date.isoformat()
-    assert len(m["recent"]) == 8 and m["ma"][20]["dev"] is not None and 0 <= m["pos20"] <= 1
+    assert len(m["recent"]) == 5 and m["ma"][20]["dev"] is not None and 0 <= m["pos20"] <= 1
     early = stock_metrics(bars[:31], 30)
     assert early["limit_count"] == 1 and early["streak"] == 1  # 只看到评估日为止
     line = stock_line({"code": "600000", "name": "示例", "score": 88, "shape_score": 80, "volume_score": 70, "volume_pct_score": 60,

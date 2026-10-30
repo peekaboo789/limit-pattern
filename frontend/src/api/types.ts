@@ -24,6 +24,9 @@ export interface Settings {
   ai_model: string
   ai_api_key_set: boolean
   ai_thinking?: string
+  ai_timeout_seconds?: number
+  ai_batch_size?: number
+  ai_parallel?: number
   data_source: string
   data_source_options?: string[]
   active_source?: string
@@ -237,6 +240,8 @@ export interface AiRanking {
   pool_dates: string[]
   pool_size: number
   pool_days?: number
+  batches?: { total: number; failed: number; split: number; batch_size: number }
+  unscored_count?: number
   skipped_count?: number
   limitup_count?: number
   disclaimer: string

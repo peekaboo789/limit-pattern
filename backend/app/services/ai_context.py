@@ -10,7 +10,7 @@ from datetime import date
 from backend.app.models.tables import DailyQuote
 from backend.app.providers.markets import is_in_scope
 
-RECENT_BARS = 8
+RECENT_BARS = 5
 LOOKBACK = 70
 
 LEGEND = (

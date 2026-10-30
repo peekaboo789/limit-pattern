@@ -24,6 +24,10 @@ class AiFailed(RuntimeError):
     pass
 
 
+class AiTimeout(AiFailed):
+    """读取超时（流式时是连续多少秒没有任何数据块，或整批超过总上限）。"""
+
+
 def normalize_endpoint(base_url: str) -> tuple[str, str]:
     """返回 (实际调用的 chat/completions 地址, 给用户的提示)。"""
     url = (base_url or "").strip().rstrip("/")
@@ -111,7 +115,8 @@ def describe_error(exc: BaseException, endpoint: str, read_timeout: float, proxy
 
 
 THINKING_MODES = ("auto", "on", "off")
-THINKING_READ_TIMEOUT = 300.0
+THINKING_READ_TIMEOUT = 300.0  # 非流式且开启思考时的整段读取上限
+TOTAL_CAP = 600.0  # 流式时每次调用的总时长上限
 _TRANSPORT = None  # 测试用：注入 httpx.MockTransport
 
 
@@ -139,12 +144,16 @@ def _save_learned(url: str, model: str, thinking, stream: bool) -> None:
         pass
 
 
-def parse_stream(lines) -> str:
-    """SSE 流：只收 delta.content，跳过 reasoning_content（思考过程）。"""
+def parse_stream(lines, deadline: float | None = None, total: float = TOTAL_CAP) -> str:
+    """SSE 流：只收 delta.content，跳过 reasoning_content（思考过程）。
+    每个数据块（含思考增量）都算"有动静"，空闲超时由 httpx 的 read 超时按块计算；deadline 是整次调用的总上限。"""
     import json as _json
+    import time as _time
 
     parts: list[str] = []
     for raw in lines:
+        if deadline is not None and _time.monotonic() > deadline:
+            raise AiTimeout(f"总时长超时：{int(total)} 秒内模型还没写完，已自动拆小批次重试；仍失败可换更快的模型或调小每批股票数")
         line = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
         line = line.strip()
         if not line.startswith("data:"):
@@ -163,12 +172,25 @@ def parse_stream(lines) -> str:
     return "".join(parts)
 
 
+def _no_content_type(response) -> bool:
+    """没有 content-type 时偷看不了正文，默认按 SSE 处理。"""
+    return not response.headers.get("content-type")
+
+
 def _content(payload: dict) -> str:
     message = payload["choices"][0]["message"]
     return str(message.get("content") or "")
 
 
-def chat(system: str, prompt: str, *, settings: dict, read_timeout: float = 120.0, max_tokens: int | None = None) -> str:
+def chat(
+    system: str,
+    prompt: str,
+    *,
+    settings: dict,
+    read_timeout: float | None = None,
+    max_tokens: int | None = None,
+    total_timeout: float | None = None,
+) -> str:
     """唯一的 AI 调用入口：测试按钮、每日总结、AI 排名都走这里。"""
     url = str(settings.get("ai_base_url") or "")
     key = str(settings.get("ai_api_key") or "")
@@ -185,9 +207,15 @@ def chat(system: str, prompt: str, *, settings: dict, read_timeout: float = 120.
         thinking = False
     else:
         thinking = learned.get("thinking")  # None = 不发送该参数
-    stream = bool(learned.get("stream")) or (thinking is True and dashscope)
+    from backend.app.core.config import ai_int
+
+    idle = float(read_timeout or ai_int(settings, "ai_timeout_seconds"))
+    total = float(total_timeout or max(TOTAL_CAP, idle))
+    # 思考模式或阿里云一律流式：超时按"多少秒没有新数据块"算，长时间思考只要还在吐思考增量就不会被掐断
+    stream = bool(learned.get("stream")) or thinking is True or dashscope or mode == "on"
 
     import os
+    import time as _time
 
     env_proxy = any(os.environ.get(name) for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY"))
     proxy = None if env_proxy or _TRANSPORT is not None else system_proxy(endpoint)
@@ -205,7 +233,7 @@ def chat(system: str, prompt: str, *, settings: dict, read_timeout: float = 120.
             body["enable_thinking"] = thinking
         if stream:
             body["stream"] = True
-        effective_read = max(read_timeout, THINKING_READ_TIMEOUT) if thinking else read_timeout
+        effective_read = idle if stream else (max(idle, THINKING_READ_TIMEOUT) if thinking else idle)
         timeout = httpx.Timeout(connect=CONNECT_TIMEOUT, read=effective_read, write=30.0, pool=10.0)
         kwargs: dict = {"timeout": timeout, "trust_env": _TRANSPORT is None}
         if _TRANSPORT is not None:
@@ -220,13 +248,22 @@ def chat(system: str, prompt: str, *, settings: dict, read_timeout: float = 120.
                         if response.status_code >= 400:
                             response.read()
                             status, text = response.status_code, response.text
+                        elif "event-stream" not in response.headers.get("content-type", "") and not _no_content_type(response):
+                            response.read()  # 服务端忽略了 stream，按普通 JSON 读
+                            status, text = 200, response.text
+                            content = _content(response.json())
                         else:
-                            content = parse_stream(response.iter_lines())
+                            content = parse_stream(response.iter_lines(), _time.monotonic() + total, total)
                             status, text = 200, None
                 else:
                     response = client.post(endpoint, headers=headers, json=body)
                     status, text = response.status_code, response.text
                     content = None
+        except httpx.TimeoutException as exc:
+            message = describe_error(exc, endpoint, effective_read, proxy)
+            if stream and isinstance(exc, httpx.ReadTimeout):
+                message = f"读取超时：连续 {int(effective_read)} 秒没有收到任何数据（含思考过程），可换更快的模型、调大 AI 超时或调小每批股票数（调用地址 {endpoint}）"
+            raise AiTimeout(message) from exc
         except (httpx.HTTPError, ssl.SSLError) as exc:
             raise AiFailed(describe_error(exc, endpoint, effective_read, proxy)) from exc
 
@@ -241,7 +278,7 @@ def chat(system: str, prompt: str, *, settings: dict, read_timeout: float = 120.
                     new = not thinking if thinking is not None else True
                 if new != thinking:
                     thinking = new
-                    stream = bool(learned.get("stream")) or (thinking is True and dashscope)
+                    stream = stream or thinking is True
                     adjusted = True
                     continue
             if "stream" in lower and not stream:
@@ -269,7 +306,7 @@ def test_ai(settings: dict) -> dict:
     endpoint, note = normalize_endpoint(str(settings.get("ai_base_url") or ""))
     began = time.monotonic()
     try:
-        reply = chat("你是测试助手。", "只回复：连接成功", settings=settings, read_timeout=60.0, max_tokens=None)
+        reply = chat("你是测试助手。", "只回复：连接成功", settings=settings, max_tokens=None)
     except AiNotConfigured as exc:
         return {"ok": False, "error": str(exc), "endpoint": endpoint, "note": note, "latency_ms": 0}
     except AiFailed as exc:

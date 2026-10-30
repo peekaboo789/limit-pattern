@@ -194,7 +194,7 @@ SUMMARY_SYSTEM = (
 )
 
 
-def call_chat(prompt: str, system: str | None = None, timeout: float = 90.0) -> str:
+def call_chat(prompt: str, system: str | None = None, timeout: float | None = None) -> str:
     from backend.app.core.ai_client import chat
 
     return chat(

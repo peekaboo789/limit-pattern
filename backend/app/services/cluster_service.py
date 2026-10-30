@@ -175,7 +175,7 @@ def interpret_clusters(result: dict, chat=None) -> dict:
         lines.append(f"id={c['id']} 规则标签={c['name']} 样本数={c['size']} 三日累计涨跌={c.get('return_3d')} | {rows}")
     prompt = "\n".join(lines)
     try:
-        text = chat(prompt) if chat is not None else call_chat(prompt, system=INTERPRET_SYSTEM, timeout=120.0)
+        text = chat(prompt) if chat is not None else call_chat(prompt, system=INTERPRET_SYSTEM)
         payload = _extract_json(text) or {}
         by_id = {int(item.get("id")): str(item.get("text") or "").strip()[:80] for item in payload.get("items") or [] if "id" in item}
     except (AiFailed, AiNotConfigured, ValueError, TypeError) as exc:

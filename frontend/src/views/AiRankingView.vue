@@ -70,7 +70,11 @@ async function generate(snapshot?: 'morning') {
   const timer = window.setInterval(async () => {
     try {
       const p = await api.aiRankingProgress()
-      if (p.total) progressText.value = `AI 打分 ${p.done}/${p.total} 批` + (p.failed ? `（${p.failed} 批失败）` : '')
+      if (p.total)
+        progressText.value =
+          `AI 打分 ${p.done}/${p.total} 批（每批 ${p.batch_size ?? 10} 只，已评 ${p.scored ?? 0} 只）` +
+          (p.split ? `，${p.split} 批超时已拆半重试` : '') +
+          (p.failed ? `，${p.failed} 批失败` : '')
     } catch {
       /* 忽略 */
     }
@@ -122,6 +126,10 @@ onMounted(async () => {
         <template v-if="ranking.snapshot"> · 行情：{{ snapshotLabel[ranking.snapshot.kind] ?? ranking.snapshot.kind }}<template v-if="ranking.snapshot.taken_at && ranking.snapshot.kind !== 'daily'"> {{ ranking.snapshot.taken_at.slice(11, 16) }}</template><template v-if="ranking.snapshot.volume_estimated"> · 成交量按已过 {{ ranking.snapshot.elapsed_minutes }} 分钟换算成全天（估）</template></template>
       </span>
     </div>
+    <p v-if="ranking?.unscored_count" class="alert">
+      有 {{ ranking.unscored_count }} 只没拿到 AI 评分（{{ ranking.batches?.failed ?? 0 }} 批失败），已保留其余结果。
+      <button class="btn btn-ghost" type="button" :disabled="generating" @click="generate()">重新生成</button>
+    </p>
     <p v-if="ranking && isOld" class="alert">
       这份榜单是用旧样本池生成的（{{ ranking.pool_dates.length }} 个交易日，{{ ranking.pool_size }} 条），当前设置是近 {{ poolDays }} 个交易日。
       <button class="btn btn-ghost" type="button" :disabled="generating" @click="generate()">用当前样本池重新生成</button>

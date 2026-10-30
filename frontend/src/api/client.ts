@@ -110,10 +110,10 @@ export const api = {
   aiRankingDates: () => request<{ dates: string[] }>('/api/ai-ranking/dates'),
 
   generateAiRanking: (options: { date?: string; snapshot?: 'morning' } = {}) =>
-    request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(options) }, 900000),
+    request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(options) }, 3600000),
 
   aiRankingProgress: () =>
-    request<{ running: boolean; done: number; total: number; failed: number }>('/api/ai-ranking/progress', {}, 5000),
+    request<{ running: boolean; done: number; total: number; failed: number; split?: number; scored?: number; batch_size?: number }>('/api/ai-ranking/progress', {}, 5000),
 
   clusterStatus: () => request<{ available: boolean; message: string }>('/api/cluster/status'),
 

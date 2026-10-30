@@ -89,9 +89,9 @@ def candidates(session, day: date, limit: int = CANDIDATES) -> dict:
     return payload
 
 
-BATCH_SIZE = 20
+BATCH_SIZE = 10  # 默认值；实际以设置 ai_batch_size / ai_parallel 为准
 PARALLEL = 3
-PROGRESS: dict = {"running": False, "done": 0, "total": 0, "failed": 0}
+PROGRESS: dict = {"running": False, "done": 0, "total": 0, "failed": 0, "split": 0, "scored": 0, "batch_size": BATCH_SIZE}
 
 
 def progress() -> dict:
@@ -99,7 +99,7 @@ def progress() -> dict:
 
 
 def _prompt(day: date, items: list[dict], market: str = "") -> str:
-    """市场环境一行 + 字段说明 + 每只一行。"""
+    """市场环境只写一次 + 字段说明 + 每只一行。"""
     from backend.app.services.ai_context import LEGEND, stock_line
 
     lines = [f"评估日 {day.isoformat()}，候选 {len(items)} 只。", market or "市场环境：-", LEGEND]
@@ -108,29 +108,60 @@ def _prompt(day: date, items: list[dict], market: str = "") -> str:
 
 
 def _score_batches(day: date, items: list[dict], chat, market: str = "") -> dict[str, dict]:
-    """每批 20 只、最多 3 批并发；某一批失败时其余批照常，全部失败才报错。"""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    """默认每批 10 只、3 批并发；某批超时就对半拆开各重试一次；失败的批不影响其他批，已评出的结果保留。"""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
-    batches = [items[i : i + BATCH_SIZE] for i in range(0, len(items), BATCH_SIZE)]
-    PROGRESS.update(running=True, done=0, total=len(batches), failed=0)
+    from backend.app.core.ai_client import AiTimeout
+    from backend.app.core.config import ai_int
 
-    def run(batch: list[dict]) -> dict[str, dict]:
-        prompt = _prompt(day, batch, market)
-        text = chat(prompt) if chat is not None else call_chat(prompt, system=SYSTEM_PROMPT, timeout=150.0)
-        return _parse_scores(text)
-
+    size = ai_int(None, "ai_batch_size")
+    parallel = ai_int(None, "ai_parallel")
+    batches = [items[i : i + size] for i in range(0, len(items), size)]
+    lock = threading.Lock()
     scores: dict[str, dict] = {}
     errors: list[str] = []
-    try:
-        with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
-            futures = [pool.submit(run, batch) for batch in batches]
-            for future in as_completed(futures):
-                try:
-                    scores.update(future.result())
-                except (AiFailed, AiNotConfigured) as exc:
-                    errors.append(str(exc))
-                    PROGRESS["failed"] += 1
+    PROGRESS.update(running=True, done=0, total=len(batches), failed=0, split=0, scored=0, batch_size=size)
+
+    def ask(batch: list[dict]) -> dict[str, dict]:
+        prompt = _prompt(day, batch, market)
+        text = chat(prompt) if chat is not None else call_chat(prompt, system=SYSTEM_PROMPT)
+        return _parse_scores(text)
+
+    def keep(result: dict[str, dict]) -> None:
+        with lock:
+            scores.update(result)
+            PROGRESS["scored"] = len(scores)
+
+    def fail(exc: Exception) -> None:
+        with lock:
+            errors.append(str(exc))
+            PROGRESS["failed"] += 1
+
+    def run(batch: list[dict]) -> None:
+        try:
+            keep(ask(batch))
+        except AiTimeout as exc:
+            if len(batch) < 2:
+                fail(exc)
+            else:
+                with lock:
+                    PROGRESS["split"] += 1
+                half = (len(batch) + 1) // 2
+                for part in (batch[:half], batch[half:]):  # 拆半只重试一次，不再继续拆
+                    try:
+                        keep(ask(part))
+                    except (AiFailed, AiNotConfigured) as inner:
+                        fail(inner)
+        except (AiFailed, AiNotConfigured) as exc:
+            fail(exc)
+        finally:
+            with lock:
                 PROGRESS["done"] += 1
+
+    try:
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
+            list(pool.map(run, batches))
     finally:
         PROGRESS["running"] = False
     if not scores:
@@ -272,6 +303,8 @@ def _rank(session, day: date, chat, trigger: str, snapshot: dict) -> dict:
         "pool_dates": pool["pool_dates"],
         "pool_size": pool["pool_size"],
         "pool_days": len(pool["pool_dates"]),
+        "batches": {k: PROGRESS.get(k) for k in ("total", "failed", "split", "batch_size")},
+        "unscored_count": sum(1 for item in items if item["code"] not in scores),
         "skipped_count": len(pool.get("skipped") or []),
         "limitup_count": pool["pool_size"] + len(pool.get("skipped") or []),
         "disclaimer": DISCLAIMER,

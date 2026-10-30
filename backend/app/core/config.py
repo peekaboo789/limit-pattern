@@ -123,6 +123,9 @@ def default_settings() -> dict:
         "active_source": "",
         "ai_thinking": "auto",
         "ai_thinking_learned": {},
+        "ai_timeout_seconds": 120,
+        "ai_batch_size": 10,
+        "ai_parallel": 3,
         "excluded_boards": ["star"],
         "last_sync_at": None,
         "last_cleanup_at": None,
@@ -268,6 +271,9 @@ def public_settings() -> dict:
         "ai_model": model,
         "ai_api_key_set": bool(key),
         "ai_thinking": str(raw.get("ai_thinking") or "auto"),
+        "ai_timeout_seconds": ai_int(raw, "ai_timeout_seconds"),
+        "ai_batch_size": ai_int(raw, "ai_batch_size"),
+        "ai_parallel": ai_int(raw, "ai_parallel"),
         "data_source": str(raw.get("data_source") or "auto"),
         "data_source_options": ["auto", "eastmoney", "tencent", "sina"],
         "active_source": str(raw.get("active_source") or ""),
@@ -330,6 +336,15 @@ def _update_settings(changes: dict) -> dict:
         if mode not in ("auto", "on", "off"):
             raise ValueError("深度思考只能是 auto / on / off")
         current["ai_thinking"] = mode
+    for name, (low, high, _default) in AI_LIMITS.items():
+        if changes.get(name) is not None:
+            try:
+                value = int(changes[name])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{AI_LABELS[name]}必须是整数") from exc
+            if not low <= value <= high:
+                raise ValueError(f"{AI_LABELS[name]}只能在 {low}–{high} 之间")
+            current[name] = value
     if changes.get("ai_api_key"):
         current["ai_api_key"] = str(changes["ai_api_key"]).strip()
     if "data_source" in changes and changes["data_source"] is not None:
@@ -376,3 +391,17 @@ def retention_days() -> int:
         days = DETAIL_RETENTION_TRADING_DAYS
     days = max(RETENTION_MIN_TRADING_DAYS, min(RETENTION_MAX_TRADING_DAYS, days))
     return max(days, min_retention_days())
+
+
+AI_LIMITS = {"ai_timeout_seconds": (30, 600, 120), "ai_batch_size": (1, 40, 10), "ai_parallel": (1, 8, 3)}
+AI_LABELS = {"ai_timeout_seconds": "AI 超时（秒）", "ai_batch_size": "AI 每批股票数", "ai_parallel": "AI 并发批数"}
+
+
+def ai_int(raw: dict | None, name: str) -> int:
+    """AI 超时 / 每批数量 / 并发：读不到或越界就用默认值。"""
+    low, high, default = AI_LIMITS[name]
+    try:
+        value = int((raw if raw is not None else read_settings_file()).get(name) or default)
+    except (TypeError, ValueError):
+        return default
+    return value if low <= value <= high else default

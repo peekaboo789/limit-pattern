@@ -17,6 +17,9 @@ const form = reactive({
   data_source: 'auto',
   ai_api_key: '',
   ai_thinking: 'auto',
+  ai_timeout_seconds: 120,
+  ai_batch_size: 10,
+  ai_parallel: 3,
 })
 const sourceOptions = computed(() =>
   meta.value?.data_source_options?.length ? meta.value.data_source_options : FALLBACK_SOURCES,
@@ -36,6 +39,9 @@ function apply(settings: Settings) {
   form.data_source = settings.data_source || 'auto'
   form.ai_api_key = ''
   form.ai_thinking = settings.ai_thinking || 'auto'
+  form.ai_timeout_seconds = settings.ai_timeout_seconds ?? 120
+  form.ai_batch_size = settings.ai_batch_size ?? 10
+  form.ai_parallel = settings.ai_parallel ?? 3
 }
 
 const switching = ref(false)
@@ -144,6 +150,9 @@ async function save() {
       data_source: string
       ai_api_key?: string
       ai_thinking: string
+      ai_timeout_seconds: number
+      ai_batch_size: number
+      ai_parallel: number
     } = {
       retention_trading_days: form.retention_trading_days,
       sample_pool_trading_days: form.sample_pool_trading_days,
@@ -151,6 +160,9 @@ async function save() {
       ai_model: form.ai_model.trim(),
       data_source: form.data_source,
       ai_thinking: form.ai_thinking,
+      ai_timeout_seconds: Number(form.ai_timeout_seconds),
+      ai_batch_size: Number(form.ai_batch_size),
+      ai_parallel: Number(form.ai_parallel),
     }
     if (form.ai_api_key.trim()) body.ai_api_key = form.ai_api_key.trim()
     apply(await api.saveSettings(body))
@@ -270,7 +282,20 @@ onMounted(() => {
           <option value="on">开</option>
           <option value="off">关</option>
         </select>
-        <span class="hint">有的模型只能开思考（如 qwen3.8 系列），开启后用流式返回，单批最长等 5 分钟。</span>
+        <span class="hint">有的模型只能开思考（如 qwen3.8 系列），开启思考或使用阿里云时一律流式返回：只要模型还在输出（包括思考过程）就不算超时。</span>
+      </label>
+      <label class="field" style="margin-top: 12px">
+        <span>AI 超时（秒）</span>
+        <input v-model.number="form.ai_timeout_seconds" type="number" min="30" max="600" />
+        <span class="hint">30–600，默认 120：连续这么多秒收不到任何数据才算超时；每批总时长最多 max(600, 该值) 秒。</span>
+      </label>
+      <label class="field" style="margin-top: 12px">
+        <span>AI 排名每批股票数 / 并发批数</span>
+        <span style="display: flex; gap: 8px">
+          <input v-model.number="form.ai_batch_size" type="number" min="1" max="40" style="width: 6em" />
+          <input v-model.number="form.ai_parallel" type="number" min="1" max="8" style="width: 6em" />
+        </span>
+        <span class="hint">默认每批 10 只、同时 3 批。慢模型调小每批数量；某批超时会自动拆成两半各重试一次。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>API Key</span>
