@@ -65,6 +65,34 @@ def _streak(session, code: str, day: date) -> int:
     return streak
 
 
+def _market_review_facts(session, day: date) -> tuple[dict, list[dict], list[dict]]:
+    """情绪、高度、炸板率、龙头形态，全部来自本地日线。"""
+    from backend.app.services.ai_context import load_bars, market_context, stock_metrics
+    from backend.app.services.retention import quote_dates
+
+    market = market_context(session, day)
+    leaders = []
+    for code in market.get("leaders") or []:
+        metrics = stock_metrics(load_bars(session, code, day, 30))
+        recent = metrics.get("recent") or []
+        leaders.append(
+            {
+                "code": code,
+                "height": market.get("max_height"),
+                "last3_pct": [None if r["pct"] is None else round(r["pct"], 2) for r in recent[-3:]],
+                "last3_turnover": [None if r["turn"] is None else round(r["turn"], 2) for r in recent[-3:]],
+                "last_volume_ratio": None if not recent or recent[-1]["vr"] is None else round(recent[-1]["vr"], 2),
+                "upper_shadow": None if metrics.get("upper_shadow") is None else round(metrics["upper_shadow"], 2),
+            }
+        )
+    days = [d for d in quote_dates(session, day) if d < day][-3:]
+    history = []
+    for d in days:
+        ctx = market_context(session, d)
+        history.append({k: ctx[k] for k in ("date", "limit_up", "limit_down", "broken_rate", "max_height", "up_down_ratio")})
+    return market, leaders, history
+
+
 def build_facts(session, day: date) -> dict:
     rows = (
         session.query(DailyQuote)
@@ -101,7 +129,11 @@ def build_facts(session, day: date) -> dict:
                 label = "缩量板"
         patterns.setdefault(label, []).append(row.stock_code)
     headline = f"{day.isoformat()} 共 {len(rows)} 只涨停"
+    market, leaders, history = _market_review_facts(session, day)
     return {
+        "market": market,
+        "leaders": leaders,
+        "recent_market": history,
         "date": day.isoformat(),
         "limitup_count": len(rows),
         "sectors": [{"name": name, "count": count} for name, count in sorted(sectors.items())],
@@ -124,29 +156,49 @@ def build_facts(session, day: date) -> dict:
 
 
 def _extract_json(text: str) -> dict:
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        raise AiFailed("模型没有返回 JSON")
-    try:
-        payload = json.loads(text[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise AiFailed("模型返回的 JSON 无法解析") from exc
-    if not isinstance(payload, dict):
-        raise AiFailed("模型返回的不是对象")
-    return payload
+    """容错解析：去掉 <think> 思考段、优先取 ```json 围栏，允许尾逗号。"""
+    import re
+
+    text = re.sub(r"(?s)<think>.*?</think>", "", text or "")
+    fenced = re.findall(r"```(?:json|JSON)?\s*(.*?)```", text, flags=re.S)
+    candidates = [block for block in fenced if "{" in block] + [text]
+    last_error: Exception | None = None
+    for candidate in candidates:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start < 0 or end <= start:
+            continue
+        body = candidate[start : end + 1]
+        for attempt in (body, re.sub(r",\s*([}\]])", r"\1", body)):
+            try:
+                payload = json.loads(attempt)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                continue
+            if isinstance(payload, dict):
+                return payload
+            raise AiFailed("模型返回的不是对象")
+    if last_error is not None:
+        raise AiFailed("模型返回的 JSON 无法解析") from last_error
+    raise AiFailed("模型没有返回 JSON")
+
+
+SUMMARY_SYSTEM = (
+    "你是一名资深 A 股短线交易与涨停板研究员，多年复盘涨停板、连板、首板、炸板、分歧转一致、龙头股和情绪周期。"
+    "现在根据用户给出的、由本地日线算好的当日统计写盘后复盘。只用给出的数字，不得编造新闻、公告、题材、政策或基本面。"
+    "复盘要覆盖：情绪（涨跌家数、涨跌比、中位涨跌）、高度（最高连板及龙头的形态）、炸板率与封板质量、连板梯队结构、"
+    "涨停股量能特征（放量/缩量板、换手）、和前几个交易日的对比（如给出）。"
+    "不要预测明日涨跌，不要给买卖建议。"
+    '只返回 JSON：{"headline":"一句话标题","key_points":["3 到 6 条要点"],'
+    '"market_review":{"sentiment":"情绪…","height":"高度…","broken":"炸板…","leaders":"龙头形态…"}}'
+)
 
 
 def call_chat(prompt: str, system: str | None = None, timeout: float = 90.0) -> str:
     from backend.app.core.ai_client import chat
 
     return chat(
-        system
-        or (
-            "你是行情统计助手。只根据用户给的数字写总结。"
-            "不要预测涨停，不要编写新闻、公告或财报。"
-            "只返回 JSON，包含 headline 和 key_points。key_points 是 3 到 5 条字符串。"
-        ),
+        system or SUMMARY_SYSTEM,
         prompt,
         settings=read_settings_file(),
         read_timeout=timeout,
@@ -158,8 +210,31 @@ def ai_ready() -> bool:
     return bool(settings.get("ai_base_url") and settings.get("ai_model") and settings.get("ai_api_key"))
 
 
+def statistical_review(facts: dict) -> dict:
+    m = facts.get("market") or {}
+    if not m:
+        return {}
+    leaders = facts.get("leaders") or []
+    lead_text = "；".join(
+        f"{x['code']} 近三日涨跌 {'/'.join('-' if v is None else str(v) for v in x['last3_pct'])}%，量比 {x['last_volume_ratio'] if x['last_volume_ratio'] is not None else '-'}"
+        for x in leaders[:3]
+    )
+    return {
+        "sentiment": f"上涨 {m.get('up')} / 下跌 {m.get('down')}，涨跌比 {m.get('up_down_ratio') if m.get('up_down_ratio') is not None else '-'}，中位涨跌 {m.get('median_pct') if m.get('median_pct') is not None else '-'}%",
+        "height": f"最高 {m.get('max_height')} 连板",
+        "broken": f"涨停 {m.get('limit_up')}、炸板 {m.get('broken')}，炸板率 {m.get('broken_rate') if m.get('broken_rate') is not None else '-'}%，跌停 {m.get('limit_down')}",
+        "leaders": lead_text or "-",
+    }
+
+
 def statistical_points(facts: dict) -> list[str]:
     points = [facts["headline"]]
+    m = facts.get("market") or {}
+    if m:
+        points.append(
+            f"情绪：涨 {m.get('up')} 跌 {m.get('down')}，涨停 {m.get('limit_up')} 跌停 {m.get('limit_down')}，"
+            f"炸板率 {m.get('broken_rate') if m.get('broken_rate') is not None else '-'}%，最高 {m.get('max_height')} 连板"
+        )
     if facts["sectors"]:
         text = "，".join(f"{item['name']} {item['count']} 只" for item in facts["sectors"])
         points.append(f"板块：{text}")
@@ -182,6 +257,8 @@ def _statistics_payload(facts: dict) -> dict:
         "ladder": facts["ladder"],
         "patterns": facts["patterns"],
         "volume_features": facts["volume_features"],
+        "market": facts.get("market") or {},
+        "market_review": statistical_review(facts),
         "key_points": statistical_points(facts),
         "headline": facts["headline"],
         "model": "",
@@ -210,7 +287,7 @@ def generate_summary(session, day: date, chat=None) -> dict:
     payload = _statistics_payload(facts)
     if not ai_ready() and chat is None:
         return _save_summary(session, day, payload)
-    prompt = "下面是已经算好的涨停统计，请只据此写 headline 和 key_points：\n" + json.dumps(
+    prompt = "下面是已经算好的当日统计（含全市场情绪、连板梯队、龙头近三日形态、前几日对比），请据此写复盘：\n" + json.dumps(
         facts, ensure_ascii=False
     )
     try:
@@ -222,7 +299,15 @@ def generate_summary(session, day: date, chat=None) -> dict:
     points = written.get("key_points")
     headline = written.get("headline")
     if isinstance(points, list) and all(isinstance(item, str) and item.strip() for item in points):
-        payload["key_points"] = [item.strip() for item in points][:5]
+        payload["key_points"] = [item.strip() for item in points][:6]
+    review = written.get("market_review")
+    if isinstance(review, dict):
+        merged = dict(payload.get("market_review") or {})
+        for key in ("sentiment", "height", "broken", "leaders"):
+            value = review.get(key)
+            if isinstance(value, str) and value.strip():
+                merged[key] = value.strip()[:200]
+        payload["market_review"] = merged
     if isinstance(headline, str) and headline.strip():
         payload["headline"] = headline.strip()
     settings = read_settings_file()

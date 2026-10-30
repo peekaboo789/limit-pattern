@@ -21,12 +21,34 @@ logger = get_logger("ranking")
 CANDIDATES = 100
 KEEP = 20
 
+DIMENSIONS = (
+    ("kline", "K线形态", 25),
+    ("volume", "量能", 20),
+    ("position", "位置与趋势", 15),
+    ("gene", "涨停基因", 15),
+    ("similarity", "相似度", 15),
+    ("market", "市场环境", 10),
+)
+RISK_MAX = 20
+
 SYSTEM_PROMPT = (
-    "你是A股形态统计助手。用户给出按三日形态相似度排出的候选股票，"
-    "数据只有价格和成交量，没有新闻、公告和财报，不要编造。"
-    "请给每只股票打 0 到 100 的形态评分，并给一句 30 字以内的理由。"
-    "评分只反映形态和量能与近 30 个交易日涨停样本的接近程度，不是涨停概率。"
-    '只返回 JSON：{"items":[{"code":"600000","score":88,"reason":"..."}]}'
+    "你是一名资深 A 股短线交易与涨停板研究员，多年复盘涨停板、连板、首板、炸板、分歧转一致、龙头股和情绪周期。"
+    "现在要对一批候选股做形态复盘打分。数据只有本地日线算出的价格、成交量、换手和涨停记录，"
+    "没有新闻、公告、题材和基本面，不得编造或引用任何此类信息。\n"
+    "评分框架（各维度 0–100 分，按权重加权，再减风险扣分，得到总分 0–100）：\n"
+    "1. K线形态（25%）：实体与上下影结构、收盘位置、连续K线组合、平台/箱体突破、MA5/10/20 多头排列与斜率。\n"
+    "2. 量能（20%）：温和放量、缩量洗盘、放量突破、量比异常、换手率是否健康（过低无人气、过高筹码松动）。\n"
+    "3. 位置与趋势（15%）：在近20/60日区间的位置、距近期高点的距离、整体趋势方向。\n"
+    "4. 涨停基因（15%）：近30个交易日涨停次数、最近一次涨停、是否炸板、涨停后回撤幅度、连板高度。\n"
+    "5. 相似度（15%）：与近30个交易日涨停样本池的综合相似度及最相似样本。\n"
+    "6. 市场环境（10%）：当日涨停/跌停家数、炸板率、最高连板高度、涨跌比所反映的情绪周期位置。\n"
+    f"风险扣分（0–{RISK_MAX}）：高位急拉、长上影、放量滞涨、换手极高、连续加速后乖离过大、炸板后弱势等。\n"
+    "每只输出：总分 score、各维度分 sub、风险扣分 risk_deduct、理由 reason（60 字以内，点出最关键的形态与量能特征）、"
+    "风险提示 risk（30 字以内）、标签 tags（1–4 个，如 缩量回调、平台突破、首板回封、放量突破、均线多头、高位滞涨、分歧换手）。\n"
+    "规则：只用给出的数据；缺失字段（-）不当作 0，按已有信息判断；评分是形态复盘分，不是涨停概率，"
+    "不得写成买入建议、目标价或确定性判断。\n"
+    '只返回 JSON：{"items":[{"code":"600000","score":78,"sub":{"kline":80,"volume":75,"position":70,"gene":60,"similarity":85,"market":55},'
+    '"risk_deduct":5,"reason":"...","risk":"...","tags":["缩量回调","均线多头"]}]}'
 )
 
 
@@ -55,10 +77,15 @@ def _recent_bars(session, code: str, day: date, count: int = 3) -> list[dict]:
 
 
 def candidates(session, day: date, limit: int = CANDIDATES) -> dict:
+    from backend.app.core.config import sample_pool_days
+    from backend.app.services.ai_context import load_bars, stock_metrics
+
     payload = scan_market(session, day, limit, 0)
+    pool = sample_pool_days()
     for item in payload["items"]:
         item["board_name"] = board_name(item["code"])
         item["bars"] = _recent_bars(session, item["code"], day)
+        item["metrics"] = stock_metrics(load_bars(session, item["code"], day), pool)
     return payload
 
 
@@ -71,22 +98,16 @@ def progress() -> dict:
     return dict(PROGRESS)
 
 
-def _prompt(day: date, items: list[dict]) -> str:
-    """紧凑表格：每只一行，省掉 JSON 键名，提示短很多。"""
-    lines = ["code|name|sim|shape|vol|volpct|三日收盘|三日涨跌%|三日换手%"]
-    for item in items:
-        bars = item.get("bars") or []
-        closes = "/".join("" if bar.get("close") is None else f"{bar['close']:.2f}" for bar in bars)
-        pcts = "/".join("" if bar.get("pct") is None else f"{bar['pct']:.1f}" for bar in bars)
-        turns = "/".join("" if bar.get("turnover") is None else f"{bar['turnover']:.1f}" for bar in bars)
-        lines.append(
-            f"{item['code']}|{item['name']}|{item['score']:.0f}|{item['shape_score']:.0f}|"
-            f"{item['volume_score']:.0f}|{item['volume_pct_score']:.0f}|{closes}|{pcts}|{turns}"
-        )
-    return f"评估日 {day.isoformat()}，候选 {len(items)} 只（sim=综合相似度，0-100）：\n" + "\n".join(lines)
+def _prompt(day: date, items: list[dict], market: str = "") -> str:
+    """市场环境一行 + 字段说明 + 每只一行。"""
+    from backend.app.services.ai_context import LEGEND, stock_line
+
+    lines = [f"评估日 {day.isoformat()}，候选 {len(items)} 只。", market or "市场环境：-", LEGEND]
+    lines.extend(stock_line(item, item.get("metrics") or {}) for item in items)
+    return "\n".join(lines)
 
 
-def _score_batches(day: date, items: list[dict], chat) -> dict[str, dict]:
+def _score_batches(day: date, items: list[dict], chat, market: str = "") -> dict[str, dict]:
     """每批 20 只、最多 3 批并发；某一批失败时其余批照常，全部失败才报错。"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -94,7 +115,7 @@ def _score_batches(day: date, items: list[dict], chat) -> dict[str, dict]:
     PROGRESS.update(running=True, done=0, total=len(batches), failed=0)
 
     def run(batch: list[dict]) -> dict[str, dict]:
-        prompt = _prompt(day, batch)
+        prompt = _prompt(day, batch, market)
         text = chat(prompt) if chat is not None else call_chat(prompt, system=SYSTEM_PROMPT, timeout=150.0)
         return _parse_scores(text)
 
@@ -117,6 +138,43 @@ def _score_batches(day: date, items: list[dict], chat) -> dict[str, dict]:
     return scores
 
 
+def _num(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None
+
+
+def _parse_entry(entry: dict) -> dict | None:
+    sub_raw = entry.get("sub") or entry.get("subscores") or entry.get("dimensions") or {}
+    sub: dict[str, float | None] = {}
+    if isinstance(sub_raw, dict):
+        for key, _label, _w in DIMENSIONS:
+            value = _num(sub_raw.get(key))
+            sub[key] = None if value is None else round(max(0.0, min(100.0, value)), 1)
+    deduct = _num(entry.get("risk_deduct"))
+    deduct = 0.0 if deduct is None else max(0.0, min(float(RISK_MAX), abs(deduct)))
+    score = _num(entry.get("score"))
+    if score is None:
+        have = [(sub[key], w) for key, _l, w in DIMENSIONS if sub.get(key) is not None]
+        if not have:
+            return None
+        score = sum(v * w for v, w in have) / sum(w for _v, w in have) - deduct
+    tags = entry.get("tags") or []
+    if isinstance(tags, str):
+        tags = [t for t in tags.replace("，", ",").replace("、", ",").split(",")]
+    tags = [str(t).strip()[:8] for t in tags if str(t).strip()][:4] if isinstance(tags, list) else []
+    return {
+        "score": round(max(0.0, min(100.0, score)), 1),
+        "reason": str(entry.get("reason") or "").strip()[:90],
+        "risk": str(entry.get("risk") or "").strip()[:60],
+        "risk_deduct": round(deduct, 1),
+        "sub": sub,
+        "tags": tags,
+    }
+
+
 def _parse_scores(text: str) -> dict[str, dict]:
     payload = _extract_json(text)
     raw = payload.get("items")
@@ -127,14 +185,9 @@ def _parse_scores(text: str) -> dict[str, dict]:
         if not isinstance(entry, dict):
             continue
         code = str(entry.get("code") or "").strip()[-6:]
-        try:
-            score = float(entry.get("score"))
-        except (TypeError, ValueError):
-            continue
-        score = max(0.0, min(100.0, score))
-        reason = str(entry.get("reason") or "").strip()[:80]
-        if code and code not in scores:
-            scores[code] = {"score": round(score, 1), "reason": reason}
+        parsed = _parse_entry(entry)
+        if code and parsed and code not in scores:
+            scores[code] = parsed
     if not scores:
         raise AiFailed("AI 没有给出有效评分")
     return scores
@@ -176,7 +229,10 @@ def _rank(session, day: date, chat, trigger: str, snapshot: dict) -> dict:
     items = pool["items"]
     if not items:
         raise LookupError("这一天没有可打分的候选股票")
-    scores = _score_batches(day, items, chat)
+    from backend.app.services.ai_context import market_context, market_line
+
+    market = market_context(session, day)
+    scores = _score_batches(day, items, chat, market_line(market))
     ranked = []
     for item in items:
         got = scores.get(item["code"])
@@ -189,6 +245,10 @@ def _rank(session, day: date, chat, trigger: str, snapshot: dict) -> dict:
                 "board_name": item["board_name"],
                 "ai_score": got["score"],
                 "reason": got["reason"],
+                "risk": got.get("risk", ""),
+                "risk_deduct": got.get("risk_deduct", 0),
+                "sub": got.get("sub") or {},
+                "tags": got.get("tags") or [],
                 "similarity": item["score"],
                 "shape_score": item["shape_score"],
                 "volume_score": item["volume_score"],
@@ -212,6 +272,8 @@ def _rank(session, day: date, chat, trigger: str, snapshot: dict) -> dict:
         "pool_dates": pool["pool_dates"],
         "pool_size": pool["pool_size"],
         "disclaimer": DISCLAIMER,
+        "market": market,
+        "dimensions": [{"key": k, "label": l, "weight": w} for k, l, w in DIMENSIONS],
         "items": ranked,
     }
     session.add(AiRanking(trade_date=day, run_at=run_at, trigger=trigger, payload=payload))

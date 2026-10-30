@@ -169,6 +169,12 @@ def render_export(session, kind: str, day: date, code: str | None, top: int) -> 
         body.append(f"来源\t{payload.get('source') or ''}")
         if payload.get("model"):
             body.append(f"模型\t{payload.get('model')}")
+        review = payload.get("market_review") or {}
+        if review:
+            body.append("市场复盘")
+            for key, label in (("sentiment", "情绪"), ("height", "高度"), ("broken", "炸板"), ("leaders", "龙头形态")):
+                if review.get(key):
+                    body.append(f"{label}\t{review[key]}")
         body.append("要点")
         for point in payload.get("key_points") or []:
             body.append(f"- {point}")
@@ -198,16 +204,26 @@ def render_export(session, kind: str, day: date, code: str | None, top: int) -> 
         if payload.get("model"):
             body.append(f"模型\t{payload.get('model')}")
         body.append(f"候选数\t{payload.get('candidate_count')}")
+        market = payload.get("market") or {}
+        if market:
+            body.append(
+                f"市场环境\t涨 {market.get('up')} 跌 {market.get('down')} 涨停 {market.get('limit_up')} 跌停 {market.get('limit_down')} "
+                f"炸板 {market.get('broken')} 炸板率 {market.get('broken_rate')}% 最高连板 {market.get('max_height')}"
+            )
         body.append("")
-        columns = ["排名", "代码", "名称", "板块", "AI评分", "相似度", "形态", "成交量", "量比", "最相似样本", "理由"]
+        dims = [("kline", "K线"), ("volume", "量能"), ("position", "位置"), ("gene", "涨停基因"), ("similarity", "相似"), ("market", "环境")]
+        columns = ["排名", "代码", "名称", "板块", "AI评分", *[label for _k, label in dims], "风险扣分", "标签", "相似度", "形态", "成交量", "量比", "最相似样本", "理由", "风险提示"]
         lines = ["\t".join(columns)]
         for item in payload.get("items") or []:
             match = item.get("best_match") or {}
             cells = [
                 item.get("rank"), item.get("code"), item.get("name"), item.get("board_name"),
-                item.get("ai_score"), item.get("similarity"), item.get("shape_score"),
+                item.get("ai_score"),
+                *[(item.get("sub") or {}).get(key) for key, _label in dims],
+                item.get("risk_deduct"), "、".join(item.get("tags") or []),
+                item.get("similarity"), item.get("shape_score"),
                 item.get("volume_score"), item.get("volume_pct_score"),
-                f"{match.get('code', '')} {match.get('limit_date', '')}".strip(), item.get("reason"),
+                f"{match.get('code', '')} {match.get('limit_date', '')}".strip(), item.get("reason"), item.get("risk"),
             ]
             lines.append("\t".join(_cell(cell) for cell in cells))
         body.append("\n".join(lines))

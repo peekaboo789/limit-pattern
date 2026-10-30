@@ -166,6 +166,7 @@ def scan_market(session, as_of: date, top: int, min_score: float) -> dict:
         self_mask = np.asarray([code for code, _v in block])[:, None] == sample_codes[None, :]
         scores_all = np.where(self_mask, -1.0, scores_all)
         best_idx = np.argmax(scores_all, axis=1)
+        top_idx = np.argsort(-scores_all, axis=1)[:, :3]
         for row_index, (code, _vector) in enumerate(block):
             best = int(best_idx[row_index])
             score = float(scores_all[row_index, best])
@@ -185,6 +186,15 @@ def scan_market(session, as_of: date, top: int, min_score: float) -> dict:
                     "shape_score": _round(parts["shape"][row_index, best]),
                     "volume_score": _round(parts["volume"][row_index, best]),
                     "volume_pct_score": _round(parts["volume_pct"][row_index, best]),
+                    "top_matches": [
+                        {
+                            "code": samples[int(j)]["code"],
+                            "limit_date": samples[int(j)]["limit_date"].isoformat(),
+                            "score": _round(scores_all[row_index, int(j)]),
+                        }
+                        for j in top_idx[row_index]
+                        if scores_all[row_index, int(j)] >= 0
+                    ],
                 }
             )
     items.sort(key=lambda item: (-item["score"], item["code"]))

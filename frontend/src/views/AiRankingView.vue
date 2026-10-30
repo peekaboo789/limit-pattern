@@ -11,6 +11,21 @@ const ranking = ref<AiRanking | null>(null)
 const loading = ref(false)
 const generating = ref(false)
 const progressText = ref('')
+const expanded = ref<string | null>(null)
+const DEFAULT_DIMS = [
+  { key: 'kline', label: 'K线形态', weight: 25 },
+  { key: 'volume', label: '量能', weight: 20 },
+  { key: 'position', label: '位置与趋势', weight: 15 },
+  { key: 'gene', label: '涨停基因', weight: 15 },
+  { key: 'similarity', label: '相似度', weight: 15 },
+  { key: 'market', label: '市场环境', weight: 10 },
+]
+function toggle(code: string) {
+  expanded.value = expanded.value === code ? null : code
+}
+function subText(value: number | null | undefined) {
+  return value == null ? '缺' : value.toFixed(0)
+}
 const error = ref('')
 
 const exportParams = computed<ExportParams | null>(() => (ranking.value ? { type: 'ai_ranking', date: ranking.value.date } : null))
@@ -104,6 +119,10 @@ onMounted(async () => {
       </span>
     </div>
     <Disclaimer :text="ranking?.disclaimer" />
+    <p v-if="ranking?.market" class="muted" style="margin: 4px 0">
+      市场环境：涨 {{ ranking.market.up }} / 跌 {{ ranking.market.down }} · 涨停 {{ ranking.market.limit_up }} · 跌停 {{ ranking.market.limit_down }} ·
+      炸板 {{ ranking.market.broken }}（{{ ranking.market.broken_rate ?? '-' }}%） · 最高 {{ ranking.market.max_height }} 连板
+    </p>
     <div v-if="loading" class="skeleton" />
     <div v-else-if="!ranking?.items.length" class="empty">还没有 AI 榜单，点「立即生成」试试</div>
     <div v-else class="table-wrap">
@@ -112,11 +131,12 @@ onMounted(async () => {
           <tr>
             <th>排名</th><th>代码</th><th>名称</th><th>板块</th>
             <th class="right">AI 评分</th><th class="right">相似度</th><th class="right">形态</th>
-            <th class="right">成交量</th><th class="right">量比</th><th>最相似涨停</th><th>理由</th>
+            <th class="right">成交量</th><th class="right">量比</th><th>最相似涨停</th><th>标签</th><th>理由</th><th></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in ranking.items" :key="row.code">
+          <template v-for="row in ranking.items" :key="row.code">
+          <tr class="clickable" @click="toggle(row.code)">
             <td class="rank" :class="{ top: row.rank <= 3 }">{{ String(row.rank).padStart(2, '0') }}</td>
             <td class="code">{{ row.code }}</td>
             <td>{{ row.name }}</td>
@@ -127,8 +147,22 @@ onMounted(async () => {
             <td class="right">{{ row.volume_score.toFixed(1) }}</td>
             <td class="right">{{ row.volume_pct_score.toFixed(1) }}</td>
             <td class="wrap">{{ row.best_match.name }} <span class="muted code">{{ row.best_match.code }} · {{ row.best_match.limit_date }}</span></td>
+            <td class="wrap"><span v-for="tag in row.tags ?? []" :key="tag" class="chip" style="margin: 0 4px 2px 0">{{ tag }}</span></td>
             <td class="wrap">{{ row.reason }}</td>
+            <td class="muted">{{ expanded === row.code ? '收起' : '详情' }}</td>
           </tr>
+          <tr v-if="expanded === row.code" class="detail-row">
+            <td colspan="14">
+              <div class="chips">
+                <span v-for="dim in ranking.dimensions ?? DEFAULT_DIMS" :key="dim.key" class="chip">
+                  {{ dim.label }}（{{ dim.weight }}%）<b>{{ subText(row.sub?.[dim.key]) }}</b>
+                </span>
+                <span class="chip" style="color: #dc2626">风险扣分 −{{ (row.risk_deduct ?? 0).toFixed(0) }}</span>
+              </div>
+              <p v-if="row.risk" class="hint" style="margin: 6px 0 0; color: #b45309">风险提示：{{ row.risk }}</p>
+            </td>
+          </tr>
+          </template>
         </tbody>
       </table>
     </div>

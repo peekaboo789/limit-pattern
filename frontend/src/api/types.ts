@@ -215,6 +215,10 @@ export interface AiRankingItem {
   volume_pct_score: number
   best_match: { code: string; name: string; limit_date: string }
   close: number | null
+  sub?: Record<string, number | null>
+  risk?: string
+  risk_deduct?: number
+  tags?: string[]
 }
 
 export interface AiRanking {
@@ -228,6 +232,8 @@ export interface AiRanking {
   disclaimer: string
   items: AiRankingItem[]
   runs?: string[]
+  market?: MarketContext
+  dimensions?: { key: string; label: string; weight: number }[]
   snapshot?: { kind: 'intraday' | 'morning_freeze' | 'close' | 'daily'; taken_at: string | null; count: number; volume_estimated?: boolean; volume_fraction?: number; elapsed_minutes?: number }
 }
 
@@ -367,4 +373,19 @@ export interface ClusterResult {
   ai_note?: string
   clusters: ClusterGroup[]
   points: { code: string; name: string; cluster: number; x: number; y: number }[]
+}
+
+export interface MarketContext {
+  date: string
+  stocks: number
+  up: number
+  down: number
+  up_down_ratio: number | null
+  median_pct: number | null
+  limit_up: number
+  limit_down: number
+  broken: number
+  broken_rate: number | null
+  max_height: number
+  leaders: string[]
 }

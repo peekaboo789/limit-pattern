@@ -20,6 +20,17 @@ const error = ref('')
 const view = computed<NormalizedSummary | null>(() => (raw.value ? normalizeSummary(raw.value) : null))
 const ladderMax = computed(() => Math.max(1, ...(view.value?.ladder.map((row) => row.count) ?? [1])))
 const headline = computed(() => view.value?.headline || list.value.find((item) => item.date === selected.value)?.headline || '')
+const REVIEW_LABELS: [string, string][] = [
+  ['sentiment', '情绪'],
+  ['height', '高度'],
+  ['broken', '炸板'],
+  ['leaders', '龙头形态'],
+]
+const review = computed(() => {
+  const value = (raw.value as { market_review?: Record<string, unknown> } | null)?.market_review
+  if (!value || typeof value !== 'object') return []
+  return REVIEW_LABELS.filter(([key]) => typeof value[key] === 'string' && value[key]).map(([key, label]) => ({ label, text: String(value[key]) }))
+})
 const exportParams = computed<ExportParams | null>(() => (selected.value ? { type: 'summary', date: selected.value } : null))
 
 async function loadList(prefer?: string) {
@@ -127,6 +138,16 @@ onMounted(() => {
             </div>
           </div>
           <pre v-if="showRaw" class="raw">{{ JSON.stringify(raw, null, 2) }}</pre>
+        </section>
+
+        <section v-if="review.length" class="card">
+          <div class="card-head"><h3>市场复盘</h3></div>
+          <dl class="review">
+            <template v-for="item in review" :key="item.label">
+              <dt class="muted">{{ item.label }}</dt>
+              <dd style="margin: 0 0 8px">{{ item.text }}</dd>
+            </template>
+          </dl>
         </section>
 
         <section class="card">

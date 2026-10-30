@@ -22,7 +22,8 @@ def _seed_many():
 
 
 def _fake_chat(prompt: str) -> str:
-    codes = [line.split("|")[0] for line in prompt.splitlines()[2:] if "|" in line]
+    import re
+    codes = re.findall(r"^(\d{6}) ", prompt, flags=re.M)
     return json.dumps({"items": [{"code": code, "score": int(code) % 97, "reason": "量价接近"} for code in codes]})
 
 
