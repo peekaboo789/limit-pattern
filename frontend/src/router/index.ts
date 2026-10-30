@@ -1,3 +1,5 @@
+import AiRankingView from '@/views/AiRankingView.vue'
+import MonitorView from '@/views/MonitorView.vue'
 import OverviewView from '@/views/OverviewView.vue'
 import PoolView from '@/views/PoolView.vue'
 import SettingsView from '@/views/SettingsView.vue'
@@ -13,6 +15,8 @@ export const router = createRouter({
   routes: [
     { path: '/', name: 'overview', component: OverviewView, meta: { title: '总览' } },
     { path: '/similarity', name: 'similarity', component: SimilarityView, meta: { title: '个股相似度' } },
+    { path: '/ai-ranking', name: 'ai-ranking', component: AiRankingView, meta: { title: 'AI 榜单' } },
+    { path: '/monitor', name: 'monitor', component: MonitorView, meta: { title: '实时监控' } },
     { path: '/pool', name: 'pool', component: PoolView, meta: { title: '涨停池' } },
     { path: '/summaries', name: 'summaries', component: SummaryView, meta: { title: '每日总结' } },
     { path: '/settings', name: 'settings', component: SettingsView, meta: { title: '设置' } },

@@ -142,7 +142,7 @@ def _extract_json(text: str) -> dict:
     return payload
 
 
-def call_chat(prompt: str) -> str:
+def call_chat(prompt: str, system: str | None = None, timeout: float = 90.0) -> str:
     settings = read_settings_file()
     url = str(settings.get("ai_base_url") or "").rstrip("/")
     key = str(settings.get("ai_api_key") or "")
@@ -160,7 +160,8 @@ def call_chat(prompt: str) -> str:
                 "messages": [
                     {
                         "role": "system",
-                        "content": (
+                        "content": system
+                        or (
                             "你是行情统计助手。只根据用户给的数字写总结。"
                             "不要预测涨停，不要编写新闻、公告或财报。"
                             "只返回 JSON，包含 headline 和 key_points。key_points 是 3 到 5 条字符串。"
@@ -169,7 +170,7 @@ def call_chat(prompt: str) -> str:
                     {"role": "user", "content": prompt},
                 ],
             },
-            timeout=90.0,
+            timeout=timeout,
         )
     except httpx.HTTPError as exc:
         raise AiFailed("AI 接口没有连上") from exc

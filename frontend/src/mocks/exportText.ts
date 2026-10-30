@@ -29,6 +29,7 @@ export function mockExportText(params: ExportParams): { filename: string; text: 
   if (params.type === 'similarity') return { filename, text: similarityText(date, params.code, requireTop(params.top, 20)) }
   if (params.type === 'pool') return { filename, text: poolText(date) }
   if (params.type === 'summary') return { filename, text: summaryText(date) }
+  if (params.type === 'ai_ranking') return { filename, text: `AI 榜单 ${date}（模拟数据没有榜单）\n` }
   throw new ApiError(422, 'type 必须是 scan、similarity、pool 或 summary')
 }
 

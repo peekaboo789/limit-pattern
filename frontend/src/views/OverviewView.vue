@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { api, ApiError, isAbort } from '@/api/client'
+import AiOverviewCard from '@/components/AiOverviewCard.vue'
 import Disclaimer from '@/components/Disclaimer.vue'
 import ExportButton from '@/components/ExportButton.vue'
 import type { ExportParams } from '@/api/types'
@@ -124,6 +125,8 @@ watch(
     </div>
     <p v-if="session.syncError" class="alert" style="margin-top: 10px">{{ session.syncError }}</p>
   </section>
+
+  <AiOverviewCard />
 
   <section class="stats">
     <article class="card stat">

@@ -1,5 +1,8 @@
 import { ApiError, formatDetail, request } from './http'
 import type {
+  AiRanking,
+  MonitorEvents,
+  MonitorSnapshot,
   ExportParams,
   Health,
   KlineResponse,
@@ -70,6 +73,17 @@ export const api = {
 
   generateSummary: (date: string) =>
     request<SummaryDocument>(`/api/summaries/${date}/generate`, { method: 'POST' }),
+
+  aiRanking: (date?: string) => request<AiRanking>(`/api/ai-ranking${query({ date })}`),
+
+  aiRankingDates: () => request<{ dates: string[] }>('/api/ai-ranking/dates'),
+
+  generateAiRanking: (date?: string) =>
+    request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(date ? { date } : {}) }),
+
+  monitor: () => request<MonitorSnapshot>('/api/monitor'),
+
+  monitorEvents: (since: number) => request<MonitorEvents>(`/api/monitor/events${query({ since })}`),
 
   exportText: async (params: ExportParams) => {
     if (import.meta.env.VITE_USE_MOCK === '1') {

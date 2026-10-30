@@ -296,3 +296,46 @@ def test_smoke_reports_existing_instance(monkeypatch, tmp_path):
         holder.release()
     text = (tmp_path / "logs" / "launcher.log").read_text(encoding="utf-8")
     assert "已有实例" in text
+
+
+def test_notifier_dedupes_and_falls_back_to_balloon():
+    from desktop import launcher
+
+    calls = []
+
+    class Icon:
+        def notify(self, message, title):
+            calls.append((title, message))
+
+    state = launcher.AppState()
+    state.icon = Icon()
+    notifier = launcher.Notifier(state, toast=lambda _t, _m: False)
+    assert notifier.notify("提醒", "600000", key="k") == "balloon"
+    assert notifier.notify("提醒", "600000", key="k") == "duplicate"
+    assert calls == [("提醒", "600000")]
+    assert launcher.ExportApi(notifier).notify("提醒", "x", "k") == "duplicate"
+
+
+def test_monitor_watcher_notifies_each_event_once():
+    from desktop import launcher
+
+    sent = []
+    notifier = launcher.Notifier(None, toast=lambda t, m: sent.append((t, m)) or True)
+    pages = [
+        {"date": "2026-06-15", "last_id": 2, "items": [
+            {"id": 1, "code": "600000", "name": "浦发银行", "level": "warn", "pct": 3.4, "rank": 1},
+            {"id": 2, "code": "600000", "name": "浦发银行", "level": "alert", "pct": 6.1, "rank": 1},
+        ]},
+        {"date": "2026-06-15", "last_id": 2, "items": []},
+    ]
+    urls = []
+
+    def fetch(url):
+        urls.append(url)
+        return pages.pop(0)
+
+    watcher = launcher.MonitorWatcher("http://127.0.0.1:1/", notifier, fetch=fetch)
+    assert watcher.poll_once() == 2
+    assert watcher.poll_once() == 0
+    assert urls[1].endswith("since=2")
+    assert "6%" in sent[1][0] and "+6.10%" in sent[1][1]

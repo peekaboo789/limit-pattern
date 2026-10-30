@@ -12,6 +12,7 @@ interface Window {
   pywebview?: {
     api?: {
       save_file?: (filename: string, text: string) => unknown
+      notify?: (title: string, message: string, key?: string) => unknown
     }
   }
 }

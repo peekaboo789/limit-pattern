@@ -471,3 +471,22 @@ tbody tr.active td { background: rgba(232, 184, 109, 0.1); }
 @media (prefers-reduced-motion: reduce) {
   .progress.running > i, .skeleton { animation: none; }
 }
+
+/* 实时监控 */
+.market-chip { padding: 4px 10px; border-radius: 999px; font-size: 12px; color: var(--muted); background: rgba(255, 255, 255, 0.06); }
+.market-chip.on { color: #b9ffe4; background: rgba(47, 219, 154, 0.16); }
+.monitor-panel { transition: box-shadow 0.2s, border-color 0.2s; }
+.monitor-panel.panel-alert { border: 2px solid #ff3b4f; box-shadow: 0 0 0 3px rgba(255, 59, 79, 0.35), 0 0 24px rgba(255, 59, 79, 0.45); animation: lp-flash 1s steps(2, start) infinite; }
+.monitor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.monitor-card { border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; padding: 10px 12px; background: rgba(255, 255, 255, 0.02); }
+.monitor-card.warn { border-color: #e8b86d; background: rgba(232, 184, 109, 0.08); }
+.monitor-card.alert { border: 2px solid #ff3b4f; background: rgba(255, 59, 79, 0.12); animation: lp-flash 1s steps(2, start) infinite; }
+.monitor-pct { font-size: 26px; font-weight: 700; margin: 6px 0 2px; font-family: var(--mono); }
+@keyframes lp-flash { 50% { border-color: transparent; box-shadow: none; } }
+.toast-stack { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; max-width: 340px; }
+.toast { position: relative; padding: 10px 32px 10px 14px; border-radius: 10px; background: #1a2230; border: 1px solid #e8b86d; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4); }
+.toast.alert { border: 2px solid #ff3b4f; background: #2a1219; animation: lp-flash 1s steps(2, start) infinite; }
+.toast-title { font-weight: 700; }
+.toast-text { margin-top: 2px; color: var(--muted); font-size: 13px; }
+.toast-close { position: absolute; top: 6px; right: 8px; border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; }
+.overview-ai-row { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-bottom: 1px dashed rgba(255, 255, 255, 0.06); }

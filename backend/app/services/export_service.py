@@ -185,8 +185,34 @@ def render_export(session, kind: str, day: date, code: str | None, top: int) -> 
         body.append("")
         body.append("原始JSON")
         body.append(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif kind == "ai_ranking":
+        from backend.app.services.ranking_service import get_ranking
+
+        payload = get_ranking(session, day)
+        if payload is None:
+            raise LookupError("这一天还没有 AI 榜单")
+        pool = payload.get("pool_dates") or []
+        pool_size = int(payload.get("pool_size") or 0)
+        body = _header(day, pool, pool_size)
+        body.append(f"生成时间\t{payload.get('run_at') or ''}")
+        if payload.get("model"):
+            body.append(f"模型\t{payload.get('model')}")
+        body.append(f"候选数\t{payload.get('candidate_count')}")
+        body.append("")
+        columns = ["排名", "代码", "名称", "板块", "AI评分", "相似度", "形态", "成交量", "量比", "最相似样本", "理由"]
+        lines = ["\t".join(columns)]
+        for item in payload.get("items") or []:
+            match = item.get("best_match") or {}
+            cells = [
+                item.get("rank"), item.get("code"), item.get("name"), item.get("board_name"),
+                item.get("ai_score"), item.get("similarity"), item.get("shape_score"),
+                item.get("volume_score"), item.get("volume_pct_score"),
+                f"{match.get('code', '')} {match.get('limit_date', '')}".strip(), item.get("reason"),
+            ]
+            lines.append("\t".join(_cell(cell) for cell in cells))
+        body.append("\n".join(lines))
     else:
-        raise ValueError("导出类型只能是 scan、similarity、pool、summary")
+        raise ValueError("导出类型只能是 scan、similarity、pool、summary、ai_ranking")
     filename = f"{kind}_{day.isoformat()}{suffix}.txt"
     return "\n".join(body) + "\n", filename
 

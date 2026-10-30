@@ -66,6 +66,8 @@ class AppState:
         self.control: ControlServer | None = None
         self.quit_event = threading.Event()
         self.show_requested = threading.Event()
+        self.notifier: Notifier | None = None
+        self.watcher: MonitorWatcher | None = None
 
 
 def project_root() -> Path:
@@ -745,11 +747,145 @@ def save_text_as(filename: str, text: str, ask_path) -> str | None:
     return str(path)
 
 
-class ExportApi:
-    """pywebview js_api。页面调用 ``window.pywebview.api.save_file(filename, text)``。"""
+_TOAST_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$title = [Environment]::GetEnvironmentVariable('LP_TOAST_TITLE')
+$body = [Environment]::GetEnvironmentVariable('LP_TOAST_BODY')
+$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text></text><text></text></binding></visual><audio src="ms-winsoundevent:Notification.Default"/></toast>')
+$nodes = $xml.GetElementsByTagName('text')
+$nodes.Item(0).AppendChild($xml.CreateTextNode($title)) | Out-Null
+$nodes.Item(1).AppendChild($xml.CreateTextNode($body)) | Out-Null
+$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+"""
 
-    def __init__(self) -> None:
+
+def windows_toast(title: str, message: str) -> bool:
+    """用系统自带 PowerShell 弹 Windows 通知。失败返回 False，由托盘气泡兜底。"""
+    if sys.platform != "win32":
+        return False
+    import subprocess
+
+    env = dict(os.environ, LP_TOAST_TITLE=str(title)[:120], LP_TOAST_BODY=str(message)[:400])
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", _TOAST_SCRIPT],
+            env=env,
+            capture_output=True,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        logger.exception("Windows 通知没有弹出")
+        return False
+    if result.returncode != 0:
+        logger.warning("Windows 通知失败：%s", result.stderr.decode("utf-8", "ignore")[:300])
+        return False
+    return True
+
+
+class Notifier:
+    """桌面提醒：先试 Windows 通知，失败用托盘气泡。同一个 key 只提醒一次。"""
+
+    def __init__(self, state: "AppState | None" = None, toast=None) -> None:
+        self.state = state
+        self._toast = toast or windows_toast
+        self._seen: set[str] = set()
+        self._lock = threading.Lock()
+
+    def notify(self, title: str, message: str, key: str | None = None) -> str:
+        if key:
+            with self._lock:
+                if key in self._seen:
+                    return "duplicate"
+                self._seen.add(key)
+        logger.info("盘中提醒：%s %s", title, message)
+        if self._toast(title, message):
+            return "toast"
+        icon = getattr(self.state, "icon", None) if self.state is not None else None
+        if icon is not None:
+            try:
+                icon.notify(str(message), str(title))
+                return "balloon"
+            except Exception:
+                logger.exception("托盘气泡失败")
+        return "log"
+
+
+def format_event(event: dict) -> tuple[str, str]:
+    level = event.get("level")
+    pct = event.get("pct")
+    pct_text = "" if pct is None else f"{float(pct):+.2f}%"
+    head = "涨幅超 6% 报警" if level == "alert" else "涨幅超 3% 提醒"
+    rank = event.get("rank")
+    rank_text = f"（昨日 AI 榜第 {rank} 名）" if rank else ""
+    return head, f"{event.get('code', '')} {event.get('name', '')} {pct_text}{rank_text}".strip()
+
+
+def event_key(date_text: str, event: dict) -> str:
+    return f"{date_text}:{event.get('code')}:{event.get('level')}"
+
+
+class MonitorWatcher:
+    """后台每 5 秒读 /api/monitor/events，页面没打开也会提醒。"""
+
+    def __init__(self, base_url: str, notifier: Notifier, interval: float = 5.0, fetch=None) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.notifier = notifier
+        self.interval = interval
+        self.last_id = 0
+        self._fetch = fetch or self._http_json
+        self._stop = threading.Event()
+        self.thread: threading.Thread | None = None
+
+    def _http_json(self, url: str) -> dict:
+        import urllib.request
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(url, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def poll_once(self) -> int:
+        payload = self._fetch(f"{self.base_url}/api/monitor/events?since={self.last_id}")
+        count = 0
+        day = str(payload.get("date") or "")
+        for event in payload.get("items") or []:
+            title, message = format_event(event)
+            if self.notifier.notify(title, message, event_key(day, event)) != "duplicate":
+                count += 1
+        self.last_id = max(self.last_id, int(payload.get("last_id") or 0))
+        return count
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.interval):
+            try:
+                self.poll_once()
+            except Exception as exc:
+                logger.debug("监控事件读取失败：%s", exc)
+
+    def start(self) -> None:
+        self.thread = threading.Thread(target=self._loop, name="limitpattern-monitor", daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
+class ExportApi:
+    """pywebview js_api。页面调用 ``window.pywebview.api.save_file(filename, text)``，
+    盘中提醒调用 ``window.pywebview.api.notify(title, message, key)``。"""
+
+    def __init__(self, notifier: Notifier | None = None) -> None:
         self.window = None
+        self.notifier = notifier
+
+    def notify(self, title: str, message: str, key: str | None = None) -> str:
+        if self.notifier is None:
+            self.notifier = Notifier()
+        return self.notifier.notify(title, message, key)
 
     def save_file(self, filename: str, text: str) -> str | None:
         import webview
@@ -805,7 +941,7 @@ def run_webview(state: AppState) -> None:
         return False
 
     enable_webview_downloads()
-    export_api = ExportApi()
+    export_api = ExportApi(state.notifier)
     window = webview.create_window(
         APP_TITLE,
         state.url,
@@ -925,6 +1061,9 @@ def _serve_and_open(args: argparse.Namespace, data_dir: Path, state: AppState) -
         verify_gui_imports()
     if args.smoke:
         return 0
+    state.notifier = Notifier(state)
+    state.watcher = MonitorWatcher(state.url, state.notifier)
+    state.watcher.start()
     launch_ui(state, args.open_browser)
     return 0
 

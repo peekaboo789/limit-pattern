@@ -162,7 +162,7 @@ export interface SummaryListResponse {
  * 每日总结至少包含契约列出的字段。
  * 嵌套结构在 docs/summary_schema.md 落地前按宽松形态解析，见 utils/summary.ts。
  */
-export type ExportType = 'scan' | 'similarity' | 'pool' | 'summary'
+export type ExportType = 'scan' | 'similarity' | 'pool' | 'summary' | 'ai_ranking'
 
 export interface ExportParams {
   type: ExportType
@@ -182,4 +182,77 @@ export interface SummaryDocument {
   model: string
   generated_at: string
   headline?: string
+}
+
+export interface AiRankingItem {
+  rank: number
+  code: string
+  name: string
+  board_name: string
+  ai_score: number
+  reason: string
+  similarity: number
+  shape_score: number
+  volume_score: number
+  volume_pct_score: number
+  best_match: { code: string; name: string; limit_date: string }
+  close: number | null
+}
+
+export interface AiRanking {
+  date: string
+  run_at: string
+  trigger: string
+  model: string
+  candidate_count: number
+  pool_dates: string[]
+  pool_size: number
+  disclaimer: string
+  items: AiRankingItem[]
+  runs?: string[]
+}
+
+export type MonitorLevel = 'normal' | 'warn' | 'alert'
+
+export interface MonitorItem {
+  rank: number | null
+  code: string
+  name: string
+  ai_score: number | null
+  reason: string
+  price: number | null
+  pre_close: number | null
+  pct: number | null
+  level: MonitorLevel
+}
+
+export interface MonitorSnapshot {
+  date: string
+  market_open: boolean
+  status_text: string
+  ranking_date: string | null
+  thresholds: { warn: number; alert: number }
+  source: string
+  error: string
+  updated_at: string
+  items: MonitorItem[]
+  alert_count?: number
+  warn_count?: number
+}
+
+export interface MonitorEvent {
+  id: number
+  code: string
+  name: string
+  level: 'warn' | 'alert'
+  pct: number | null
+  rank: number | null
+  at: string | null
+}
+
+export interface MonitorEvents {
+  date: string
+  market_open: boolean
+  last_id: number
+  items: MonitorEvent[]
 }

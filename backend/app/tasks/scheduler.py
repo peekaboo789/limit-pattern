@@ -39,6 +39,15 @@ def _safe_summary() -> None:
         logger.exception("定时总结失败")
 
 
+def _safe_ranking() -> None:
+    try:
+        from backend.app.services.ranking_service import scheduled_ranking
+
+        scheduled_ranking("schedule")
+    except Exception:
+        logger.exception("定时 AI 榜单失败")
+
+
 def start_scheduler() -> None:
     global _SCHEDULER
     if os.environ.get("LP_SCHEDULER", "1") == "0":
@@ -52,9 +61,11 @@ def start_scheduler() -> None:
     scheduler.add_job(_safe_sync, "cron", hour=17, minute=10, id="daily-sync")
     scheduler.add_job(_safe_purge, "cron", hour=17, minute=40, id="daily-purge")
     scheduler.add_job(_safe_summary, "cron", hour=18, minute=10, id="daily-summary")
+    scheduler.add_job(_safe_ranking, "cron", day_of_week="mon-fri", hour=14, minute=50, id="ai-ranking-1450")
+    scheduler.add_job(_safe_ranking, "cron", day_of_week="mon-fri", hour=15, minute=10, id="ai-ranking-1510")
     scheduler.start()
     _SCHEDULER = scheduler
-    logger.info("定时任务已启动：17:10 同步并写总结，17:40 清理明细，18:10 补写缺失的总结")
+    logger.info("定时任务已启动：17:10 同步并写总结，17:40 清理明细，18:10 补写缺失的总结；交易日 14:50、15:10 生成 AI 榜单")
 
 
 def scheduled_job_ids() -> list[str]:

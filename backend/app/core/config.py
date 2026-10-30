@@ -41,6 +41,12 @@ def summaries_dir() -> Path:
     return path
 
 
+def rankings_dir() -> Path:
+    path = data_dir() / "rankings"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def exports_dir() -> Path:
     path = data_dir() / "exports"
     path.mkdir(parents=True, exist_ok=True)

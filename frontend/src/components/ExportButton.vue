@@ -18,6 +18,7 @@ const title = computed(() => {
   if (params.type === 'scan') return `导出 ${params.date} 扫描前 ${params.top ?? 50} 条`
   if (params.type === 'similarity') return `导出 ${params.code} 在 ${params.date} 的前 ${params.top ?? 20} 条`
   if (params.type === 'pool') return `导出 ${params.date} 涨停池`
+  if (params.type === 'ai_ranking') return `导出 ${params.date} AI 前 20 榜单`
   return `导出 ${params.date} 每日总结`
 })
 

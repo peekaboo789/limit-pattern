@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MonitorToasts from '@/components/MonitorToasts.vue'
 import { initSession, session } from '@/stores/session'
 import { sourceLabel } from '@/utils/labels'
 import { computed, onMounted } from 'vue'
@@ -10,6 +11,8 @@ const mockMode = import.meta.env.VITE_USE_MOCK === '1'
 const items = [
   { name: 'overview', label: '总览', to: '/' },
   { name: 'similarity', label: '个股相似度', to: '/similarity' },
+  { name: 'ai-ranking', label: 'AI 榜单', to: '/ai-ranking' },
+  { name: 'monitor', label: '实时监控', to: '/monitor' },
   { name: 'pool', label: '涨停池', to: '/pool' },
   { name: 'summaries', label: '每日总结', to: '/summaries' },
   { name: 'settings', label: '设置', to: '/settings' },
@@ -84,6 +87,7 @@ onMounted(() => {
       <main class="content">
         <div v-if="session.healthError" class="alert">{{ session.healthError }}</div>
         <slot />
+        <MonitorToasts />
       </main>
     </div>
   </div>

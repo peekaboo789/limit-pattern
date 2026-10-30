@@ -238,6 +238,19 @@ class AiDailyRankBoard(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
+class AiRanking(Base):
+    """AI 前 20 榜单。每跑一次存一行，永久保留，清理任务不许删。"""
+
+    __tablename__ = "ai_rankings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    run_at: Mapped[str] = mapped_column(String(40), default="")
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
 class AiDailySummary(Base):
     """每日 AI 总结。清理任务不许删这张表。"""
 

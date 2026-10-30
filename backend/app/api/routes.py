@@ -144,14 +144,14 @@ def export_file(
     top: int = Query(50, ge=1, le=500),
 ):
     kind = (type or "").strip().lower()
-    if kind not in {"scan", "similarity", "pool", "summary"}:
-        raise HTTPException(status_code=422, detail="导出类型只能是 scan、similarity、pool、summary")
+    if kind not in {"scan", "similarity", "pool", "summary", "ai_ranking"}:
+        raise HTTPException(status_code=422, detail="导出类型只能是 scan、similarity、pool、summary、ai_ranking")
     day = _parse_day(date, default_latest=True)
     normalized = _code(code) if code else None
     if kind == "similarity" and not normalized:
         raise HTTPException(status_code=422, detail="导出相似度需要股票代码")
     with session_scope() as session:
-        if kind != "summary" and day not in quote_dates(session):
+        if kind not in {"summary", "ai_ranking"} and day not in quote_dates(session):
             raise HTTPException(status_code=404, detail="这一天没有行情")
         try:
             text, filename = render_export(session, kind, day, normalized, top)
@@ -319,3 +319,60 @@ def summary_generate(day: str) -> dict:
         if parsed not in quote_dates(session):
             raise HTTPException(status_code=404, detail="这一天没有行情")
         return generate_summary(session, parsed)
+
+
+@router.post("/ai-ranking/generate")
+def post_ai_ranking(body: dict | None = None) -> dict:
+    from backend.app.services.ranking_service import generate_ranking
+    from backend.app.services.summary_service import AiFailed, AiNotConfigured, ai_ready
+
+    if not ai_ready():
+        raise HTTPException(status_code=409, detail="未配置AI接口，请先在设置里填写")
+    day = _parse_day((body or {}).get("date"), default_latest=True)
+    with session_scope() as session:
+        try:
+            return generate_ranking(session, day, trigger="manual")
+        except AiNotConfigured as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except AiFailed as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/ai-ranking")
+def get_ai_ranking(date: str | None = None) -> dict:
+    from backend.app.services.ranking_service import get_ranking
+
+    day = _parse_day(date, default_latest=False) if date else None
+    with session_scope() as session:
+        payload = get_ranking(session, day)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="还没有 AI 榜单")
+    return payload
+
+
+@router.get("/ai-ranking/dates")
+def get_ai_ranking_dates() -> dict:
+    from backend.app.services.ranking_service import ranking_dates
+
+    with session_scope() as session:
+        return {"dates": ranking_dates(session)}
+
+
+@router.get("/monitor")
+def get_monitor() -> dict:
+    from backend.app.services.monitor_service import snapshot
+
+    with session_scope() as session:
+        return snapshot(session)
+
+
+@router.get("/monitor/events")
+def get_monitor_events(since: int = Query(0, ge=0)) -> dict:
+    from backend.app.services.monitor_service import events
+
+    with session_scope() as session:
+        return events(session, since)

@@ -27,3 +27,15 @@
 查询 `688`/`689` 时返回 422，`detail` 是「科创板不在纳入范围」。
 
 `GET /api/export?type=scan|similarity|pool|summary&date=YYYY-MM-DD` 返回带 BOM 的 UTF-8 文本，并在数据目录的 `exports/` 留一份副本。`similarity` 还要带 `code`。
+
+## AI 前 20 榜单
+
+- `POST /api/ai-ranking/generate`，正文 `{"date": "YYYY-MM-DD"}` 可省略（默认最新行情日）。没配 AI 返回 409，AI 出错 502，没行情 404。
+- `GET /api/ai-ranking?date=`：省略日期返回最新一次。字段：`date`、`run_at`、`trigger`（manual / schedule）、`model`、`candidate_count`、`pool_dates`、`pool_size`、`disclaimer`、`runs`、`items[]`（`rank`、`code`、`name`、`board_name`、`ai_score`、`reason`、`similarity`、`shape_score`、`volume_score`、`volume_pct_score`、`best_match`、`close`）。
+- `GET /api/ai-ranking/dates`：`{"dates": [...]}`，新的在前。
+- `GET /api/export?type=ai_ranking&date=`：TXT。
+
+## 实时监控
+
+- `GET /api/monitor`：`date`、`market_open`、`status_text`（交易中 / 休市）、`ranking_date`（被监控的上一交易日榜单日期）、`thresholds`、`source`、`error`、`updated_at`、`warn_count`、`alert_count`、`items[]`（`rank`、`code`、`name`、`ai_score`、`reason`、`price`、`pre_close`、`pct`、`level`：normal / warn ≥3% / alert ≥6%）。
+- `GET /api/monitor/events?since=<id>`：当天新事件，每只每级每天一次。`last_id` 用作下一次的 `since`。只在交易时段记录。
