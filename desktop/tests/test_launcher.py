@@ -325,7 +325,7 @@ def test_js_api_exposes_only_methods():
     api = launcher.ExportApi(launcher.Notifier(launcher.AppState()))
     api._attach(object())
     public = {name: value for name, value in inspect.getmembers(api) if not name.startswith("_")}
-    assert set(public) == {"notify", "save_file"}
+    assert set(public) == {"notify", "notify_test", "save_file"}
     assert all(callable(value) for value in public.values())
 
 
@@ -352,3 +352,16 @@ def test_monitor_watcher_notifies_each_event_once():
     assert watcher.poll_once() == 0
     assert urls[1].endswith("since=2")
     assert "6%" in sent[1][0] and "+6.10%" in sent[1][1]
+
+
+def test_notifier_fallback_chain():
+    from desktop import launcher
+
+    boxes = []
+    notifier = launcher.Notifier(None, toast=lambda t, m: False, box=lambda t, m: boxes.append(t) or True)
+    assert notifier.notify("标题", "内容") == "msgbox"
+    assert boxes == ["标题"]
+    silent = launcher.Notifier(None, toast=lambda t, m: False, box=lambda t, m: False)
+    assert silent.notify("a", "b") == "log"
+    api = launcher.ExportApi(launcher.Notifier(None, toast=lambda t, m: True))
+    assert api.notify_test("alert") == "toast"

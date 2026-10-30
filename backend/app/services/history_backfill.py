@@ -10,11 +10,15 @@ from backend.app.models.tables import CalcBar, DailyQuote
 
 _LOCK = threading.Lock()
 _MEMORY: dict[tuple[str, date], dict] = {}
+_TRIED: set[tuple[str, date]] = set()
+# 特征窗口 3 根 + 5 日量比基准
+WANTED_PRIOR_BARS = 8
 
 
 def clear_calc_memory() -> None:
     with _LOCK:
         _MEMORY.clear()
+        _TRIED.clear()
 
 
 def _to_bar(day: date, row) -> Bar | None:
@@ -116,14 +120,16 @@ def _store(session, code: str, bars: list[dict], as_of: date) -> int:
 
 
 def ensure_prior_bars(session, code: str, limit_date: date, as_of: date) -> str | None:
-    """让涨停日之前至少有三根 K 线。成功返回 None，失败返回可展示的原因。"""
+    """让涨停日之前有 8 根 K 线（3 根特征 + 5 日基准）；至少要 3 根。成功返回 None，失败返回可展示的原因。"""
     if limit_date > as_of:
         return "不能使用未来行情"
     cap = min(limit_date, as_of)
     prior = [bar for bar in load_bars(session, code, cap) if bar.trade_date < limit_date]
-    if len(prior) >= 3:
+    if len(prior) >= WANTED_PRIOR_BARS or (len(prior) >= 3 and (code, limit_date) in _TRIED):
         return None
-    start = limit_date - timedelta(days=21)
+    with _LOCK:
+        _TRIED.add((code, limit_date))
+    start = limit_date - timedelta(days=30)
     end = limit_date - timedelta(days=1)
     if end > as_of:
         end = as_of

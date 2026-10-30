@@ -14,6 +14,8 @@ export const monitorState = reactive({
   toasts: [] as Toast[],
   sound: localStorage.getItem('lp-monitor-sound') !== '0',
   started: false,
+  demoAlert: false,
+  testResult: '',
 })
 
 const seen = new Set<string>()
@@ -59,6 +61,36 @@ function show(date: string, event: MonitorEvent) {
   const notify = window.pywebview?.api?.notify
   if (typeof notify === 'function') void Promise.resolve(notify(title, text, key)).catch(() => undefined)
   window.setTimeout(() => dismiss(event.id), event.level === 'alert' ? 20000 : 10000)
+}
+
+const CHANNEL: Record<string, string> = {
+  toast: 'Windows 系统通知',
+  balloon: '托盘气泡',
+  msgbox: '置顶消息框',
+  log: '只记了日志（系统通知、托盘、消息框都没成功）',
+}
+
+/** 「测试提醒」：弹一条 ≥3% 和一条 ≥6% 示例，红框演示 10 秒，并走一遍桌面通知兜底链。 */
+export async function testAlerts() {
+  const stamp = Date.now()
+  const day = `test-${stamp}`
+  show(day, { id: -stamp, code: '600000', name: '示例股票', level: 'warn', pct: 3.1, rank: 1 } as MonitorEvent)
+  window.setTimeout(() => {
+    show(day, { id: -stamp - 1, code: '600000', name: '示例股票', level: 'alert', pct: 6.2, rank: 1 } as MonitorEvent)
+    monitorState.demoAlert = true
+    window.setTimeout(() => (monitorState.demoAlert = false), 10000)
+  }, 1500)
+  const tester = window.pywebview?.api?.notify_test
+  if (typeof tester !== 'function') {
+    monitorState.testResult = '浏览器模式：只能演示页面内弹窗和红框；桌面版会同时弹系统通知。'
+    return
+  }
+  try {
+    const channel = String(await tester('alert'))
+    monitorState.testResult = `桌面提醒已通过「${CHANNEL[channel] ?? channel}」发出。`
+  } catch {
+    monitorState.testResult = '桌面提醒调用失败，页面内弹窗仍然有效。'
+  }
 }
 
 async function poll() {

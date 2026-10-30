@@ -13,6 +13,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.app.core.constants import (
     COMPARE_WINDOW_TRADING_DAYS,
+    DEFAULT_SAMPLE_POOL_TRADING_DAYS,
+    POOL_HISTORY_BUFFER,
+    SAMPLE_POOL_MAX_TRADING_DAYS,
+    SAMPLE_POOL_MIN_TRADING_DAYS,
     DETAIL_RETENTION_TRADING_DAYS,
     RETENTION_MAX_TRADING_DAYS,
     RETENTION_MIN_TRADING_DAYS,
@@ -110,6 +114,7 @@ def settings_path() -> Path:
 def default_settings() -> dict:
     return {
         "retention_trading_days": DETAIL_RETENTION_TRADING_DAYS,
+        "sample_pool_trading_days": DEFAULT_SAMPLE_POOL_TRADING_DAYS,
         "ai_base_url": os.environ.get("AI_BASE_URL", "").strip(),
         "ai_model": os.environ.get("AI_MODEL", "").strip(),
         "ai_api_key": os.environ.get("AI_API_KEY", "").strip(),
@@ -209,7 +214,11 @@ def public_settings() -> dict:
     url = str(raw.get("ai_base_url") or "")
     model = str(raw.get("ai_model") or "")
     return {
-        "retention_trading_days": int(raw["retention_trading_days"]),
+        "retention_trading_days": retention_days(),
+        "retention_min_trading_days": min_retention_days(),
+        "sample_pool_trading_days": sample_pool_days(),
+        "sample_pool_range": [SAMPLE_POOL_MIN_TRADING_DAYS, SAMPLE_POOL_MAX_TRADING_DAYS],
+        "feature_window_trading_days": COMPARE_WINDOW_TRADING_DAYS,
         "compare_window_trading_days": COMPARE_WINDOW_TRADING_DAYS,
         "ai_enabled": bool(url and model and key),
         "ai_base_url": url,
@@ -258,6 +267,17 @@ def _update_settings(changes: dict) -> dict:
                 f"保留天数要在 {RETENTION_MIN_TRADING_DAYS} 到 {RETENTION_MAX_TRADING_DAYS} 之间"
             )
         current["retention_trading_days"] = days
+    if "sample_pool_trading_days" in changes and changes["sample_pool_trading_days"] is not None:
+        pool = int(changes["sample_pool_trading_days"])
+        if pool < SAMPLE_POOL_MIN_TRADING_DAYS or pool > SAMPLE_POOL_MAX_TRADING_DAYS:
+            raise ValueError(f"涨停样本池要在 {SAMPLE_POOL_MIN_TRADING_DAYS} 到 {SAMPLE_POOL_MAX_TRADING_DAYS} 个交易日之间")
+        current["sample_pool_trading_days"] = pool
+    floor = _clamp_pool(current.get("sample_pool_trading_days")) + POOL_HISTORY_BUFFER
+    try:
+        if int(current.get("retention_trading_days") or 0) < floor:
+            current["retention_trading_days"] = floor  # 保留天数不能少于样本池 + 特征窗口 + 5 日基准
+    except (TypeError, ValueError):
+        current["retention_trading_days"] = max(DETAIL_RETENTION_TRADING_DAYS, floor)
     if "ai_base_url" in changes and changes["ai_base_url"] is not None:
         current["ai_base_url"] = str(changes["ai_base_url"]).strip()
     if "ai_model" in changes and changes["ai_model"] is not None:
@@ -284,9 +304,28 @@ def stamp(field: str, value: str) -> None:
         write_settings_file(current)
 
 
+def _clamp_pool(value) -> int:
+    try:
+        pool = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SAMPLE_POOL_TRADING_DAYS
+    return max(SAMPLE_POOL_MIN_TRADING_DAYS, min(SAMPLE_POOL_MAX_TRADING_DAYS, pool))
+
+
+def sample_pool_days() -> int:
+    """涨停样本池长度（交易日）。"""
+    return _clamp_pool(read_settings_file().get("sample_pool_trading_days", DEFAULT_SAMPLE_POOL_TRADING_DAYS))
+
+
+def min_retention_days() -> int:
+    return sample_pool_days() + POOL_HISTORY_BUFFER
+
+
 def retention_days() -> int:
+    """明细保留天数，永远不少于样本池 + 特征窗口 + 5 日基准。"""
     try:
         days = int(read_settings_file()["retention_trading_days"])
     except (TypeError, ValueError, KeyError):
-        return DETAIL_RETENTION_TRADING_DAYS
-    return max(RETENTION_MIN_TRADING_DAYS, min(RETENTION_MAX_TRADING_DAYS, days))
+        days = DETAIL_RETENTION_TRADING_DAYS
+    days = max(RETENTION_MIN_TRADING_DAYS, min(RETENTION_MAX_TRADING_DAYS, days))
+    return max(days, min_retention_days())

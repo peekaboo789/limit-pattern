@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { api, ApiError, isAbort } from '@/api/client'
 import type { CalendarInfo, MonitorSnapshot } from '@/api/types'
-import { monitorState, setSound } from '@/stores/monitor'
+import { monitorState, setSound, testAlerts } from '@/stores/monitor'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 const snap = ref<MonitorSnapshot | null>(null)
@@ -9,7 +9,7 @@ const calendar = ref<CalendarInfo | null>(null)
 const error = ref('')
 let timer: number | undefined
 
-const hasAlert = computed(() => snap.value?.items.some((item) => item.level === 'alert') ?? false)
+const hasAlert = computed(() => monitorState.demoAlert || (snap.value?.items.some((item) => item.level === 'alert') ?? false))
 
 async function load() {
   try {
@@ -44,10 +44,12 @@ onUnmounted(() => {
     <div class="toolbar">
       <span class="market-chip" :class="{ on: snap?.market_open }">{{ snap ? (snap.market_open ? '交易中' : '休市') : '…' }}</span>
       <label class="muted"><input type="checkbox" :checked="monitorState.sound" @change="setSound(($event.target as HTMLInputElement).checked)" /> 提示音</label>
+      <button class="btn btn-ghost" type="button" @click="testAlerts()">测试提醒</button>
     </div>
   </header>
 
   <p v-if="error" class="alert">{{ error }}</p>
+  <p v-if="monitorState.testResult" class="muted" style="margin: 0">{{ monitorState.testResult }}<template v-if="monitorState.demoAlert">（红框演示中，10 秒后恢复）</template></p>
   <p v-if="calendar" class="muted" style="margin: 0">
     交易日历：今天 {{ calendar.today }} {{ calendar.today_is_trading_day ? '是交易日' : '休市' }} · 上一交易日 {{ calendar.previous_trading_day }} · 下一交易日 {{ calendar.next_trading_day }}
     <template v-if="calendar.estimated">（{{ calendar.year }} 年休市安排为推算，公告后请核对）</template>

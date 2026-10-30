@@ -780,7 +780,7 @@ def windows_toast(title: str, message: str) -> bool:
     env = dict(os.environ, LP_TOAST_TITLE=str(title)[:120], LP_TOAST_BODY=str(message)[:400])
     try:
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", _TOAST_SCRIPT],
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", _TOAST_SCRIPT],
             env=env,
             capture_output=True,
             timeout=15,
@@ -795,12 +795,33 @@ def windows_toast(title: str, message: str) -> bool:
     return True
 
 
-class Notifier:
-    """桌面提醒：先试 Windows 通知，失败用托盘气泡。同一个 key 只提醒一次。"""
+def message_box(title: str, message: str) -> bool:
+    """最后兜底：置顶的系统消息框，放在后台线程里弹，不阻塞调用方。"""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
 
-    def __init__(self, state: "AppState | None" = None, toast=None) -> None:
+        def run() -> None:
+            try:
+                ctypes.windll.user32.MessageBeep(0x30)
+                ctypes.windll.user32.MessageBoxW(None, str(message), str(title), 0x30 | 0x40000 | 0x1000)
+            except Exception:
+                logger.exception("消息框失败")
+
+        threading.Thread(target=run, name="limitpattern-msgbox", daemon=True).start()
+        return True
+    except Exception:
+        return False
+
+
+class Notifier:
+    """桌面提醒，按顺序兜底：Windows 通知 → 托盘气泡 → 置顶消息框 → 只记日志。同一个 key 只提醒一次。"""
+
+    def __init__(self, state: "AppState | None" = None, toast=None, box=None) -> None:
         self.state = state
         self._toast = toast or windows_toast
+        self._box = box or message_box
         self._seen: set[str] = set()
         self._lock = threading.Lock()
 
@@ -820,6 +841,8 @@ class Notifier:
                 return "balloon"
             except Exception:
                 logger.exception("托盘气泡失败")
+        if self._box(title, message):
+            return "msgbox"
         return "log"
 
 
@@ -896,6 +919,13 @@ class ExportApi:
 
     def _attach(self, window) -> None:
         self._window = window
+
+    def notify_test(self, level: str = "warn") -> str:
+        """「测试提醒」按钮：同步走一遍兜底链，返回实际用上的方式（toast/balloon/msgbox/log）。"""
+        if self._notifier is None:
+            self._notifier = Notifier()
+        title = "涨幅超 6% 报警（测试）" if level == "alert" else "涨幅超 3% 提醒（测试）"
+        return self._notifier.notify(title, "600000 示例股票 +6.20%（这是一条测试提醒）" if level == "alert" else "600000 示例股票 +3.10%（这是一条测试提醒）")
 
     def notify(self, title: str, message: str, key: str | None = None) -> str:
         """立刻返回，真正弹通知放到后台线程，绝不占用页面调用线程。"""

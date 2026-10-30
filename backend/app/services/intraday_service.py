@@ -77,6 +77,45 @@ def snapshot_kind(moment: datetime) -> str:
     return "close"
 
 
+SESSION_MINUTES = 240
+
+
+def elapsed_minutes(moment: datetime) -> float:
+    """已过的连续竞价分钟数（9:30–11:30、13:00–15:00，午休不算），0–240。"""
+    clock = moment.astimezone(SHANGHAI).time() if moment.tzinfo else moment.time()
+    minutes = clock.hour * 60 + clock.minute + clock.second / 60.0
+    morning = min(max(minutes - (9 * 60 + 30), 0.0), 120.0)
+    afternoon = min(max(minutes - 13 * 60, 0.0), 120.0)
+    return morning + afternoon
+
+
+def volume_fraction(elapsed: float, profile: str = "u") -> float:
+    """到此刻为止，全天成交量通常已完成的比例（估算）。
+
+    U 形：强度 w(t)=1+1.5·((t-120)/120)²，开盘、收盘最活跃；积分归一化。linear 为线性兜底。
+    """
+    t = min(max(float(elapsed), 0.0), SESSION_MINUTES)
+    if t <= 0:
+        return 0.0
+    if profile == "linear":
+        return t / SESSION_MINUTES
+    cumulative = t + 60.0 * (((t - 120.0) / 120.0) ** 3 + 1.0)
+    return cumulative / (SESSION_MINUTES + 120.0)
+
+
+def scale_partial(row: dict, fraction: float) -> dict:
+    """把盘中累计量换算成全天估算值；成交额、换手率同比例放大。标记 volume_estimated。"""
+    if fraction <= 0 or fraction >= 0.999:
+        return row
+    scaled = dict(row)
+    factor = 1.0 / max(fraction, 0.02)
+    for field in ("volume", "amount", "turnover_rate"):
+        if scaled.get(field) is not None:
+            scaled[field] = float(scaled[field]) * factor
+    scaled["volume_estimated"] = True
+    return scaled
+
+
 def universe(session) -> list[str]:
     days = quote_dates(session)
     if not days:
@@ -197,10 +236,22 @@ def provisional_day(session, moment: datetime | None = None, prefer: str = "auto
         logger.warning("没有拿到今天的报价，退回最新日线")
         yield (days[-1] if days else None), info
         return
+    stamp_time = datetime.fromisoformat(taken_at) if taken_at else moment
+    elapsed = elapsed_minutes(stamp_time)
+    fraction = volume_fraction(elapsed) if kind != "close" else 1.0
+    rows = [scale_partial(row, fraction) for row in rows]
     purge_provisional(session)
     try:
         count = _insert(session, day, rows, kind)
-        yield day, {"kind": kind, "taken_at": taken_at, "count": count}
+        yield day, {
+            "kind": kind,
+            "taken_at": taken_at,
+            "count": count,
+            "elapsed_minutes": round(elapsed, 1),
+            "volume_fraction": round(fraction, 4),
+            "volume_estimated": fraction < 0.999,
+            "volume_note": "盘中成交量/额/换手已按 U 形日内分布换算成全天估算值（估）" if fraction < 0.999 else "",
+        }
     finally:
         session.rollback()
         purge_provisional(session)

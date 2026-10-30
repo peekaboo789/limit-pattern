@@ -105,8 +105,8 @@ function poolText(date: string): string {
     ].join('\t'),
   )
   return header(`涨停池  ${date}`, [
-    `近三日\t${dates.join(',')}`,
-    items.length ? `当日 ${items.length} 只` : '该日不在近三日涨停池，或当日没有涨停样本。',
+    `样本池\t${dates.join(',')}`,
+    items.length ? `当日 ${items.length} 只` : '该日不在近 30 日涨停池，或当日没有涨停样本。',
     '涨停日\t代码\t名称\t市场\t收盘\t涨幅\t连板\t封板时间\t形态\t换手%\t成交额',
     ...lines,
   ])

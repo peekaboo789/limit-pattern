@@ -65,7 +65,7 @@ onMounted(() => {
   <header class="page-head">
     <div>
       <h1>涨停池</h1>
-      <p class="lede">只列出最近三个交易日里涨停过的沪深股票。点一行进入相似度对比。</p>
+      <p class="lede">只列出近 30 个交易日（设置可改）里涨停过的沪深股票。点一行进入相似度对比。</p>
     </div>
     <button class="btn btn-ghost" type="button" :disabled="loading" @click="load">刷新</button>
   </header>

@@ -1,4 +1,4 @@
-"""聚类分析：只用最近 3 个交易日涨停样本的涨停前三日形态向量（与相似度同一套特征），不看未来。
+"""聚类分析：只用近 N 个交易日（默认 30）涨停样本的涨停前三日形态向量（与相似度同一套特征），不看未来。
 
 scikit-learn 是可选依赖。没装时抛 ClusterUnavailable，接口回 503。
 """
@@ -43,7 +43,7 @@ def build_dataset(session, day: date) -> dict:
         "date": day.isoformat(),
         "pool_dates": [d.isoformat() for d in dates],
         "feature_names": feature_names(),
-        "note": "最近 3 个交易日涨停样本，向量取涨停前三根 K 线，不含涨停当天，不含未来",
+        "note": "近 N 个交易日涨停样本（默认 30，设置可改），向量取涨停前三根 K 线，不含涨停当天，不含未来",
         "samples": [
             {
                 "code": s["code"],
@@ -146,8 +146,50 @@ def run_on_dataset(dataset: dict, k: int | None = None, method: str = "kmeans") 
     return base
 
 
-def run_cluster(session, day: date, k: int | None = None, method: str = "kmeans") -> dict:
+INTERPRET_SYSTEM = (
+    "你是行情统计助手。下面是若干聚类组的中心形态数字（涨停前第 3、2、1 天的涨跌、振幅、量比等）。"
+    "为每组写一句不超过 40 字的中文解读，只描述数字体现的形态（如缩量横盘、放量拉升），"
+    "不得预测涨跌、不得给出买卖建议、不得编造新闻。"
+    '只返回 JSON：{"items":[{"id":0,"text":"..."}]}'
+)
+
+
+def interpret_clusters(result: dict, chat=None) -> dict:
+    """可选：让 AI 按中心形态数字写一句解读，存到 ai_text；失败或未配置时保留规则标签。"""
+    from backend.app.services.summary_service import AiFailed, AiNotConfigured, _extract_json, ai_ready, call_chat
+
+    clusters = result.get("clusters") or []
+    if not clusters:
+        return result
+    if chat is None and not ai_ready():
+        result["ai_note"] = "未配置 AI 接口，只显示规则标签"
+        return result
+    lines = []
+    for c in clusters:
+        rows = "; ".join(
+            f"{row['day']}: " + ", ".join(f"{k}={v}" for k, v in row.items() if k != "day" and v is not None)
+            for row in c.get("pattern") or []
+        )
+        lines.append(f"id={c['id']} 规则标签={c['name']} 样本数={c['size']} 三日累计涨跌={c.get('return_3d')} | {rows}")
+    prompt = "\n".join(lines)
+    try:
+        text = chat(prompt) if chat is not None else call_chat(prompt, system=INTERPRET_SYSTEM, timeout=120.0)
+        payload = _extract_json(text) or {}
+        by_id = {int(item.get("id")): str(item.get("text") or "").strip()[:80] for item in payload.get("items") or [] if "id" in item}
+    except (AiFailed, AiNotConfigured, ValueError, TypeError) as exc:
+        result["ai_note"] = f"AI 解读没写成，保留规则标签：{exc}"[:300]
+        return result
+    for c in clusters:
+        if by_id.get(c["id"]):
+            c["ai_text"] = by_id[c["id"]]
+    result["ai_note"] = "AI 解读只根据中心形态数字，不是预测"
+    return result
+
+
+def run_cluster(session, day: date, k: int | None = None, method: str = "kmeans", interpret: bool = False) -> dict:
     result = run_on_dataset(build_dataset(session, day), k, method)
+    if interpret:
+        interpret_clusters(result)
     path = clusters_dir() / f"{day.isoformat()}.json"
     path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return result

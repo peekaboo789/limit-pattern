@@ -1,4 +1,4 @@
-"""只和最近三个交易日的涨停样本比。样本窗口不含涨停当天，候选窗口含评估日。"""
+"""只和近 N 个交易日（默认 30，设置可改）的涨停样本比，特征仍是涨停前 3 根 K 线。样本窗口不含涨停当天，候选窗口含评估日。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import numpy as np
 
 from backend.app.algorithms.features import build_three_day_window
 from backend.app.algorithms.similarity import score_components
-from backend.app.core.constants import COMPARE_WINDOW_TRADING_DAYS
 from backend.app.models.tables import DailyQuote, Stock
 from backend.app.providers.markets import BOARD_LABELS, classify, is_in_scope
 from backend.app.services.history_backfill import ensure_prior_bars, load_bars
@@ -18,8 +17,10 @@ DISCLAIMER = "相似度不是涨停概率"
 
 
 def pool_dates(session, as_of: date) -> list[date]:
+    from backend.app.core.config import sample_pool_days
+
     days = quote_dates(session, as_of)
-    return days[-COMPARE_WINDOW_TRADING_DAYS:]
+    return days[-sample_pool_days():]
 
 
 def _samples(session, as_of: date) -> tuple[list[date], list[dict], list[dict]]:
@@ -154,38 +155,38 @@ def scan_market(session, as_of: date, top: int, min_score: float) -> dict:
             targets.append((code, window.vector))
     if not targets:
         return base
-    parts = score_components(
-        np.asarray([vector for _code, vector in targets], dtype=float),
-        np.asarray([sample["vector"] for sample in samples], dtype=float),
-    )
+    sample_matrix = np.asarray([sample["vector"] for sample in samples], dtype=float)
+    sample_codes = np.asarray([sample["code"] for sample in samples])
     items = []
-    for row_index, (code, _vector) in enumerate(targets):
-        scores = parts["score"][row_index].astype(float).copy()
-        for sample_index, sample in enumerate(samples):
-            if sample["code"] == code:
-                scores[sample_index] = -1.0
-        if scores.size == 0 or float(scores.max()) < 0:
-            continue
-        best = int(np.argmax(scores))
-        score = float(scores[best])
-        if score < min_score:
-            continue
-        sample = samples[best]
-        items.append(
-            {
-                "code": code,
-                "name": names.get(code, ""),
-                "score": _round(score),
-                "best_match": {
-                    "code": sample["code"],
-                    "name": names.get(sample["code"], ""),
-                    "limit_date": sample["limit_date"].isoformat(),
-                },
-                "shape_score": _round(parts["shape"][row_index, best]),
-                "volume_score": _round(parts["volume"][row_index, best]),
-                "volume_pct_score": _round(parts["volume_pct"][row_index, best]),
-            }
-        )
+    chunk = 800  # 分块算，大样本池时内存可控
+    for start in range(0, len(targets), chunk):
+        block = targets[start : start + chunk]
+        parts = score_components(np.asarray([vector for _code, vector in block], dtype=float), sample_matrix)
+        scores_all = parts["score"].astype(float)
+        self_mask = np.asarray([code for code, _v in block])[:, None] == sample_codes[None, :]
+        scores_all = np.where(self_mask, -1.0, scores_all)
+        best_idx = np.argmax(scores_all, axis=1)
+        for row_index, (code, _vector) in enumerate(block):
+            best = int(best_idx[row_index])
+            score = float(scores_all[row_index, best])
+            if score < 0 or score < min_score:
+                continue
+            sample = samples[best]
+            items.append(
+                {
+                    "code": code,
+                    "name": names.get(code, ""),
+                    "score": _round(score),
+                    "best_match": {
+                        "code": sample["code"],
+                        "name": names.get(sample["code"], ""),
+                        "limit_date": sample["limit_date"].isoformat(),
+                    },
+                    "shape_score": _round(parts["shape"][row_index, best]),
+                    "volume_score": _round(parts["volume"][row_index, best]),
+                    "volume_pct_score": _round(parts["volume_pct"][row_index, best]),
+                }
+            )
     items.sort(key=lambda item: (-item["score"], item["code"]))
     base["items"] = items[:top]
     return base

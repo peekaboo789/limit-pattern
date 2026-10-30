@@ -13,6 +13,7 @@ interface Window {
     api?: {
       save_file?: (filename: string, text: string) => unknown
       notify?: (title: string, message: string, key?: string) => unknown
+      notify_test?: (level?: string) => unknown
     }
   }
 }

@@ -474,7 +474,7 @@ def post_cluster_run(body: dict | None = None) -> dict:
     method = str(body.get("method") or "kmeans")
     with session_scope() as session:
         try:
-            return run_cluster(session, day, k, method)
+            return run_cluster(session, day, k, method, interpret=bool(body.get("interpret")))
         except ClusterUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:

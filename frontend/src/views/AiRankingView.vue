@@ -100,7 +100,7 @@ onMounted(async () => {
       <span v-if="ranking" class="muted">
         候选 {{ ranking.candidate_count }} 只 · 样本池 {{ ranking.pool_size }} 条 · 生成于 {{ ranking.run_at.replace('T', ' ').slice(0, 19) }}
         <template v-if="ranking.model"> · {{ ranking.model }}</template>
-        <template v-if="ranking.snapshot"> · 行情：{{ snapshotLabel[ranking.snapshot.kind] ?? ranking.snapshot.kind }}<template v-if="ranking.snapshot.taken_at && ranking.snapshot.kind !== 'daily'"> {{ ranking.snapshot.taken_at.slice(11, 16) }}</template></template>
+        <template v-if="ranking.snapshot"> · 行情：{{ snapshotLabel[ranking.snapshot.kind] ?? ranking.snapshot.kind }}<template v-if="ranking.snapshot.taken_at && ranking.snapshot.kind !== 'daily'"> {{ ranking.snapshot.taken_at.slice(11, 16) }}</template><template v-if="ranking.snapshot.volume_estimated"> · 成交量按已过 {{ ranking.snapshot.elapsed_minutes }} 分钟换算成全天（估）</template></template>
       </span>
     </div>
     <Disclaimer :text="ranking?.disclaimer" />

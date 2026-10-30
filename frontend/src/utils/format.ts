@@ -40,7 +40,7 @@ export function formatVolume(shares: number | null | undefined): string {
 }
 
 export function formatTurnover(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return '—'
+  if (value == null || !Number.isFinite(value)) return '缺失'
   return `${value.toFixed(2)}%`
 }
 

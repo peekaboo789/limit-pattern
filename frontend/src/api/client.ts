@@ -113,7 +113,7 @@ export const api = {
 
   cluster: (date?: string) => request<ClusterResult>(`/api/cluster${query({ date })}`),
 
-  runCluster: (body: { date?: string; k: number | 'auto'; method: string }) =>
+  runCluster: (body: { date?: string; k: number | 'auto'; method: string; interpret?: boolean }) =>
     request<ClusterResult>('/api/cluster/run', { method: 'POST', body: JSON.stringify(body) }, 180000),
 
   calendar: (year?: number) => request<CalendarInfo>(`/api/calendar${query({ year })}`),

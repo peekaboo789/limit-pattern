@@ -1,17 +1,26 @@
-"""口径常量。对比窗口固定为 3；明细保留天数默认为 5，可在设置里改。"""
+"""口径常量。形态特征窗口固定 3 根 K 线；涨停样本池默认近 30 个交易日（设置里 3–60 可改）。"""
 
 from __future__ import annotations
 
 from datetime import date
 
-# 相似度只和最近 3 个交易日里涨停过的股票比。这个数不能在页面上改。
-COMPARE_WINDOW_TRADING_DAYS = 3
-SAMPLE_POOL_TRADING_DAYS = COMPARE_WINDOW_TRADING_DAYS
+# 形态特征窗口：涨停前 3 根 K 线（候选股含评估日的最近 3 根）。固定不改。
+FEATURE_WINDOW_TRADING_DAYS = 3
+COMPARE_WINDOW_TRADING_DAYS = FEATURE_WINDOW_TRADING_DAYS  # 旧名，等同特征窗口
+# 量比等用的 5 日基准
+VOLUME_BASELINE_TRADING_DAYS = 5
 
-# 行情、标签等明细默认只留最近 5 个交易日。设置页可以改，见 retention 范围。
-DETAIL_RETENTION_TRADING_DAYS = 5
+# 涨停样本池：相似度/AI 排名/聚类/次日池/回测只和近 N 个交易日涨停过的股票比。
+DEFAULT_SAMPLE_POOL_TRADING_DAYS = 30
+SAMPLE_POOL_MIN_TRADING_DAYS = 3
+SAMPLE_POOL_MAX_TRADING_DAYS = 60
+SAMPLE_POOL_TRADING_DAYS = DEFAULT_SAMPLE_POOL_TRADING_DAYS
+
+# 明细保留：至少 = 样本池 + 特征窗口 + 5 日基准，保证池里最早的涨停也算得出特征。
+POOL_HISTORY_BUFFER = FEATURE_WINDOW_TRADING_DAYS + VOLUME_BASELINE_TRADING_DAYS
+DETAIL_RETENTION_TRADING_DAYS = 40
 RETENTION_MIN_TRADING_DAYS = 3
-RETENTION_MAX_TRADING_DAYS = 30
+RETENTION_MAX_TRADING_DAYS = 90
 
 # 三日窗口本身只要 3 根 K 线。明细只留大约一周，不再要求 20 日历史。
 MIN_LISTED_TRADING_DAYS = 3

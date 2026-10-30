@@ -109,7 +109,7 @@ watch(
   <header class="page-head">
     <div>
       <h1>总览</h1>
-      <p class="lede">最近三个交易日的涨停样本，以及全市场与该样本池的形态扫描。</p>
+      <p class="lede">近 30 个交易日（设置可改）的涨停样本，以及全市场与该样本池的形态扫描。</p>
     </div>
   </header>
 
@@ -145,7 +145,7 @@ watch(
 
   <section class="stats">
     <article class="card stat">
-      <div class="stat-label">近三日涨停样本</div>
+      <div class="stat-label">近 30 日涨停样本</div>
       <div class="stat-value">{{ total }}</div>
       <div class="stat-foot">含同一只股票的多次涨停</div>
     </article>

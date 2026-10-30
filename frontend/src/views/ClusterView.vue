@@ -13,6 +13,7 @@ const available = ref<boolean | null>(null)
 const missingMessage = ref('')
 const k = ref<number | 'auto'>('auto')
 const method = ref('kmeans')
+const interpret = ref(false)
 const running = ref(false)
 const error = ref('')
 const exportParams = computed<ExportParams | null>(() => (result.value ? { type: 'cluster', date: result.value.date } : null))
@@ -21,7 +22,7 @@ async function run() {
   running.value = true
   error.value = ''
   try {
-    result.value = await api.runCluster({ k: k.value, method: method.value })
+    result.value = await api.runCluster({ k: k.value, method: method.value, interpret: interpret.value })
   } catch (reason) {
     if (isAbort(reason)) return
     if (reason instanceof ApiError && reason.status === 503) {
@@ -49,7 +50,7 @@ onMounted(async () => {
   <header class="page-head">
     <div>
       <h1>聚类分析</h1>
-      <p class="lede">把最近 3 个交易日涨停股的涨停前三日形态（K 线、成交量、量比）分组，看看有几类典型走法。不含涨停当天，不看未来。</p>
+      <p class="lede">把近 30 个交易日涨停股的涨停前三日形态（K 线、成交量、量比）分组，看看有几类典型走法。不含涨停当天，不看未来。</p>
     </div>
     <div class="toolbar">
       <label class="field">
@@ -66,6 +67,7 @@ onMounted(async () => {
           <option value="agglomerative">层次聚类</option>
         </select>
       </label>
+      <label class="muted"><input v-model="interpret" type="checkbox" /> AI 解读各组</label>
       <button class="btn" type="button" :disabled="running || available === false" @click="run">{{ running ? '计算中…' : '运行聚类' }}</button>
       <ExportButton :params="exportParams" />
     </div>
@@ -90,6 +92,7 @@ onMounted(async () => {
       </div>
       <Disclaimer :text="result.disclaimer" />
       <p v-if="result.note" class="empty">{{ result.note }}</p>
+      <p v-if="result.ai_note" class="muted">{{ result.ai_note }}</p>
       <ClusterScatter v-else :result="result" :colors="COLORS" />
     </section>
     <div class="monitor-grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr))">
@@ -98,6 +101,7 @@ onMounted(async () => {
           <h2 :style="{ color: COLORS[cluster.id % COLORS.length] }">组{{ cluster.id + 1 }} · {{ cluster.name }}</h2>
           <span class="muted">{{ cluster.size }} 只<template v-if="cluster.return_3d != null"> · 三日涨幅 {{ cluster.return_3d.toFixed(2) }}%</template></span>
         </div>
+        <p v-if="cluster.ai_text" class="hint" style="margin: 4px 0">AI 解读：{{ cluster.ai_text }}</p>
         <ClusterPattern v-if="cluster.pattern.length" :pattern="cluster.pattern" :color="COLORS[cluster.id % COLORS.length]" />
         <div class="chips" style="margin-top: 8px">
           <span v-for="member in cluster.members" :key="member.code + member.limit_date" class="chip" :title="`涨停日 ${member.limit_date}`">{{ member.code }} {{ member.name }}</span>

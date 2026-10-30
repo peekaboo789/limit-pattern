@@ -12,6 +12,9 @@ export interface Health {
 export interface Settings {
   retention_trading_days: number
   compare_window_trading_days: number
+  sample_pool_trading_days?: number
+  retention_min_trading_days?: number
+  feature_window_trading_days?: number
   ai_enabled: boolean
   ai_base_url: string
   ai_model: string
@@ -30,6 +33,7 @@ export interface Settings {
 export interface SettingsUpdate {
   retention_trading_days?: number
   compare_window_trading_days?: number
+  sample_pool_trading_days?: number
   ai_enabled?: boolean
   ai_base_url?: string
   ai_model?: string
@@ -224,7 +228,7 @@ export interface AiRanking {
   disclaimer: string
   items: AiRankingItem[]
   runs?: string[]
-  snapshot?: { kind: 'intraday' | 'morning_freeze' | 'close' | 'daily'; taken_at: string | null; count: number }
+  snapshot?: { kind: 'intraday' | 'morning_freeze' | 'close' | 'daily'; taken_at: string | null; count: number; volume_estimated?: boolean; volume_fraction?: number; elapsed_minutes?: number }
 }
 
 export type MonitorLevel = 'normal' | 'warn' | 'alert'
@@ -346,6 +350,7 @@ export interface ClusterGroup {
   members: { code: string; name: string; limit_date: string }[]
   pattern: ClusterPatternRow[]
   return_3d: number | null
+  ai_text?: string
 }
 
 export interface ClusterResult {
@@ -359,6 +364,7 @@ export interface ClusterResult {
   disclaimer: string
   generated_at: string
   note?: string
+  ai_note?: string
   clusters: ClusterGroup[]
   points: { code: string; name: string; cluster: number; x: number; y: number }[]
 }

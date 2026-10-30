@@ -263,6 +263,9 @@ def average_price(bar: dict) -> float | None:
     return None
 
 
+_FLOAT_ENABLED = threading.Event()
+
+
 def fill_missing_fields(
     code: str,
     bars: list[dict],
@@ -272,6 +275,13 @@ def fill_missing_fields(
     """换手率尽量用别的源补。成交额补不到时，用成交量乘均价估算，并标成估算。"""
     if not bars:
         return bars
+    if _FLOAT_ENABLED.is_set():
+        try:
+            from backend.app.providers import float_shares
+
+            float_shares.fill_turnover(code, bars)  # 先用流通股本算换手率，不再为换手率多请求一个源
+        except Exception:
+            pass
     sources = [name for name in (chain or _source_chain()) if name and name != used_source and not _is_sick(name)]
     need_amount = any(bar.get("amount") is None for bar in bars)
     need_turnover = any(bar.get("turnover_rate") is None for bar in bars)
@@ -424,9 +434,18 @@ def _run(task_id: str) -> None:
             _CHAIN = source_chain(configured, active)
             _CHAIN_KEY = configured
         stocks = [(code, name) for code, name in stocks if keep_code(code)]
-        _set(active_source=active, message=f"使用数据源 {active}，正在下载股票列表")
+        _set(active_source=active, message=f"使用数据源 {active}，正在拉取流通股本（算换手率用）")
+        if not _OVERRIDE:
+            try:
+                from backend.app.providers import float_shares
+
+                float_shares.prefetch([code for code, _name in stocks])
+                _FLOAT_ENABLED.set()
+            except Exception as exc:
+                logger.info("流通股本没拉到，换手率缺失时会显示为缺失：%s", exc)
         end = today()
-        start = end - timedelta(days=max(20, retention_days() * 3))
+        # 交易日换算成自然日（约 1.6 倍，含长假），多拉 10 天余量
+        start = end - timedelta(days=max(20, int(retention_days() * 1.6) + 10))
         total = len(stocks)
         done = 0
         failed = 0
@@ -508,6 +527,11 @@ def _run(task_id: str) -> None:
                 message=f"同步已取消：已写入 {saved} 只，失败 {failed} 只",
             )
             return
+        try:
+            if saved > 0:  # 行情源确实能用时才判断，避免断网误判休市
+                _check_calendar(end)
+        except Exception:
+            logger.info("日历自检没有做成")
         _set(progress=92, phase="cleanup", message="正在清理过期明细")
         purge_expired()
         _refresh_limit_counts()
@@ -656,3 +680,17 @@ def _refresh_limit_counts() -> None:
                 session.add(TradingDay(trade_date=day, is_open=True, limit_up_count=count))
             else:
                 record.limit_up_count = count
+
+
+def _check_calendar(day: date) -> None:
+    """收盘后（15:30 之后）同步完，若当天是“交易日”却 0 根日线，交给日历自检。"""
+    from backend.app.core.calendar import observe_session
+    from backend.app.core.database import session_scope as _scope
+    from backend.app.models.tables import DailyQuote as _Quote
+
+    moment = datetime.now(SHANGHAI)
+    if moment.date() != day or (moment.hour, moment.minute) < (15, 30):
+        return
+    with _scope() as session:
+        count = session.query(_Quote).filter(_Quote.trade_date == day).count()
+    observe_session(day, count)

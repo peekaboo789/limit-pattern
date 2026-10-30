@@ -11,6 +11,7 @@ const meta = ref<Settings | null>(null)
 const form = reactive({
   retention_trading_days: 5,
   compare_window_trading_days: 3,
+  sample_pool_trading_days: 30,
   ai_base_url: '',
   ai_model: '',
   data_source: 'auto',
@@ -29,6 +30,7 @@ function apply(settings: Settings) {
   meta.value = settings
   form.retention_trading_days = settings.retention_trading_days
   form.compare_window_trading_days = settings.compare_window_trading_days
+  form.sample_pool_trading_days = settings.sample_pool_trading_days ?? 30
   form.ai_base_url = settings.ai_base_url
   form.ai_model = settings.ai_model
   form.data_source = settings.data_source || 'auto'
@@ -123,6 +125,7 @@ async function save() {
   try {
     const body: {
       retention_trading_days: number
+      sample_pool_trading_days: number
       ai_base_url: string
       ai_model: string
       data_source: string
@@ -130,6 +133,7 @@ async function save() {
       ai_thinking: string
     } = {
       retention_trading_days: form.retention_trading_days,
+      sample_pool_trading_days: form.sample_pool_trading_days,
       ai_base_url: form.ai_base_url.trim(),
       ai_model: form.ai_model.trim(),
       data_source: form.data_source,
@@ -168,13 +172,13 @@ onMounted(() => {
       <div class="card-head"><h2>数据</h2></div>
       <label class="field">
         <span>涨停明细保留交易日</span>
-        <input v-model.number="form.retention_trading_days" type="number" min="3" max="30" step="1" />
-        <span class="hint">默认 5，可改 3 到 30。到期明细会清理，每日总结 JSON 会留下。</span>
+        <input v-model.number="form.retention_trading_days" type="number" :min="(form.sample_pool_trading_days || 30) + 8" max="90" step="1" />
+        <span class="hint">默认 40，最多 90，至少「样本池 + 8」（3 根特征 K 线 + 5 日量比基准），填少了会自动抬高。到期明细会清理，每日总结 JSON 永久保留。</span>
       </label>
       <label class="field" style="margin-top: 12px">
-        <span>对比窗口（交易日）</span>
-        <input :value="form.compare_window_trading_days" type="number" readonly />
-        <span class="hint">固定为 3 个交易日，不能修改。相似度只和最近涨停样本比。</span>
+        <span>涨停样本池（近 N 个交易日）</span>
+        <input v-model.number="form.sample_pool_trading_days" type="number" min="3" max="60" step="1" />
+        <span class="hint">默认 30，可改 3 到 60。相似度、AI 排名、聚类、次日池和回测只和这段时间里涨停过的股票比。形态特征固定看涨停前 3 根 K 线。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>数据源</span>

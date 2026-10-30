@@ -117,8 +117,9 @@ def test_health_and_settings_round_trip(client):
     )
     assert saved.status_code == 200
     view = saved.json()
-    assert view["retention_trading_days"] == 6
-    assert view["compare_window_trading_days"] == 3
+    assert view["retention_trading_days"] == 38  # 自动抬到 样本池 30 + 3 + 5
+    assert view["sample_pool_trading_days"] == 30
+    assert view["feature_window_trading_days"] == 3
     assert view["ai_enabled"] is True
     assert view["ai_api_key_set"] is True
     assert secret not in saved.text
@@ -130,10 +131,18 @@ def test_health_and_settings_round_trip(client):
     assert rejected.status_code == 422
     too_small = client.put("/api/settings", json={"retention_trading_days": 2})
     assert too_small.status_code == 422
+    assert client.put("/api/settings", json={"sample_pool_trading_days": 61}).status_code == 422
+    assert client.put("/api/settings", json={"sample_pool_trading_days": 2}).status_code == 422
+    small = client.put("/api/settings", json={"sample_pool_trading_days": 10, "retention_trading_days": 20}).json()
+    assert small["sample_pool_trading_days"] == 10 and small["retention_trading_days"] == 20
+    big = client.put("/api/settings", json={"sample_pool_trading_days": 60}).json()
+    assert big["retention_trading_days"] == 68
 
 
 def test_pool_is_three_days_and_excludes_self_and_future(client):
     days = _seed()
+    assert client.get("/api/pool").json()["dates"] == [day.isoformat() for day in days]  # 默认 30 日池涵盖全部 8 天
+    assert client.put("/api/settings", json={"sample_pool_trading_days": 3}).status_code == 200
     last = days[-1].isoformat()
     pool = client.get("/api/pool").json()
     assert pool["dates"] == [day.isoformat() for day in days[-3:]]
@@ -202,6 +211,7 @@ def test_retention_keeps_summaries(client, monkeypatch):
     listed = client.get("/api/summaries").json()["items"]
     assert listed[0]["date"] == days[0].isoformat()
     assert listed[0]["headline"] == "周一总结"
+    monkeypatch.setattr("backend.app.services.retention.retention_days", lambda: 5)
     result = purge_expired()
     assert result["deleted"]["daily_quotes"] > 0
     assert len(result["kept_dates"]) == 5
