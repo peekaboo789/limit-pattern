@@ -151,7 +151,7 @@ flowchart LR
 
 对最近 3 个交易日的涨停样本，用和相似度同一套涨停前三日向量（K 线形态、成交量、量比，标准化后）做 KMeans 或层次聚类，k 可选 2~6 或自动（按轮廓系数挑）。不含涨停当天，不看未来，分组不是涨停概率。
 
-scikit-learn 是可选依赖，Windows 绿色版 EXE 不打包它（体积保持约 90 MB），EXE 里打开聚类页会显示「scikit-learn 未安装」。在本地源码运行：
+Windows 绿色版只发布聚类版（`LimitPattern-cluster-win64.zip`，已带 scikit-learn）。scikit-learn 在源码里仍是可选依赖，不装时聚类页显示「scikit-learn 未安装」。在本地源码运行：
 
 ```bat
 cd limit-pattern
@@ -297,8 +297,10 @@ AI 区：模型解读是算出来的状态，地址、模型和密钥都有才�
 
 ### Windows 桌面程序
 
-1. 从构建产物下载 `LimitPattern-win64.zip` 并解压。
-2. 双击 `LimitPattern\LimitPattern.exe`。压缩包里如果还有 `LimitPattern-onefile.exe`，功能相同，只是单文件。
+1. 从 GitHub Actions「Build Windows EXE (Cluster)」的构建产物下载 `LimitPattern-cluster-win64.zip` 并解压（这是唯一的 Windows 构建，带 scikit-learn 和样例特征数据 `cluster-data/`，文件夹版，没有单文件 EXE）。
+2. 双击 `LimitPattern\LimitPattern.exe`。
+
+本地打包：双击 `build_windows.bat`，默认就是聚类版（`LP_WITH_CLUSTER=1`）。源码里 scikit-learn 仍是可选依赖：不装时聚类页提示「scikit-learn 未安装」，其余功能照常；`set LP_WITH_CLUSTER=0` 后再跑 `build_windows.bat` 可以打不带聚类的标准版（含单文件 EXE），GitHub 上不再构建它。
 3. 第一次打开如果库是空的，窗口里会看到同步进度。同步完再看总览和涨停池。
 
 ### 源码

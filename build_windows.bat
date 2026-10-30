@@ -4,6 +4,8 @@ chcp 65001 >nul
 cd /d "%~dp0"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
+rem 默认打聚类版（带 scikit-learn）。要标准版：先 set LP_WITH_CLUSTER=0
+if not defined LP_WITH_CLUSTER set "LP_WITH_CLUSTER=1"
 
 echo == 检查 Python ==
 set "PY="
@@ -39,13 +41,14 @@ echo == 复制到 dist\LimitPattern ==
 if exist "dist\LimitPattern" rmdir /s /q "dist\LimitPattern"
 if not exist "dist" mkdir "dist"
 xcopy /e /i /q /y "desktop\dist\LimitPattern" "dist\LimitPattern" >nul || goto :fail
-copy /y "desktop\dist\LimitPattern-win64.zip" "dist\LimitPattern-win64.zip" >nul
+if "%LP_WITH_CLUSTER%"=="1" (set "ZIPNAME=LimitPattern-cluster-win64.zip") else (set "ZIPNAME=LimitPattern-win64.zip")
+copy /y "desktop\dist\%ZIPNAME%" "dist\%ZIPNAME%" >nul
 
 echo.
 echo ==========================================================
 echo 打包完成！
 echo 程序：%CD%\dist\LimitPattern\LimitPattern.exe
-echo 压缩包：%CD%\dist\LimitPattern-win64.zip
+echo 压缩包：%CD%\dist\%ZIPNAME%
 echo ==========================================================
 pause
 exit /b 0
