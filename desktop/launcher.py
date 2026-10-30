@@ -1052,6 +1052,12 @@ def _serve_and_open(args: argparse.Namespace, data_dir: Path, state: AppState) -
     timeout = 120.0 if is_frozen() else 20.0
     payload = wait_until_healthy(DEFAULT_HOST, port, server.thread, timeout=timeout)
     logger.info("健康检查通过 %s", json.dumps(payload, ensure_ascii=False))
+    try:
+        from backend.app.algorithms.clustering import sklearn_available
+
+        logger.info("聚类依赖%s", "可用" if sklearn_available() else "未安装")
+    except Exception:
+        logger.info("聚类依赖未安装")
     check_homepage(DEFAULT_HOST, port, static_kind)
     logger.info("服务已就绪 %s", state.url)
     control = ControlServer(data_dir, lambda: show_ui(state))

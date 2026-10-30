@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -213,6 +214,10 @@ def _optional_hiddenimports() -> list[str]:
     return [name for name in OPTIONAL_HIDDEN if _spec_exists(name)]
 
 
+def with_cluster() -> bool:
+    return os.environ.get("LP_WITH_CLUSTER", "") == "1"
+
+
 def analysis_kwargs() -> dict:
     _force_utf8_stdio()
     if str(ROOT) not in sys.path:
@@ -239,6 +244,22 @@ def analysis_kwargs() -> dict:
         hiddenimports.extend(REQUIRED_BACKEND)
         _log("已写入后端关键 hidden imports")
     hiddenimports.extend(_optional_hiddenimports())
+    if with_cluster():
+        # 聚类版：打进 scikit-learn。PyInstaller 的 sklearn/scipy hook 负责数据文件和二进制。
+        hiddenimports.extend(
+            [
+                "sklearn",
+                "sklearn.cluster",
+                "sklearn.decomposition",
+                "sklearn.metrics",
+                "sklearn.utils._typedefs",
+                "sklearn.utils._heap",
+                "sklearn.utils._sorting",
+                "sklearn.utils._vector_sentinel",
+                "sklearn.neighbors._partition_nodes",
+            ]
+        )
+        _log("聚类版：打包 scikit-learn")
     backend = ROOT / "backend"
     if backend.is_dir() and importlib.util.find_spec("backend") is not None:
         _try_package_files("backend", datas, binaries)
@@ -298,9 +319,8 @@ def analysis_kwargs() -> dict:
             "pydantic.mypy",
             "pydantic.v1.mypy",
             "anyio.pytest_plugin",
-            "sklearn",
-            "scipy",
-        ],
+        ]
+        + ([] if with_cluster() else ["sklearn", "scipy"]),
         "noarchive": False,
         "optimize": 0,
     }

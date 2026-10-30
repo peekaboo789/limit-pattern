@@ -60,6 +60,11 @@ Install-Requirements "requirements.txt"
 Install-Requirements "backend/requirements.txt"
 # 聚类才需要 sklearn。打进 EXE 会把包变得很大，这一版不装。
 Install-Requirements "desktop/requirements-build.txt"
+$WithCluster = ($env:LP_WITH_CLUSTER -eq "1")
+if ($WithCluster) {
+    Write-Host "聚类版：安装 requirements-cluster.txt"
+    Install-Requirements "requirements-cluster.txt"
+}
 
 Write-Host "== icon =="
 python scripts/make_icon.py
@@ -126,6 +131,9 @@ if ($smokeLog -notmatch "应用来源=backend") {
 if ($smokeLog -notmatch "首页检查通过") {
     throw "smoke did not open the homepage"
 }
+if ($WithCluster -and ($smokeLog -notmatch "聚类依赖可用")) {
+    throw "cluster build cannot import scikit-learn"
+}
 if ($smokeLog -notmatch "静态目录（frontend）") {
     throw "smoke did not serve the built frontend"
 }
@@ -134,7 +142,8 @@ Write-Host "== pyinstaller onefile (best effort) =="
 $onefileDir = Join-Path $Root "desktop\dist-onefile"
 $onefileExe = Join-Path $onefileDir "LimitPattern-onefile.exe"
 $onefileOk = $false
-try {
+if ($WithCluster) { Write-Host "聚类版跳过 onefile" }
+else { try {
     if (Test-Path (Join-Path $Root "desktop\build-onefile")) {
         Remove-Item -Recurse -Force (Join-Path $Root "desktop\build-onefile")
     }
@@ -151,7 +160,7 @@ try {
 }
 catch {
     Write-Warning "onefile build failed: $_"
-}
+} }
 
 Write-Host "== zip =="
 $stage = Join-Path $Root "desktop\dist\LimitPattern-win64"
@@ -161,10 +170,18 @@ if (Test-Path $stage) {
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item -Recurse $onedir (Join-Path $stage "LimitPattern")
 Copy-Item (Join-Path $Root "desktop\使用说明.txt") (Join-Path $stage "使用说明.txt")
+if ($WithCluster) {
+    $clusterData = Join-Path $Root "cluster-data"
+    if (Test-Path $clusterData) {
+        Copy-Item -Recurse $clusterData (Join-Path $stage "cluster-data")
+    }
+    Copy-Item (Join-Path $Root "requirements-cluster.txt") (Join-Path $stage "requirements-cluster.txt")
+}
 if ($onefileOk) {
     Copy-Item $onefileExe (Join-Path $stage "LimitPattern-onefile.exe")
 }
-$zip = Join-Path $Root "desktop\dist\LimitPattern-win64.zip"
+$zipName = if ($WithCluster) { "LimitPattern-cluster-win64.zip" } else { "LimitPattern-win64.zip" }
+$zip = Join-Path $Root "desktop\dist\$zipName"
 if (Test-Path $zip) {
     Remove-Item -Force $zip
 }
