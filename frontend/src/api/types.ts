@@ -236,6 +236,9 @@ export interface AiRanking {
   candidate_count: number
   pool_dates: string[]
   pool_size: number
+  pool_days?: number
+  skipped_count?: number
+  limitup_count?: number
   disclaimer: string
   items: AiRankingItem[]
   runs?: string[]

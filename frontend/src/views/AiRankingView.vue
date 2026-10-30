@@ -12,6 +12,10 @@ const loading = ref(false)
 const generating = ref(false)
 const progressText = ref('')
 const expanded = ref<string | null>(null)
+const poolDays = ref(30)
+void api.settings().then((value) => (poolDays.value = value.sample_pool_trading_days ?? 30)).catch(() => undefined)
+// 0.3.5 之前生成的榜单没有 pool_days 字段，那时样本池还是旧的 3 日口径
+const isOld = computed(() => !!ranking.value && ranking.value.pool_days == null)
 const DEFAULT_DIMS = [
   { key: 'kline', label: 'K线形态', weight: 25 },
   { key: 'volume', label: '量能', weight: 20 },
@@ -113,11 +117,15 @@ onMounted(async () => {
     <div class="card-head">
       <h2>{{ ranking ? `${ranking.date} 前 20 名` : '前 20 名' }}</h2>
       <span v-if="ranking" class="muted">
-        候选 {{ ranking.candidate_count }} 只 · 样本池 {{ ranking.pool_size }} 条 · 生成于 {{ ranking.run_at.replace('T', ' ').slice(0, 19) }}
+        候选 {{ ranking.candidate_count }} 只 · 样本池 {{ ranking.pool_size }} 条<template v-if="ranking.skipped_count">（涨停 {{ ranking.limitup_count }}，{{ ranking.skipped_count }} 条缺前 3 日 K 线）</template>（{{ ranking.pool_dates.length }} 个交易日） · 生成于 {{ ranking.run_at.replace('T', ' ').slice(0, 19) }}
         <template v-if="ranking.model"> · {{ ranking.model }}</template>
         <template v-if="ranking.snapshot"> · 行情：{{ snapshotLabel[ranking.snapshot.kind] ?? ranking.snapshot.kind }}<template v-if="ranking.snapshot.taken_at && ranking.snapshot.kind !== 'daily'"> {{ ranking.snapshot.taken_at.slice(11, 16) }}</template><template v-if="ranking.snapshot.volume_estimated"> · 成交量按已过 {{ ranking.snapshot.elapsed_minutes }} 分钟换算成全天（估）</template></template>
       </span>
     </div>
+    <p v-if="ranking && isOld" class="alert">
+      这份榜单是用旧样本池生成的（{{ ranking.pool_dates.length }} 个交易日，{{ ranking.pool_size }} 条），当前设置是近 {{ poolDays }} 个交易日。
+      <button class="btn btn-ghost" type="button" :disabled="generating" @click="generate()">用当前样本池重新生成</button>
+    </p>
     <Disclaimer :text="ranking?.disclaimer" />
     <p v-if="ranking?.market" class="muted" style="margin: 4px 0">
       市场环境：涨 {{ ranking.market.up }} / 跌 {{ ranking.market.down }} · 涨停 {{ ranking.market.limit_up }} · 跌停 {{ ranking.market.limit_down }} ·

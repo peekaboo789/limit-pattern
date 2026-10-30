@@ -525,3 +525,33 @@ def test_sina_bars_without_pre_close_feed_pool_scan_and_streaks(client):
     assert weekend["items"] == [] and "不是交易日" in weekend["empty_reason"]
     scan = client.get("/api/scan", params={"date": days[-1].isoformat(), "top": 20}).json()
     assert scan["pool_size"] > 0 and scan["items"]
+
+
+def test_scan_ranking_and_pool_use_the_same_sample_pool(client):
+    import re as _re
+
+    from backend.app.services.ranking_service import generate_ranking
+
+    days = weekdays(40)
+    stocks = [(f"60{i:04d}", f"股{i}") for i in range(80)]
+
+    def kline_fn(code, start, end):
+        n = int(code[2:])
+        limits = {d for d in range(5, 40) if (d + n) % 9 == 0}
+        return [b for b in _sina_bars(days, limits, start=8 + n % 5) if start <= b["trade_date"] <= end] or _sina_bars(days, limits)
+
+    set_fetcher(lambda: stocks, kline_fn)
+    assert run_sync_now()["progress"] == 100
+    pool = client.get("/api/pool").json()
+    scan = client.get("/api/scan", params={"top": 20}).json()
+    assert "pool_dates" in scan, scan
+    assert scan["pool_dates"] == pool["dates"]
+    assert scan["pool_size"] + len(scan["skipped"]) == len(pool["items"]) > 200
+
+    def chat(prompt):
+        return json.dumps({"items": [{"code": c, "score": 60} for c in _re.findall(r"^(\d{6}) ", prompt, flags=_re.M)]})
+
+    with session_scope() as session:
+        ranking = generate_ranking(session, date.fromisoformat(scan["date"]), chat=chat)
+    assert ranking["pool_size"] == scan["pool_size"] and ranking["limitup_count"] == len(pool["items"])
+    assert ranking["pool_days"] == 30 and ranking["pool_dates"] == pool["dates"]
