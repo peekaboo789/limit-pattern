@@ -305,6 +305,9 @@ def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, 
     ranked = ranked[:KEEP]
     for index, row in enumerate(ranked, start=1):
         row["rank"] = index
+    from backend.app.services.ranking_checks import check_ranked
+
+    check_ranked(session, day, ranked)
     run_at = datetime.now(SHANGHAI).isoformat(timespec="seconds")
     payload = {
         "date": day.isoformat(),
@@ -323,6 +326,7 @@ def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, 
         "market": market,
         "dimensions": [{"key": k, "label": l, "weight": w} for k, l, w in DIMENSIONS],
         "items": ranked,
+        "check_count": sum(1 for row in ranked if row.get("checks")),
     }
     session.add(AiRanking(trade_date=day, run_at=run_at, trigger=trigger, payload=payload))
     session.commit()

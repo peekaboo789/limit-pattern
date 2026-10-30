@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { api, ApiError, isAbort } from '@/api/client'
-import type { AiRanking, ExportParams } from '@/api/types'
+import type { AiRankingItem, AiRanking, ExportParams } from '@/api/types'
 import Disclaimer from '@/components/Disclaimer.vue'
 import AiInputExport from '@/components/AiInputExport.vue'
 import ExportButton from '@/components/ExportButton.vue'
@@ -13,6 +13,8 @@ const loading = ref(false)
 const generating = ref(false)
 const progressText = ref('')
 const expanded = ref<string | null>(null)
+const num = (value: number | null | undefined) => (value == null ? '—' : value.toFixed(1))
+const checkTitle = (row: AiRankingItem) => (row.checks ?? []).map((item) => `「${item.claim}」：${item.fact}`).join('\n')
 const importOpen = ref(false)
 const importText = ref('')
 const importDate = ref('')
@@ -156,9 +158,9 @@ onMounted(async () => {
 
   <p v-if="error" class="alert">{{ error }}</p>
   <section class="card">
-    <div class="card-head">
-      <h2>{{ ranking ? `${ranking.date} 前 20 名` : '前 20 名' }}</h2>
-      <span v-if="ranking" class="muted">
+    <div class="card-head ai-head">
+      <h2 class="nowrap">{{ ranking ? `${ranking.date} 前 20 名` : '前 20 名' }}</h2>
+      <span v-if="ranking" class="muted ai-meta">
         候选 {{ ranking.candidate_count }} 只 · 样本池 {{ ranking.pool_size }} 条<template v-if="ranking.skipped_count">（涨停 {{ ranking.limitup_count }}，{{ ranking.skipped_count }} 条缺前 3 日 K 线）</template>（{{ ranking.pool_dates.length }} 个交易日） · 生成于 {{ ranking.run_at.replace('T', ' ').slice(0, 19) }}
         <template v-if="ranking.trigger === 'external'"> · 外部 AI 导入</template><template v-if="ranking.model"> · {{ ranking.model }}</template>
         <template v-if="ranking.snapshot"> · 行情：{{ snapshotLabel[ranking.snapshot.kind] ?? ranking.snapshot.kind }}<template v-if="ranking.snapshot.taken_at && ranking.snapshot.kind !== 'daily'"> {{ ranking.snapshot.taken_at.slice(11, 16) }}</template><template v-if="ranking.snapshot.volume_estimated"> · 成交量按已过 {{ ranking.snapshot.elapsed_minutes }} 分钟换算成全天（估）</template></template>
@@ -174,39 +176,48 @@ onMounted(async () => {
     </p>
     <Disclaimer :text="ranking?.disclaimer" />
     <p v-if="ranking?.market" class="muted" style="margin: 4px 0">
-      市场环境：涨 {{ ranking.market.up }} / 跌 {{ ranking.market.down }} · 涨停 {{ ranking.market.limit_up }} · 跌停 {{ ranking.market.limit_down }} ·
+      市场环境：涨 {{ ranking.market.up }} / 跌 {{ ranking.market.down }}<template v-if="ranking.market.flat != null"> / 平 {{ ranking.market.flat }}</template><template v-if="ranking.market.suspended != null"> / 停牌 {{ ranking.market.suspended }}</template><template v-if="ranking.market.listed"> （共 {{ ranking.market.listed }}）</template><template v-if="ranking.market.flat == null"> / 平盘或停牌 {{ ranking.market.stocks - ranking.market.up - ranking.market.down }}（共 {{ ranking.market.stocks }}）</template> · 涨停 {{ ranking.market.limit_up }} · 跌停 {{ ranking.market.limit_down }} ·
       炸板 {{ ranking.market.broken }}（{{ ranking.market.broken_rate ?? '-' }}%） · 最高 {{ ranking.market.max_height }} 连板
     </p>
+    <p v-if="ranking?.check_count" class="hint" style="margin: 4px 0">⚠ {{ ranking.check_count }} 只的标签或理由与本地日线不符，已标「核对」，点行查看。</p>
     <div v-if="loading" class="skeleton" />
     <div v-else-if="!ranking?.items.length" class="empty">还没有 AI 榜单，点「立即生成」试试</div>
-    <div v-else class="table-wrap">
-      <table>
+    <div v-else class="table-wrap ai-wrap">
+      <table class="ai-table">
+        <colgroup>
+          <col style="width: 44px" /><col style="width: 120px" /><col style="width: 64px" /><col style="width: 100px" />
+          <col style="width: 128px" /><col />
+        </colgroup>
         <thead>
           <tr>
-            <th>排名</th><th>代码</th><th>名称</th><th>板块</th>
-            <th class="right">AI 评分</th><th class="right">相似度</th><th class="right">形态</th>
-            <th class="right">成交量</th><th class="right">量比</th><th>最相似涨停</th><th>标签</th><th>理由</th><th></th>
+            <th>排名</th><th>股票</th><th class="right">AI 评分</th><th class="right" title="相似度 = 形态×0.6 + 成交量×0.25 + 量比×0.15">相似度</th>
+            <th>最相似涨停</th><th>标签 · 理由（点行展开）</th>
           </tr>
         </thead>
         <tbody>
           <template v-for="row in ranking.items" :key="row.code">
-          <tr class="clickable" @click="toggle(row.code)">
+          <tr class="clickable" :class="{ active: expanded === row.code }" @click="toggle(row.code)">
             <td class="rank" :class="{ top: row.rank <= 3 }">{{ String(row.rank).padStart(2, '0') }}</td>
-            <td class="code">{{ row.code }}</td>
-            <td>{{ row.name }}</td>
-            <td class="muted">{{ row.board_name }}</td>
-            <td class="right"><b>{{ row.ai_score.toFixed(1) }}</b></td>
-            <td class="right">{{ row.similarity.toFixed(1) }}</td>
-            <td class="right">{{ row.shape_score.toFixed(1) }}</td>
-            <td class="right">{{ row.volume_score.toFixed(1) }}</td>
-            <td class="right">{{ row.volume_pct_score.toFixed(1) }}</td>
-            <td class="wrap">{{ row.best_match.name }} <span class="muted code">{{ row.best_match.code }} · {{ row.best_match.limit_date }}</span></td>
-            <td class="wrap"><span v-for="tag in row.tags ?? []" :key="tag" class="chip" style="margin: 0 4px 2px 0">{{ tag }}</span></td>
-            <td class="wrap">{{ row.reason }}</td>
-            <td class="muted">{{ expanded === row.code ? '收起' : '详情' }}</td>
+            <td class="stock">
+              <div class="stock-name">{{ row.name }}<span v-if="row.checks?.length" class="check-badge" :title="checkTitle(row)">⚠ 核对</span></div>
+              <div class="muted small"><span class="code">{{ row.code }}</span> · {{ row.board_name }}</div>
+            </td>
+            <td class="right"><b>{{ num(row.ai_score) }}</b></td>
+            <td class="right">
+              <div>{{ num(row.similarity) }}</div>
+              <div class="muted small" title="形态 / 成交量 / 量比">{{ num(row.shape_score) }}/{{ num(row.volume_score) }}/{{ num(row.volume_pct_score) }}</div>
+            </td>
+            <td class="wrap">
+              <template v-if="row.best_match">{{ row.best_match.name }}<div class="muted small code nowrap">{{ row.best_match.code }}</div><div class="muted small code nowrap">{{ row.best_match.limit_date }}</div></template>
+              <span v-else class="muted">—</span>
+            </td>
+            <td class="wrap reason-cell">
+              <div v-if="row.tags?.length" class="tag-list"><span v-for="tag in row.tags" :key="tag" class="tag">{{ tag }}</span></div>
+              <div class="reason" :class="{ open: expanded === row.code }" :title="row.reason">{{ row.reason }}</div>
+            </td>
           </tr>
           <tr v-if="expanded === row.code" class="detail-row">
-            <td colspan="14">
+            <td colspan="6">
               <div class="chips">
                 <span v-for="dim in ranking.dimensions ?? DEFAULT_DIMS" :key="dim.key" class="chip">
                   {{ dim.label }}（{{ dim.weight }}%）<b>{{ subText(row.sub?.[dim.key]) }}</b>
@@ -214,6 +225,9 @@ onMounted(async () => {
                 <span class="chip" style="color: #dc2626">风险扣分 −{{ (row.risk_deduct ?? 0).toFixed(0) }}</span>
               </div>
               <p v-if="row.risk" class="hint" style="margin: 6px 0 0; color: #b45309">风险提示：{{ row.risk }}</p>
+              <ul v-if="row.checks?.length" class="hint check-list">
+                <li v-for="item in row.checks" :key="item.claim">⚠ 说法「{{ item.claim }}」与日线不符：{{ item.fact }}</li>
+              </ul>
             </td>
           </tr>
           </template>
@@ -222,3 +236,29 @@ onMounted(async () => {
     </div>
   </section>
 </template>
+
+<style scoped>
+.nowrap { white-space: nowrap; }
+.ai-head { flex-wrap: wrap; align-items: baseline; justify-content: flex-start; }
+.ai-meta { flex: 1 1 420px; line-height: 1.5; }
+.ai-wrap { overflow-x: hidden; }
+.ai-table { table-layout: fixed; width: 100%; }
+.ai-table th, .ai-table td { padding: 8px 8px; vertical-align: top; }
+.ai-table td.rank { color: var(--muted); }
+.ai-table td.rank.top { color: var(--gold-2); font-weight: 700; }
+.small { font-size: 12px; }
+.stock-name { white-space: normal; font-weight: 600; }
+.check-badge {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; font-size: 11px; font-weight: 600;
+  color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.1); cursor: help;
+}
+.reason-cell { min-width: 0; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
+.tag {
+  white-space: nowrap; font-size: 12px; line-height: 18px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, 0.03);
+}
+.reason { line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+.reason.open { display: block; -webkit-line-clamp: unset; }
+.check-list { margin: 6px 0 0; padding-left: 18px; color: #fbbf24; }
+</style>

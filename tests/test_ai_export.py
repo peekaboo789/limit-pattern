@@ -53,6 +53,9 @@ def test_import_external_ranking_is_monitored(client, monkeypatch):
     saved = client.post("/api/ai-ranking/import", json=body).json()
     assert saved["trigger"] == "external" and saved["model"] == "外部模型"
     assert len(saved["items"]) == 20 and saved["items"][0]["code"] == "600100" and saved["items"][0]["rank"] == 1
+    assert all("checks" in row for row in saved["items"]) and "check_count" in saved
+    market = saved["market"]
+    assert market["up"] + market["down"] + market["flat"] + market["suspended"] == market["listed"]
     assert saved["dropped_unknown"] == ["688999"] and saved["date"] == days[-1].isoformat()
     assert client.get("/api/ai-ranking", params={"date": days[-1].isoformat()}).json()["trigger"] == "external"
     assert client.post("/api/ai-ranking/import", json={"text": "没有 JSON"}).status_code == 422

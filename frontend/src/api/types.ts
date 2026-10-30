@@ -221,16 +221,17 @@ export interface AiRankingItem {
   board_name: string
   ai_score: number
   reason: string
-  similarity: number
-  shape_score: number
-  volume_score: number
-  volume_pct_score: number
-  best_match: { code: string; name: string; limit_date: string }
+  similarity: number | null
+  shape_score: number | null
+  volume_score: number | null
+  volume_pct_score: number | null
+  best_match: { code: string; name: string; limit_date: string } | null
   close: number | null
   sub?: Record<string, number | null>
   risk?: string
   risk_deduct?: number
   tags?: string[]
+  checks?: { claim: string; fact: string }[]
 }
 
 export interface AiRanking {
@@ -245,6 +246,7 @@ export interface AiRanking {
   batches?: { total: number; failed: number; split: number; batch_size: number }
   unscored_count?: number
   imported_count?: number
+  check_count?: number
   outside_candidates?: string[]
   dropped_unknown?: string[]
   skipped_count?: number
@@ -405,6 +407,9 @@ export interface MarketContext {
   stocks: number
   up: number
   down: number
+  flat?: number
+  suspended?: number
+  listed?: number
   up_down_ratio: number | null
   median_pct: number | null
   limit_up: number

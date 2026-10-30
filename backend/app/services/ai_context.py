@@ -143,6 +143,13 @@ def market_context(session, day: date) -> dict:
     rows = [r for r in session.query(DailyQuote).filter(DailyQuote.trade_date == day).all() if is_in_scope(r.stock_code)]
     up = sum(1 for r in rows if (r.change_percent or 0) > 0)
     down = sum(1 for r in rows if (r.change_percent or 0) < 0)
+    traded = [r for r in rows if r.volume]
+    flat = len(traded) - sum(1 for r in traded if (r.change_percent or 0) != 0)
+    from backend.app.models.tables import Stock
+
+    listed = sum(1 for (code,) in session.query(Stock.code) if is_in_scope(code))
+    listed = max(listed, len(rows))
+    suspended = listed - len(traded)
     limit_up = [r for r in rows if r.is_limit_up]
     limit_down = sum(1 for r in rows if r.is_limit_down)
     broken = sum(1 for r in rows if _touched(r) and not r.is_limit_up)
@@ -161,6 +168,9 @@ def market_context(session, day: date) -> dict:
         "stocks": len(rows),
         "up": up,
         "down": down,
+        "flat": flat,
+        "suspended": suspended,
+        "listed": listed,
         "up_down_ratio": round(up / down, 2) if down else None,
         "median_pct": round(median, 2) if median is not None else None,
         "limit_up": len(limit_up),
@@ -174,7 +184,7 @@ def market_context(session, day: date) -> dict:
 
 def market_line(ctx: dict) -> str:
     return (
-        f"市场环境 {ctx['date']}：样本 {ctx['stocks']} 只，上涨 {ctx['up']} 下跌 {ctx['down']}（涨跌比 {_f(ctx.get('up_down_ratio'), 2)}，中位涨跌 {_f(ctx.get('median_pct'), 2)}%），"
+        f"市场环境 {ctx['date']}：样本 {ctx['stocks']} 只，上涨 {ctx['up']} 下跌 {ctx['down']} 平盘 {ctx.get('flat', '-')} 停牌 {ctx.get('suspended', '-')}（涨跌比 {_f(ctx.get('up_down_ratio'), 2)}，中位涨跌 {_f(ctx.get('median_pct'), 2)}%），"
         f"涨停 {ctx['limit_up']} 跌停 {ctx['limit_down']} 炸板 {ctx['broken']}（炸板率 {_f(ctx.get('broken_rate'))}%），"
         f"最高连板 {ctx['max_height']}（{','.join(ctx.get('leaders') or []) or '-'}）"
     )

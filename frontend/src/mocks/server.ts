@@ -26,7 +26,7 @@ const settings: Settings = {
 
 const health: Health = {
   status: 'ok',
-  version: '0.3.8',
+  version: '0.3.9',
   data_date: DATA_DATE,
 }
 
