@@ -361,9 +361,13 @@ def run_sync_now() -> dict:
 _FULL = threading.Event()
 
 
-def start_sync(full: bool = False) -> str:
+_FULL_DAYS: dict = {"days": 0}
+
+
+def start_sync(full: bool = False, days: int = 0) -> str:
     if full:
         _FULL.set()
+        _FULL_DAYS["days"] = int(days or 0)
     with _LOCK:
         if _STATE["running"]:
             return str(_STATE["task_id"])
@@ -449,8 +453,7 @@ def _run(task_id: str) -> None:
             except Exception as exc:
                 logger.info("流通股本没拉到，换手率缺失时会显示为缺失：%s", exc)
         end = today()
-        # 交易日换算成自然日（约 1.6 倍，含长假），多拉 10 天余量
-        start = end - timedelta(days=max(20, int(retention_days() * 1.6) + 10))
+        start = history_start(end)
         total = len(stocks)
         done = 0
         failed = 0
@@ -560,6 +563,7 @@ def _run(task_id: str) -> None:
         except Exception:
             summary_note = "，当日总结没有写成"
         _FULL.clear()
+        _FULL_DAYS["days"] = 0
         moment = datetime.now(SHANGHAI).isoformat(timespec="seconds")
         stamp("last_sync_at", moment)
         if used_sources:
@@ -691,6 +695,18 @@ def _refresh_limit_counts() -> None:
                 session.add(TradingDay(trade_date=day, is_open=True, limit_up_count=count))
             else:
                 record.limit_up_count = count
+
+
+def history_start(end: date) -> date:
+    """按交易日历往回数 max(保留天数, max(样本池,30)+8) 个交易日，再留 10 个自然日余量。"""
+    from backend.app.core.calendar import previous_trading_day
+    from backend.app.core.config import min_retention_days
+
+    need = max(retention_days(), min_retention_days(), int(_FULL_DAYS.get("days") or 0) + 8)
+    cursor = end
+    for _ in range(need):
+        cursor = previous_trading_day(cursor)
+    return cursor - timedelta(days=10)
 
 
 def _check_calendar(day: date) -> None:

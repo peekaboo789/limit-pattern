@@ -5,7 +5,7 @@ import Disclaimer from '@/components/Disclaimer.vue'
 import ExportButton from '@/components/ExportButton.vue'
 import type { ExportParams } from '@/api/types'
 import type { PoolResponse, ScanResponse } from '@/api/types'
-import { cancelSync, loadHealth, session, startSync } from '@/stores/session'
+import { cancelSync, loadHealth, session, startFullSync, startSync } from '@/stores/session'
 import { boardLabel, clampPercent, formatDateTime, formatScore, scoreColor, shortDate } from '@/utils/format'
 import { sourceLabel } from '@/utils/labels'
 import { computed, onMounted, ref, watch } from 'vue'
@@ -73,8 +73,15 @@ async function syncNow() {
   await startSync()
 }
 
+const fullDays = ref(30)
+const fullNote = ref('')
 async function syncFull() {
-  await startSync(true)
+  const days = Number(fullDays.value)
+  if (!Number.isInteger(days) || days < 5 || days > 250) {
+    fullNote.value = '天数要是 5 到 250 的整数'
+    return
+  }
+  fullNote.value = (await startFullSync(days)) || `开始补全最近 ${days} 个交易日`
 }
 
 onMounted(async () => {
@@ -126,7 +133,8 @@ watch(
       <button class="btn" type="button" :disabled="busy" @click="syncNow">
         {{ busy ? '同步中…' : '同步行情' }}
       </button>
-      <button class="btn btn-ghost" type="button" :disabled="busy" title="重新下载整个保留窗口的日线，并补写缺失日期的统计总结" @click="syncFull">补全历史</button>
+      <label class="muted">补全最近 <input v-model.number="fullDays" type="number" min="5" max="250" step="1" style="width: 64px" /> 个交易日</label>
+      <button class="btn btn-ghost" type="button" :disabled="busy" title="即使今天已有数据也重新下载，并补写缺失日期的统计总结" @click="syncFull">补全历史</button>
       <button v-if="session.sync?.running" class="btn btn-ghost" type="button" :disabled="session.sync?.cancelling" @click="cancelSync">
         {{ session.sync?.cancelling ? '取消中…' : '取消同步' }}
       </button>
@@ -137,7 +145,9 @@ watch(
     </div>
     <p class="muted" style="margin: 8px 0 0">
       已存行情 {{ session.health?.stored_days ?? 0 }} 个交易日<template v-if="session.health?.earliest_date">（{{ session.health.earliest_date }} ~ {{ session.health.data_date }}）</template>
+      · 生效：样本池 {{ session.health?.sample_pool_days ?? '-' }} 日，保留 {{ session.health?.retention_days ?? '-' }} 日
     </p>
+    <p v-if="fullNote" class="muted" style="margin: 4px 0 0">{{ fullNote }}</p>
     <div class="progress" :class="{ running: session.sync?.running }" style="margin-top: 12px" role="progressbar" :aria-valuenow="progress">
       <i :style="{ '--w': `${progress}%` }" />
     </div>

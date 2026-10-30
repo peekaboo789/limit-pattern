@@ -115,6 +115,7 @@ def default_settings() -> dict:
     return {
         "retention_trading_days": DETAIL_RETENTION_TRADING_DAYS,
         "sample_pool_trading_days": DEFAULT_SAMPLE_POOL_TRADING_DAYS,
+        "settings_schema": SETTINGS_SCHEMA,
         "ai_base_url": os.environ.get("AI_BASE_URL", "").strip(),
         "ai_model": os.environ.get("AI_MODEL", "").strip(),
         "ai_api_key": os.environ.get("AI_API_KEY", "").strip(),
@@ -158,11 +159,53 @@ def _load_settings_payload(path: Path):
         return None
 
 
+SETTINGS_SCHEMA = 2
+
+
+def migrate_settings() -> bool:
+    """旧版（无 settings_schema 或 <2）的设置文件：样本池强制 30、保留 40，覆盖旧的 3/5 默认值。
+    schema 已是最新时尊重用户后来自己改的值。返回是否做了迁移。"""
+    path = settings_path()
+    if not path.exists():
+        return False
+    with _SETTINGS_LOCK:
+        payload = _load_settings_payload(path)
+        if not isinstance(payload, dict):
+            return False
+        try:
+            schema = int(payload.get("settings_schema") or 0)
+        except (TypeError, ValueError):
+            schema = 0
+        if schema >= SETTINGS_SCHEMA:
+            return False
+        current = dict(payload)
+        for old in ("compare_window_trading_days", "pool_days", "sample_pool_days"):
+            current.pop(old, None)
+        current["sample_pool_trading_days"] = max(DEFAULT_SAMPLE_POOL_TRADING_DAYS, _clamp_pool(payload.get("sample_pool_trading_days") or 0))
+        try:
+            old_retention = int(payload.get("retention_trading_days") or 0)
+        except (TypeError, ValueError):
+            old_retention = 0
+        current["retention_trading_days"] = max(DETAIL_RETENTION_TRADING_DAYS, old_retention, current["sample_pool_trading_days"] + POOL_HISTORY_BUFFER)
+        current["settings_schema"] = SETTINGS_SCHEMA
+        write_settings_file(current)
+        return True
+
+
+_MIGRATED: set[str] = set()
+
+
 def read_settings_file() -> dict:
     path = settings_path()
     merged = default_settings()
     if not path.exists():
         return merged
+    if str(path) not in _MIGRATED:
+        _MIGRATED.add(str(path))
+        try:
+            migrate_settings()
+        except Exception:
+            pass
     payload = _load_settings_payload(path)
     if payload is None:
         return merged
@@ -272,7 +315,7 @@ def _update_settings(changes: dict) -> dict:
         if pool < SAMPLE_POOL_MIN_TRADING_DAYS or pool > SAMPLE_POOL_MAX_TRADING_DAYS:
             raise ValueError(f"涨停样本池要在 {SAMPLE_POOL_MIN_TRADING_DAYS} 到 {SAMPLE_POOL_MAX_TRADING_DAYS} 个交易日之间")
         current["sample_pool_trading_days"] = pool
-    floor = _clamp_pool(current.get("sample_pool_trading_days")) + POOL_HISTORY_BUFFER
+    floor = max(_clamp_pool(current.get("sample_pool_trading_days")), HISTORY_FLOOR_POOL) + POOL_HISTORY_BUFFER
     try:
         if int(current.get("retention_trading_days") or 0) < floor:
             current["retention_trading_days"] = floor  # 保留天数不能少于样本池 + 特征窗口 + 5 日基准
@@ -317,8 +360,12 @@ def sample_pool_days() -> int:
     return _clamp_pool(read_settings_file().get("sample_pool_trading_days", DEFAULT_SAMPLE_POOL_TRADING_DAYS))
 
 
+HISTORY_FLOOR_POOL = 30
+
+
 def min_retention_days() -> int:
-    return sample_pool_days() + POOL_HISTORY_BUFFER
+    """历史下限：max(样本池, 30) + 8（3 根特征 + 5 日量比基准）。清理和补全历史都不低于它。"""
+    return max(sample_pool_days(), HISTORY_FLOOR_POOL) + POOL_HISTORY_BUFFER
 
 
 def retention_days() -> int:

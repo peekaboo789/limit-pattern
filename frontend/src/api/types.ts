@@ -8,6 +8,8 @@ export interface Health {
   active_source?: string
   exports_dir?: string
   stored_days?: number
+  sample_pool_days?: number
+  retention_days?: number
   earliest_date?: string | null
 }
 

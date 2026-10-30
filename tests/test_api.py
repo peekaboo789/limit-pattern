@@ -134,7 +134,7 @@ def test_health_and_settings_round_trip(client):
     assert client.put("/api/settings", json={"sample_pool_trading_days": 61}).status_code == 422
     assert client.put("/api/settings", json={"sample_pool_trading_days": 2}).status_code == 422
     small = client.put("/api/settings", json={"sample_pool_trading_days": 10, "retention_trading_days": 20}).json()
-    assert small["sample_pool_trading_days"] == 10 and small["retention_trading_days"] == 20
+    assert small["sample_pool_trading_days"] == 10 and small["retention_trading_days"] == 38  # 下限 max(池,30)+8
     big = client.put("/api/settings", json={"sample_pool_trading_days": 60}).json()
     assert big["retention_trading_days"] == 68
 
@@ -212,6 +212,7 @@ def test_retention_keeps_summaries(client, monkeypatch):
     assert listed[0]["date"] == days[0].isoformat()
     assert listed[0]["headline"] == "周一总结"
     monkeypatch.setattr("backend.app.services.retention.retention_days", lambda: 5)
+    monkeypatch.setattr("backend.app.services.retention.min_retention_days", lambda: 5)
     result = purge_expired()
     assert result["deleted"]["daily_quotes"] > 0
     assert len(result["kept_dates"]) == 5
@@ -422,3 +423,66 @@ def test_multi_day_sync_keeps_history_and_pool_lists_every_day(client):
     run_sync_now_full.set()  # 补全历史：同步一轮后统计总结全部重写
     assert run_sync_now()["progress"] == 100
     assert not run_sync_now_full.is_set()
+
+
+def test_old_settings_file_is_migrated_and_full_sync_keeps_30_days(client):
+    """回归：0.1.x/0.2.x 的设置文件（retention=5，没有样本池/schema）升级后要补到 30+ 个交易日。"""
+    from backend.app.core import config
+
+    old = {"retention_trading_days": 5, "ai_base_url": "", "ai_model": "", "ai_api_key": "",
+           "data_source": "sina", "compare_window_trading_days": 3, "last_sync_at": None, "last_cleanup_at": None}
+    config.settings_path().write_text(json.dumps(old), encoding="utf-8")
+    config._MIGRATED.clear()
+    view = client.get("/api/settings").json()
+    assert view["sample_pool_trading_days"] == 30 and view["retention_trading_days"] == 40
+    saved = json.loads(config.settings_path().read_text(encoding="utf-8"))
+    assert saved["settings_schema"] == config.SETTINGS_SCHEMA and "compare_window_trading_days" not in saved
+    # 迁移之后用户自己改的值要保留（仍受下限 38 约束）
+    client.put("/api/settings", json={"retention_trading_days": 60})
+    config._MIGRATED.clear()
+    assert client.get("/api/settings").json()["retention_trading_days"] == 60
+    client.put("/api/settings", json={"retention_trading_days": 40})
+
+    from backend.app.services import sync_service
+
+    days = weekdays(60, end=date.today() - timedelta(days=(date.today().weekday() - 4) if date.today().weekday() > 4 else 0))
+    asked = []
+
+    def kline_fn(code, start, end):
+        asked.append((start, end))
+        return [row for row in _series(days, limit_on={10, 40}) if start <= row["trade_date"] <= end]
+
+    set_fetcher(lambda: [("600519", "贵州茅台")], kline_fn)
+    sync_service._FULL.set()
+    assert run_sync_now()["progress"] == 100
+    start, end = asked[0]
+    assert (end - start).days >= 38 * 7 // 5  # 至少覆盖 38 个交易日
+    purge_expired()
+    health = client.get("/api/health").json()
+    assert health["stored_days"] >= 38
+    assert health["sample_pool_days"] == 30 and health["retention_days"] == 40
+
+
+def test_full_sync_days_validation_and_retention_raise(client, monkeypatch):
+    from backend.app.services import sync_service
+
+    calls = []
+    monkeypatch.setattr(sync_service, "start_sync", lambda full=False, days=0: calls.append(days) or "t1")
+    assert client.post("/api/sync/full", json={"days": 4}).status_code == 422
+    assert client.post("/api/sync/full", json={"days": 251}).status_code == 422
+    assert client.post("/api/sync/full", json={"days": "abc"}).status_code == 422
+    ok = client.post("/api/sync/full", json={"days": 30}).json()
+    assert ok["days"] == 30 and ok["note"] == "" and ok["retention_trading_days"] == 40
+    big = client.post("/api/sync/full", json={"days": 120}).json()
+    assert big["retention_trading_days"] == 128 and "自动调到 128" in big["note"]
+    assert calls == [30, 120]
+    assert client.put("/api/settings", json={"retention_trading_days": 251}).status_code == 422
+    assert client.put("/api/settings", json={"retention_trading_days": 250}).json()["retention_trading_days"] == 250
+    sync_service._FULL_DAYS["days"] = 100
+    try:
+        from datetime import date as _d
+
+        start = sync_service.history_start(_d(2026, 10, 30))
+        assert (_d(2026, 10, 30) - start).days >= 250  # 保留 250 生效
+    finally:
+        sync_service._FULL_DAYS["days"] = 0

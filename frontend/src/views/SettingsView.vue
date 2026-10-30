@@ -110,7 +110,20 @@ async function load() {
   }
 }
 
+function validate(): string {
+  const pool = Number(form.sample_pool_trading_days)
+  const keep = Number(form.retention_trading_days)
+  if (!Number.isInteger(pool) || pool < 3 || pool > 60) return '涨停样本池要是 3 到 60 的整数'
+  if (!Number.isInteger(keep) || keep < 3 || keep > 250) return '保留天数要是 3 到 250 的整数'
+  return ''
+}
+
 async function save() {
+  const problem = validate()
+  if (problem) {
+    error.value = problem
+    return
+  }
   saved.value = false
   error.value = ''
   if (!Number.isInteger(form.retention_trading_days) || form.retention_trading_days < 3 || form.retention_trading_days > 30) {
@@ -172,13 +185,13 @@ onMounted(() => {
       <div class="card-head"><h2>数据</h2></div>
       <label class="field">
         <span>涨停明细保留交易日</span>
-        <input v-model.number="form.retention_trading_days" type="number" :min="(form.sample_pool_trading_days || 30) + 8" max="90" step="1" />
-        <span class="hint">默认 40，最多 90，至少「样本池 + 8」（3 根特征 K 线 + 5 日量比基准），填少了会自动抬高。到期明细会清理，每日总结 JSON 永久保留。</span>
+        <input v-model.number="form.retention_trading_days" type="number" :min="Math.max(form.sample_pool_trading_days || 30, 30) + 8" max="250" step="1" />
+        <span class="hint">默认 40，最多 250，至少 max(样本池, 30) + 8（3 根特征 K 线 + 5 日量比基准），填少了会自动抬高。当前生效：{{ meta?.retention_trading_days ?? '-' }} 个交易日。到期明细会清理，每日总结 JSON 永久保留。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>涨停样本池（近 N 个交易日）</span>
         <input v-model.number="form.sample_pool_trading_days" type="number" min="3" max="60" step="1" />
-        <span class="hint">默认 30，可改 3 到 60。相似度、AI 排名、聚类、次日池和回测只和这段时间里涨停过的股票比。形态特征固定看涨停前 3 根 K 线。</span>
+        <span class="hint">默认 30，可改 3 到 60。相似度、AI 排名、聚类、次日池和回测只和这段时间里涨停过的股票比。形态特征固定看涨停前 3 根 K 线。当前生效：{{ meta?.sample_pool_trading_days ?? '-' }} 个交易日。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>数据源</span>

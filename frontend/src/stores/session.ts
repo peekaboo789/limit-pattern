@@ -48,15 +48,31 @@ function ensureSyncPoll(): void {
   }, 1000)
 }
 
-export async function startSync(full = false): Promise<void> {
+export async function startSync(): Promise<void> {
   session.startingSync = true
   session.syncError = ''
   try {
-    await api.startSync(full)
+    await api.startSync()
     await loadSync()
     ensureSyncPoll()
   } catch (error) {
     session.syncError = error instanceof ApiError ? error.detail : '同步启动失败'
+  } finally {
+    session.startingSync = false
+  }
+}
+
+export async function startFullSync(days: number): Promise<string> {
+  session.startingSync = true
+  session.syncError = ''
+  try {
+    const result = await api.startFullSync(days)
+    await Promise.all([loadSync(), loadHealth()])
+    ensureSyncPoll()
+    return result.note || ''
+  } catch (error) {
+    session.syncError = error instanceof ApiError ? error.detail : '补全历史启动失败'
+    return ''
   } finally {
     session.startingSync = false
   }

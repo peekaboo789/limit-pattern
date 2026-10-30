@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from backend.app.core.clock import SHANGHAI
-from backend.app.core.config import retention_days, stamp
+from backend.app.core.config import min_retention_days, retention_days, stamp
 from backend.app.core.database import session_scope
 from backend.app.models.tables import (
     CalcBar,
@@ -85,7 +85,7 @@ def _delete_codes(session, codes: list[str]) -> dict[str, int]:
 def purge_expired() -> dict:
     """删掉保留窗口之前的行情和标签。总结表和 summaries/ 文件不动。"""
     excluded = purge_excluded_boards()
-    keep = retention_days()
+    keep = max(retention_days(), min_retention_days())  # 永远不低于历史下限
     with session_scope() as session:
         days = quote_dates(session)
         if not days:

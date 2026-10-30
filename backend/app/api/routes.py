@@ -100,6 +100,9 @@ def _streaks(session, day: date) -> dict[str, int]:
 
 @router.get("/health")
 def health() -> dict:
+    from backend.app.core.config import migrate_settings
+
+    migrate_settings()
     with session_scope() as session:
         days = quote_dates(session)
     settings = public_settings()
@@ -109,6 +112,8 @@ def health() -> dict:
         "data_date": days[-1].isoformat() if days else None,
         "data_source": settings["data_source"],
         "stored_days": len(days),
+        "sample_pool_days": settings.get("sample_pool_trading_days"),
+        "retention_days": settings.get("retention_trading_days"),
         "earliest_date": days[0].isoformat() if days else None,
         "active_source": settings.get("active_source") or "",
         "exports_dir": str(exports_dir()),
@@ -129,13 +134,29 @@ def put_settings(body: dict) -> dict:
 
 
 @router.post("/sync/full")
-def post_sync_full() -> dict:
-    """补全历史：重新下载整个保留窗口（即使今天已有数据），并补写缺失日期的统计版总结。"""
+def post_sync_full(body: dict | None = None) -> dict:
+    """补全最近 N 个交易日（5–250，默认 30）：即使今天已有数据也重新下载，并补写缺失日期的统计版总结。
+    N + 8 超过当前保留天数时自动抬高保留天数并在返回里说明。"""
+    from backend.app.core.config import public_settings, update_settings
     from backend.app.services.sync_service import start_sync, status as sync_status
 
+    raw = (body or {}).get("days", 30)
+    try:
+        days = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="天数要是 5 到 250 的整数") from exc
+    if days < 5 or days > 250:
+        raise HTTPException(status_code=422, detail="天数要在 5 到 250 个交易日之间")
+    before = int(public_settings()["retention_trading_days"])
+    note = ""
+    if days + 8 > before:
+        update_settings({"retention_trading_days": min(250, days + 8)})
+        after = int(public_settings()["retention_trading_days"])
+        note = f"保留天数已从 {before} 自动调到 {after} 个交易日，否则补下来的数据会被清理掉"
     already = bool(sync_status().get("running"))
-    task_id = start_sync(full=True)
-    return {"task_id": task_id, "already_running": already, "full": True}
+    task_id = start_sync(full=True, days=days)
+    return {"task_id": task_id, "already_running": already, "full": True, "days": days, "note": note,
+            "retention_trading_days": public_settings()["retention_trading_days"]}
 
 
 @router.post("/sync")
