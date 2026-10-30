@@ -56,7 +56,7 @@ export const api = {
     request<{ timeout: number; results: SourceTestResult[] }>('/api/sources/test', {
       method: 'POST',
       body: JSON.stringify({ timeout }),
-    }),
+    }, (timeout + 6) * 1000),
 
   syncStatus: () => request<SyncStatus>('/api/sync/status'),
 
@@ -70,6 +70,8 @@ export const api = {
   similarity: (params: { code: string; date: string; top?: number }) =>
     request<SimilarityResponse>(
       `/api/similarity${query({ code: params.code, date: params.date, top: params.top ?? 20 })}`,
+      undefined,
+      120000,
     ),
 
   scan: (params: { date: string; top?: number; min_score?: number }) =>
@@ -79,6 +81,8 @@ export const api = {
         top: params.top ?? 50,
         min_score: params.min_score ?? 0,
       })}`,
+      undefined,
+      120000,
     ),
 
   summaries: () => request<SummaryListResponse>('/api/summaries'),
@@ -86,29 +90,29 @@ export const api = {
   summary: (date: string) => request<SummaryDocument>(`/api/summaries/${date}`),
 
   generateSummary: (date: string) =>
-    request<SummaryDocument>(`/api/summaries/${date}/generate`, { method: 'POST' }),
+    request<SummaryDocument>(`/api/summaries/${date}/generate`, { method: 'POST' }, 180000),
 
   aiRanking: (date?: string) => request<AiRanking>(`/api/ai-ranking${query({ date })}`),
 
   aiRankingDates: () => request<{ dates: string[] }>('/api/ai-ranking/dates'),
 
   generateAiRanking: (options: { date?: string; snapshot?: 'morning' } = {}) =>
-    request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(options) }),
+    request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(options) }, 300000),
 
   clusterStatus: () => request<{ available: boolean; message: string }>('/api/cluster/status'),
 
   cluster: (date?: string) => request<ClusterResult>(`/api/cluster${query({ date })}`),
 
   runCluster: (body: { date?: string; k: number | 'auto'; method: string }) =>
-    request<ClusterResult>('/api/cluster/run', { method: 'POST', body: JSON.stringify(body) }),
+    request<ClusterResult>('/api/cluster/run', { method: 'POST', body: JSON.stringify(body) }, 180000),
 
   calendar: (year?: number) => request<CalendarInfo>(`/api/calendar${query({ year })}`),
 
-  similarityBacktest: (top = 50) => request<SimilarityBacktest>(`/api/backtest${query({ kind: 'similarity', top })}`),
+  similarityBacktest: (top = 50) => request<SimilarityBacktest>(`/api/backtest${query({ kind: 'similarity', top })}`, undefined, 120000),
 
   rankingBacktest: () => request<RankingBacktest>('/api/backtest?kind=ai_ranking'),
 
-  nextDayPool: (top = 30) => request<NextDayPool>(`/api/next-day-pool${query({ top })}`),
+  nextDayPool: (top = 30) => request<NextDayPool>(`/api/next-day-pool${query({ top })}`, undefined, 120000),
 
   monitor: () => request<MonitorSnapshot>('/api/monitor'),
 

@@ -271,7 +271,7 @@ def test_export_api_save_file_uses_save_dialog(monkeypatch, tmp_path):
 
     window = FakeWindow()
     api = ExportApi()
-    api.window = window
+    api._attach(window)
     saved = api.save_file("pool", "甲")
     assert window.kwargs["dialog_type"] == 30
     assert window.kwargs["directory"] == str(desktop)
@@ -313,7 +313,20 @@ def test_notifier_dedupes_and_falls_back_to_balloon():
     assert notifier.notify("提醒", "600000", key="k") == "balloon"
     assert notifier.notify("提醒", "600000", key="k") == "duplicate"
     assert calls == [("提醒", "600000")]
-    assert launcher.ExportApi(notifier).notify("提醒", "x", "k") == "duplicate"
+    assert launcher.ExportApi(notifier).notify("提醒", "x", "k") == "queued"
+
+
+def test_js_api_exposes_only_methods():
+    """pywebview 会在 GUI 线程上递归遍历 js_api 的公开属性；公开属性只能是方法。"""
+    import inspect
+
+    from desktop import launcher
+
+    api = launcher.ExportApi(launcher.Notifier(launcher.AppState()))
+    api._attach(object())
+    public = {name: value for name, value in inspect.getmembers(api) if not name.startswith("_")}
+    assert set(public) == {"notify", "save_file"}
+    assert all(callable(value) for value in public.values())
 
 
 def test_monitor_watcher_notifies_each_event_once():

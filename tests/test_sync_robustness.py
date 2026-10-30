@@ -71,9 +71,9 @@ def test_switch_source_persists_and_applies_mid_run(client, monkeypatch):
     assert client.get("/api/settings").json()["data_source"] == "sina"
     sync._clear_source_health()
     monkeypatch.setattr(sync, "_OVERRIDE", False)
-    assert sync._source_chain() == ["sina"]
+    assert sync._source_chain()[0] == "sina" and len(sync._source_chain()) == 3
     client.put("/api/settings", json={"data_source": "tencent"})
-    assert sync._source_chain() == ["tencent"]
+    assert sync._source_chain() == ["tencent", "sina", "eastmoney"]
     client.put("/api/settings", json={"data_source": "auto"})
     assert sync._source_chain()[0] in {"eastmoney", "tencent", "sina"}
     assert client.put("/api/settings", json={"data_source": "nope"}).status_code == 422

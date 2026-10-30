@@ -12,7 +12,8 @@ from backend.app.services.limit_up_service import limit_up_price, ratio_for
 
 logger = get_logger("providers")
 
-SOURCE_ORDER = ("eastmoney", "tencent", "sina")
+# auto 时新浪优先：实测东方财富、腾讯日线经常 502/501。
+SOURCE_ORDER = ("sina", "tencent", "eastmoney")
 SOURCE_OPTIONS = ("auto",) + SOURCE_ORDER
 
 
@@ -42,16 +43,17 @@ def _module(name: str):
 
 
 def order_for(configured: str) -> list[str]:
+    """指定某个源时它排第一，失败仍会回退到其余源，避免单源故障时整个同步卡住。"""
     name = normalize_source(configured)
     if name == "auto":
         return list(SOURCE_ORDER)
-    return [name]
+    return [name] + [other for other in SOURCE_ORDER if other != name]
 
 
 def source_chain(configured: str, active: str = "") -> list[str]:
     """auto 时从当前源开始，后面接着其余源，供逐只回退。指定单一源时不换。"""
     order = order_for(configured)
-    if len(order) == 1:
+    if normalize_source(configured) != "auto":
         return order
     chain: list[str] = []
     if active in SOURCE_ORDER:

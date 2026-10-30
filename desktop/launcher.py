@@ -35,6 +35,14 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_TITLE = "三日涨停形态统计"
+
+
+def window_title() -> str:
+    try:
+        from backend.app import __version__
+    except Exception:
+        return APP_TITLE
+    return f"{APP_TITLE} {__version__}"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 LOGGER_NAME = "limitpattern.launcher"
@@ -878,19 +886,31 @@ class ExportApi:
     """pywebview js_api。页面调用 ``window.pywebview.api.save_file(filename, text)``，
     盘中提醒调用 ``window.pywebview.api.notify(title, message, key)``。"""
 
+    # 注意：pywebview 会把 js_api 对象的公开属性递归暴露给页面，并在 GUI 线程上遍历。
+    # 公开属性里放 Window / Notifier（它又连着 AppState、托盘、uvicorn）会让遍历走进巨大的对象图，
+    # 窗口直接「未响应」。所以这里只留公开方法，状态全部用下划线私有属性。
+
     def __init__(self, notifier: Notifier | None = None) -> None:
-        self.window = None
-        self.notifier = notifier
+        self._window = None
+        self._notifier = notifier
+
+    def _attach(self, window) -> None:
+        self._window = window
 
     def notify(self, title: str, message: str, key: str | None = None) -> str:
-        if self.notifier is None:
-            self.notifier = Notifier()
-        return self.notifier.notify(title, message, key)
+        """立刻返回，真正弹通知放到后台线程，绝不占用页面调用线程。"""
+        if self._notifier is None:
+            self._notifier = Notifier()
+        notifier = self._notifier
+        threading.Thread(
+            target=notifier.notify, args=(title, message, key), name="limitpattern-notify", daemon=True
+        ).start()
+        return "queued"
 
     def save_file(self, filename: str, text: str) -> str | None:
         import webview
 
-        window = self.window
+        window = self._window
 
         def ask_path(directory: Path, name: str) -> str | None:
             if window is None:
@@ -943,7 +963,7 @@ def run_webview(state: AppState) -> None:
     enable_webview_downloads()
     export_api = ExportApi(state.notifier)
     window = webview.create_window(
-        APP_TITLE,
+        window_title(),
         state.url,
         js_api=export_api,
         width=1280,
@@ -955,7 +975,7 @@ def run_webview(state: AppState) -> None:
     )
     if window is None:
         raise RuntimeError("pywebview 没有创建窗口")
-    export_api.window = window
+    export_api._attach(window)
     state.window = window
     window.events.closing += on_closing
     logger.info("启动 pywebview，加载 %s", state.url)

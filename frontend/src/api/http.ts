@@ -35,7 +35,7 @@ function useMock(): boolean {
   return import.meta.env.VITE_USE_MOCK === '1'
 }
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit, timeoutMs = 20000): Promise<T> {
   if (useMock()) {
     const { mockRequest } = await import('@/mocks/server')
     return mockRequest<T>(path, init)
@@ -46,8 +46,26 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set('Content-Type', 'application/json')
   }
 
-  const response = await fetch(path, { ...init, headers })
-  const text = await response.text()
+  // 每个请求都有超时，后端卡住时页面也不会一直等。
+  const controller = new AbortController()
+  const outer = init?.signal
+  if (outer) outer.addEventListener('abort', () => controller.abort(), { once: true })
+  let timedOut = false
+  const timer = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  let response: Response
+  let text: string
+  try {
+    response = await fetch(path, { ...init, headers, signal: controller.signal })
+    text = await response.text()
+  } catch (error) {
+    if (timedOut) throw new ApiError(504, `请求超时（${Math.round(timeoutMs / 1000)} 秒没有响应）`)
+    throw error
+  } finally {
+    window.clearTimeout(timer)
+  }
   let payload: unknown = null
   if (text) {
     try {

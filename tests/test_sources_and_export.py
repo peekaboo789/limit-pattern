@@ -243,6 +243,12 @@ def test_auto_source_falls_back_and_cross_check_flags_mismatch(client, monkeypat
 
     monkeypatch.setattr("backend.app.providers.eastmoney.fetch_stock_list", boom)
     monkeypatch.setattr("backend.app.providers.eastmoney.fetch_kline", boom)
+    monkeypatch.setattr("backend.app.providers.sina.fetch_stock_list", boom)
+    monkeypatch.setattr("backend.app.providers.sina.fetch_kline", boom)
+    monkeypatch.setattr(
+        "backend.app.providers.sina.fetch_spot",
+        lambda codes: [{"code": "600000", "close": 1.0, "pre_close": 1.0, "limit_up_price": 9.9}],
+    )
     monkeypatch.setattr("backend.app.providers.tencent.fetch_stock_list", lambda: [("600000", "浦发银行")])
     monkeypatch.setattr(
         "backend.app.providers.tencent.fetch_kline",
