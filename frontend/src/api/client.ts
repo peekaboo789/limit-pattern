@@ -50,6 +50,13 @@ export const api = {
 
   startSync: () => request<SyncTask>('/api/sync', { method: 'POST' }),
 
+  testAi: (body: { ai_base_url?: string; ai_model?: string; ai_api_key?: string }) =>
+    request<{ ok: boolean; error?: string; reply?: string; endpoint: string; note?: string; latency_ms: number }>(
+      '/api/ai/test',
+      { method: 'POST', body: JSON.stringify(body) },
+      60000,
+    ),
+
   cancelSync: () => request<SyncStatus>('/api/sync/cancel', { method: 'POST' }),
 
   testSources: (timeout = 8) =>

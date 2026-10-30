@@ -62,21 +62,41 @@ def candidates(session, day: date, limit: int = CANDIDATES) -> dict:
     return payload
 
 
+BATCH_SIZE = 25
+
+
 def _prompt(day: date, items: list[dict]) -> str:
-    rows = [
-        {
-            "code": item["code"],
-            "name": item["name"],
-            "similarity": item["score"],
-            "shape": item["shape_score"],
-            "volume": item["volume_score"],
-            "volume_pct": item["volume_pct_score"],
-            "best_match": item["best_match"]["code"],
-            "bars": item.get("bars") or [],
-        }
-        for item in items
-    ]
-    return f"评估日 {day.isoformat()}，共 {len(rows)} 只候选：\n" + json.dumps(rows, ensure_ascii=False)
+    """紧凑表格：每只一行，省掉 JSON 键名，提示短很多。"""
+    lines = ["code|name|sim|shape|vol|volpct|三日收盘|三日涨跌%|三日换手%"]
+    for item in items:
+        bars = item.get("bars") or []
+        closes = "/".join("" if bar.get("close") is None else f"{bar['close']:.2f}" for bar in bars)
+        pcts = "/".join("" if bar.get("pct") is None else f"{bar['pct']:.1f}" for bar in bars)
+        turns = "/".join("" if bar.get("turnover") is None else f"{bar['turnover']:.1f}" for bar in bars)
+        lines.append(
+            f"{item['code']}|{item['name']}|{item['score']:.0f}|{item['shape_score']:.0f}|"
+            f"{item['volume_score']:.0f}|{item['volume_pct_score']:.0f}|{closes}|{pcts}|{turns}"
+        )
+    return f"评估日 {day.isoformat()}，候选 {len(items)} 只（sim=综合相似度，0-100）：\n" + "\n".join(lines)
+
+
+def _score_batches(day: date, items: list[dict], chat) -> dict[str, dict]:
+    """分批打分，单次请求小、超时风险低；某一批失败时其余批照常。全部失败才报错。"""
+    scores: dict[str, dict] = {}
+    errors: list[str] = []
+    for start in range(0, len(items), BATCH_SIZE):
+        batch = items[start : start + BATCH_SIZE]
+        prompt = _prompt(day, batch)
+        try:
+            text = chat(prompt) if chat is not None else call_chat(prompt, system=SYSTEM_PROMPT, timeout=150.0)
+            scores.update(_parse_scores(text))
+        except AiFailed as exc:
+            errors.append(str(exc))
+            if not scores and len(errors) >= 2:
+                break
+    if not scores:
+        raise AiFailed(errors[0] if errors else "AI 没有给出有效评分")
+    return scores
 
 
 def _parse_scores(text: str) -> dict[str, dict]:
@@ -138,9 +158,7 @@ def _rank(session, day: date, chat, trigger: str, snapshot: dict) -> dict:
     items = pool["items"]
     if not items:
         raise LookupError("这一天没有可打分的候选股票")
-    prompt = _prompt(day, items)
-    text = chat(prompt) if chat is not None else call_chat(prompt, system=SYSTEM_PROMPT, timeout=180.0)
-    scores = _parse_scores(text)
+    scores = _score_batches(day, items, chat)
     ranked = []
     for item in items:
         got = scores.get(item["code"])

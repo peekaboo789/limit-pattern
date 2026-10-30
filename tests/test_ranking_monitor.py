@@ -22,8 +22,8 @@ def _seed_many():
 
 
 def _fake_chat(prompt: str) -> str:
-    rows = json.loads(prompt.split("\n", 1)[1])
-    return json.dumps({"items": [{"code": row["code"], "score": int(row["code"]) % 97, "reason": "量价接近"} for row in rows]})
+    codes = [line.split("|")[0] for line in prompt.splitlines()[2:] if "|" in line]
+    return json.dumps({"items": [{"code": code, "score": int(code) % 97, "reason": "量价接近"} for code in codes]})
 
 
 def test_ranking_needs_ai(client):

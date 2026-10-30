@@ -39,6 +39,30 @@ const switchHint = ref('')
 const testing = ref(false)
 const testResults = ref<SourceTestResult[]>([])
 
+const aiTesting = ref(false)
+const aiResult = ref<{ ok: boolean; text: string } | null>(null)
+
+async function testAi() {
+  if (aiTesting.value) return
+  aiTesting.value = true
+  aiResult.value = null
+  try {
+    const result = await api.testAi({
+      ai_base_url: form.ai_base_url.trim(),
+      ai_model: form.ai_model.trim(),
+      ai_api_key: form.ai_api_key.trim() || undefined,
+    })
+    const note = result.note ? `（${result.note}）` : ''
+    aiResult.value = result.ok
+      ? { ok: true, text: `连接成功，用时 ${result.latency_ms} 毫秒，模型回复：${result.reply}。调用地址 ${result.endpoint}${note}` }
+      : { ok: false, text: `${result.error}${note}` }
+  } catch (reason) {
+    aiResult.value = { ok: false, text: reason instanceof ApiError ? reason.detail : '测试请求没有返回' }
+  } finally {
+    aiTesting.value = false
+  }
+}
+
 async function chooseSource(item: string) {
   if (switching.value) return
   const previous = form.data_source
@@ -210,7 +234,8 @@ onMounted(() => {
       <p class="hint">地址、模型和密钥都填上之后才会启用。没配齐时重新生成仍会写出统计总结，不会报错。</p>
       <label class="field" style="margin-top: 12px">
         <span>接口地址</span>
-        <input v-model="form.ai_base_url" placeholder="https://api.example.com/v1" />
+        <input v-model="form.ai_base_url" placeholder="https://ws-xxxx.cn-beijing.maas.aliyuncs.com/compatible-mode/v1" />
+        <span class="hint">填到 /v1 为止，程序会自动加 /chat/completions。阿里云百炼填「…aliyuncs.com/compatible-mode/v1」，只填域名会自动补上。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>模型</span>
@@ -221,6 +246,11 @@ onMounted(() => {
         <input v-model="form.ai_api_key" type="password" autocomplete="new-password" placeholder="留空则不修改" />
         <span class="hint">只写入，接口不会把密钥返回来。留空表示保持原密钥。</span>
       </label>
+      <div style="margin-top: 12px">
+        <button class="btn" type="button" :disabled="aiTesting" @click="testAi">{{ aiTesting ? '测试中…' : '测试 AI 接口' }}</button>
+        <span class="hint" style="margin-left: 8px">用表单里的值（未保存也可以）发一句很短的话。</span>
+      </div>
+      <p v-if="aiResult" class="hint" :style="{ color: aiResult.ok ? '#16a34a' : '#dc2626', wordBreak: 'break-all' }">{{ aiResult.text }}</p>
     </section>
   </form>
 </template>

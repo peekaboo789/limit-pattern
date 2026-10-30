@@ -57,3 +57,10 @@
 - `POST /api/sources/test`，正文 `{"timeout": 8}`：并行检查三个源（各拉 600000、000001 近 10 天日线），每个源最多等 timeout 秒，返回 `ok`、`latency_ms`、`latest`、`error`。
 - 换源 `PUT /api/settings {"data_source": ...}` 立即保存；同步进行中，后续股票按新设置取源。
 - 每次请求连接 5 秒、读取 10 秒超时；单个源连续失败 3 次（或返回 5xx/429）暂停 90 秒；拉股票列表总时限 45 秒；8 个并发。
+
+## POST /api/ai/test
+
+测试 AI 接口。正文可带未保存的 `ai_base_url`、`ai_model`、`ai_api_key`（空则用已保存值）。
+返回 `{ok, reply?, error?, endpoint, note, latency_ms}`；错误是具体原因（连接超时、读取超时、域名解析、SSL 证书、代理、HTTP 状态码和返回内容），不含密钥。
+地址填到 `/v1` 即可；阿里云百炼只填域名时自动补 `/compatible-mode/v1`。自动使用 Windows 系统代理和系统证书库（truststore）。
+AI 排名按每批 25 只、紧凑表格分批请求，单批读取超时 150 秒。

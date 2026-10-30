@@ -25,7 +25,7 @@ export function limitTypeClass(type: string): string {
 }
 
 const SOURCE_LABELS: Record<string, string> = {
-  auto: '自动（东财 → 腾讯 → 新浪）',
+  auto: '自动（新浪 → 腾讯 → 东财）',
   eastmoney: '东方财富',
   tencent: '腾讯行情',
   sina: '新浪行情',

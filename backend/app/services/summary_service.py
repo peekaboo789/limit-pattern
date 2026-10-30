@@ -26,12 +26,7 @@ REQUIRED_KEYS = (
 )
 
 
-class AiNotConfigured(RuntimeError):
-    pass
-
-
-class AiFailed(RuntimeError):
-    pass
+from backend.app.core.ai_client import AiFailed, AiNotConfigured  # noqa: E402,F401
 
 
 def _median(values: list[float]) -> float | None:
@@ -143,44 +138,19 @@ def _extract_json(text: str) -> dict:
 
 
 def call_chat(prompt: str, system: str | None = None, timeout: float = 90.0) -> str:
-    settings = read_settings_file()
-    url = str(settings.get("ai_base_url") or "").rstrip("/")
-    key = str(settings.get("ai_api_key") or "")
-    model = str(settings.get("ai_model") or "")
-    if not (url and key and model):
-        raise AiNotConfigured("未配置AI接口")
-    endpoint = url if url.endswith("/chat/completions") else url + "/chat/completions"
-    try:
-        response = httpx.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {key}"},
-            json={
-                "model": model,
-                "temperature": 0.2,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": system
-                        or (
-                            "你是行情统计助手。只根据用户给的数字写总结。"
-                            "不要预测涨停，不要编写新闻、公告或财报。"
-                            "只返回 JSON，包含 headline 和 key_points。key_points 是 3 到 5 条字符串。"
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-            },
-            timeout=timeout,
-        )
-    except httpx.HTTPError as exc:
-        raise AiFailed("AI 接口没有连上") from exc
-    if response.status_code >= 400:
-        raise AiFailed(f"AI 接口返回 HTTP {response.status_code}")
-    body = response.json()
-    try:
-        return str(body["choices"][0]["message"]["content"])
-    except (KeyError, IndexError, TypeError) as exc:
-        raise AiFailed("AI 接口没有返回文本") from exc
+    from backend.app.core.ai_client import chat
+
+    return chat(
+        system
+        or (
+            "你是行情统计助手。只根据用户给的数字写总结。"
+            "不要预测涨停，不要编写新闻、公告或财报。"
+            "只返回 JSON，包含 headline 和 key_points。key_points 是 3 到 5 条字符串。"
+        ),
+        prompt,
+        settings=read_settings_file(),
+        read_timeout=timeout,
+    )
 
 
 def ai_ready() -> bool:

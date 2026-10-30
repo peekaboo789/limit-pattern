@@ -508,3 +508,17 @@ def get_cluster_features(date: str | None = None, format: str = "json"):
         body = (_json.dumps(dataset, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         name, media = f"features_{day.isoformat()}.json", "application/json"
     return Response(content=body, media_type=media, headers={"Content-Disposition": content_disposition(name)})
+
+
+@router.post("/ai/test")
+def post_ai_test(body: dict | None = None) -> dict:
+    """用一句很短的提示测试 AI 接口。正文可带未保存的 ai_base_url / ai_model / ai_api_key（密钥不回显）。"""
+    from backend.app.core.ai_client import test_ai
+    from backend.app.core.config import read_settings_file
+
+    settings = dict(read_settings_file())
+    for field in ("ai_base_url", "ai_model", "ai_api_key"):
+        value = (body or {}).get(field)
+        if value:
+            settings[field] = str(value).strip()
+    return test_ai(settings)
