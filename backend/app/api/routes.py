@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date as date_type
+import json
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
@@ -193,6 +194,8 @@ def export_file(
     top: int = Query(50, ge=1, le=500),
 ):
     kind = (type or "").strip().lower()
+    if kind in {"ai_input", "ai_input_md"}:
+        return get_ai_input(date=date, top=min(top if top != 50 else 100, 200), format="md" if kind == "ai_input_md" else "txt")
     if kind not in {"scan", "similarity", "pool", "summary", "ai_ranking", "next_day_pool", "backtest", "cluster"}:
         raise HTTPException(status_code=422, detail="导出类型只能是 scan、similarity、pool、summary、ai_ranking、next_day_pool、backtest、cluster")
     day = _parse_day(date, default_latest=True)
@@ -580,6 +583,60 @@ def post_ai_test(body: dict | None = None) -> dict:
         if value:
             settings[field] = str(value).strip()
     return test_ai(settings)
+
+
+@router.get("/ai-input")
+def get_ai_input(date: str | None = None, top: int = Query(100, ge=1, le=200), format: str = "txt"):
+    """导出前 100 给外部 AI 分析：TXT 或 MD。不带日期时盘中用实时快照，否则用最新正式日线。"""
+    from backend.app.services.ai_export import build_ai_input
+    from backend.app.services.export_service import content_disposition, save_copy
+    from backend.app.services.intraday_service import provisional_day
+
+    fmt = "md" if str(format).lower() in {"md", "markdown"} else "txt"
+    with session_scope() as session:
+        try:
+            if date:
+                day = _parse_day(date, default_latest=True)
+                if day not in quote_dates(session):
+                    raise HTTPException(status_code=404, detail="这一天没有行情")
+                text, filename = build_ai_input(session, day, None, top, fmt)
+            else:
+                with provisional_day(session) as (as_of, info):
+                    if as_of is None:
+                        raise HTTPException(status_code=404, detail="还没有行情")
+                    text, filename = build_ai_input(session, as_of, info, top, fmt)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    body = text.encode("utf-8")
+    try:
+        save_copy(filename, body)
+    except OSError:
+        pass
+    media = "text/markdown; charset=utf-8" if fmt == "md" else "text/plain; charset=utf-8"
+    return Response(content=body, media_type=media, headers={"Content-Disposition": content_disposition(filename)})
+
+
+@router.post("/ai-ranking/import")
+def post_ai_ranking_import(body: dict) -> dict:
+    """导入外部 AI 返回的前 20 JSON，存为 trigger=external 的榜单，监控照常使用。"""
+    from backend.app.services.ai_export import import_external
+    from backend.app.services.summary_service import AiFailed
+
+    text = (body or {}).get("text")
+    if not isinstance(text, str):
+        text = json.dumps((body or {}).get("json") if (body or {}).get("json") is not None else body, ensure_ascii=False)
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="请粘贴外部 AI 返回的 JSON")
+    if len(text) > 500_000:
+        raise HTTPException(status_code=422, detail="内容太长")
+    day = _parse_day(body["date"], default_latest=False) if (body or {}).get("date") else None
+    with session_scope() as session:
+        try:
+            return import_external(session, text, day, str((body or {}).get("model") or ""))
+        except AiFailed as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/ai-ranking/progress")

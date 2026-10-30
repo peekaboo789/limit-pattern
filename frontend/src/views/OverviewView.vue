@@ -2,6 +2,7 @@
 import { api, ApiError, isAbort } from '@/api/client'
 import AiOverviewCard from '@/components/AiOverviewCard.vue'
 import Disclaimer from '@/components/Disclaimer.vue'
+import AiInputExport from '@/components/AiInputExport.vue'
 import ExportButton from '@/components/ExportButton.vue'
 import type { ExportParams } from '@/api/types'
 import type { PoolResponse, ScanResponse } from '@/api/types'
@@ -180,6 +181,7 @@ watch(
       <div class="toolbar">
         <span class="muted" v-if="scan">样本池 {{ scan.pool_size }} 条 · {{ scan.date }}</span>
         <ExportButton :params="exportParams" />
+        <AiInputExport :date="exportParams?.date" />
       </div>
     </div>
     <Disclaimer :text="scan?.disclaimer" />

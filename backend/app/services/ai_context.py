@@ -14,7 +14,7 @@ RECENT_BARS = 5
 LOOKBACK = 70
 
 LEGEND = (
-    "字段说明：近8日每根 = 涨跌%/振幅%/量比(对前5日均量)/换手%/收盘位置(0=最低,1=最高)，以 ; 分隔，最后一根为评估日；"
+    "字段说明：近5日每根 = 涨跌%/振幅%/量比(对前5日均量)/换手%/收盘位置(0=最低,1=最高)，以 ; 分隔，最后一根为评估日；"
     "MA=收盘相对MA5/10/20的偏离%，斜率=MA较3日前变化%；"
     "位20/位60=收盘在近20/60日高低区间中的位置(0~1)，距高=距近20日最高%，60日不足按已有天数；"
     "涨停=近30个交易日涨停次数，末板=最近一次涨停日，连板=截至评估日连续涨停数，炸板=近30日触及涨停未封住次数，"
@@ -131,7 +131,7 @@ def stock_line(item: dict, metrics: dict) -> str:
     ) or "-"
     last_limit = (metrics.get("last_limit") or "-")[5:] if metrics.get("last_limit") else "-"
     return (
-        f"{item['code']} {item.get('name', '')} | 近8日 {recent or '-'} | MA {ma_text} 斜率 {slope} | "
+        f"{item['code']} {item.get('name', '')} {item.get('board_name') or ''} | 近5日 {recent or '-'} | MA {ma_text} 斜率 {slope} | "
         f"位20 {_f(metrics.get('pos20'), 2)} 位60 {_f(metrics.get('pos60'), 2)}({metrics.get('days60', 0)}日) 距高 {_f(metrics.get('dist20'))} | "
         f"涨停 {metrics.get('limit_count', 0)} 末板 {last_limit} 连板 {metrics.get('streak', 0)} 炸板 {metrics.get('broken', 0)} 回撤 {_f(metrics.get('pullback'))} 上影 {_f(metrics.get('upper_shadow'), 2)} | "
         f"相似 {_f(item.get('score'), 0)}/{_f(item.get('shape_score'), 0)}/{_f(item.get('volume_score'), 0)}/{_f(item.get('volume_pct_score'), 0)} 样本 {samples}"

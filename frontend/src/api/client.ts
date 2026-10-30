@@ -134,6 +134,24 @@ export const api = {
 
   monitorEvents: (since: number) => request<MonitorEvents>(`/api/monitor/events${query({ since })}`),
 
+  aiInput: async (format: 'txt' | 'md', date?: string) => {
+    const response = await fetch(`/api/ai-input${query({ format, date, top: 100 })}`)
+    const text = await response.text()
+    if (!response.ok) {
+      let detail = text.trim() || `导出失败（${response.status}）`
+      try {
+        const parsed = JSON.parse(text) as { detail?: unknown }
+        if (parsed && typeof parsed === 'object' && 'detail' in parsed) detail = formatDetail(parsed.detail)
+      } catch {
+        // 纯文本错误
+      }
+      throw new ApiError(response.status, detail)
+    }
+    const filename = filenameFromDisposition(response.headers.get('Content-Disposition')) ?? `ai_input.${format}`
+    return { filename, text, blob: new Blob([text], { type: 'text/plain;charset=utf-8' }) }
+  },
+  importAiRanking: (text: string, date?: string) =>
+    request<AiRanking>('/api/ai-ranking/import', { method: 'POST', body: JSON.stringify({ text, date }) }, 120000),
   exportText: async (params: ExportParams) => {
     if (import.meta.env.VITE_USE_MOCK === '1') {
       const { mockExportText } = await import('@/mocks/exportText')

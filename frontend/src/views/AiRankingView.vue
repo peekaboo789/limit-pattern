@@ -2,6 +2,7 @@
 import { api, ApiError, isAbort } from '@/api/client'
 import type { AiRanking, ExportParams } from '@/api/types'
 import Disclaimer from '@/components/Disclaimer.vue'
+import AiInputExport from '@/components/AiInputExport.vue'
 import ExportButton from '@/components/ExportButton.vue'
 import { computed, onMounted, ref } from 'vue'
 
@@ -12,6 +13,30 @@ const loading = ref(false)
 const generating = ref(false)
 const progressText = ref('')
 const expanded = ref<string | null>(null)
+const importOpen = ref(false)
+const importText = ref('')
+const importDate = ref('')
+const importing = ref(false)
+const importHint = ref('')
+
+async function doImport() {
+  importing.value = true
+  importHint.value = ''
+  try {
+    const saved = await api.importAiRanking(importText.value, importDate.value.trim() || undefined)
+    ranking.value = saved
+    selected.value = saved.date
+    await loadDates()
+    const outside = saved.outside_candidates?.length ? `，${saved.outside_candidates.length} 只不在本地前 100 候选里` : ''
+    const dropped = saved.dropped_unknown?.length ? `，丢弃本地不存在的代码 ${saved.dropped_unknown.join('、')}` : ''
+    importHint.value = `已保存 ${saved.date} 的外部 AI 榜单（${saved.items.length} 只${outside}${dropped}）`
+    importText.value = ''
+  } catch (reason) {
+    importHint.value = reason instanceof ApiError ? reason.detail : '导入失败'
+  } finally {
+    importing.value = false
+  }
+}
 const poolDays = ref(30)
 void api.settings().then((value) => (poolDays.value = value.sample_pool_trading_days ?? 30)).catch(() => undefined)
 // 0.3.5 之前生成的榜单没有 pool_days 字段，那时样本池还是旧的 3 日口径
@@ -113,8 +138,21 @@ onMounted(async () => {
       <button class="btn" type="button" :disabled="generating" @click="generate()">{{ generating ? (progressText || 'AI 打分中…') : '立即生成' }}</button>
       <button class="btn btn-ghost" type="button" :disabled="generating" title="下午用上午 11:30 收盘时冻结的快照打分" @click="generate('morning')">用 11:30 冻结快照</button>
       <ExportButton :params="exportParams" />
+      <AiInputExport />
+      <button class="btn btn-ghost" type="button" @click="importOpen = !importOpen">导入外部 AI 结果</button>
     </div>
   </header>
+
+  <section v-if="importOpen" class="card">
+    <h2>导入外部 AI 结果</h2>
+    <p class="hint">把外部 AI 按导出文件要求返回的 JSON 原样粘进来（带 ```json 围栏或前后说明文字也行）。保存为一份「外部 AI」榜单，第二个交易日的实时监控会照常使用。</p>
+    <textarea v-model="importText" rows="8" style="width: 100%; font-family: monospace" placeholder='{"date":"2026-10-30","model":"…","items":[{"code":"600000","score":78,"sub":{…},"risk_deduct":5,"reason":"…","risk":"…","tags":["…"]}]}' />
+    <div style="margin-top: 8px; display: flex; gap: 8px; align-items: center">
+      <label class="muted">评估日 <input v-model="importDate" placeholder="留空用 JSON 里的 date 或最新交易日" style="width: 16em" /></label>
+      <button class="btn" type="button" :disabled="importing || !importText.trim()" @click="doImport">{{ importing ? '导入中…' : '保存为榜单' }}</button>
+      <span v-if="importHint" class="hint">{{ importHint }}</span>
+    </div>
+  </section>
 
   <p v-if="error" class="alert">{{ error }}</p>
   <section class="card">
@@ -122,7 +160,7 @@ onMounted(async () => {
       <h2>{{ ranking ? `${ranking.date} 前 20 名` : '前 20 名' }}</h2>
       <span v-if="ranking" class="muted">
         候选 {{ ranking.candidate_count }} 只 · 样本池 {{ ranking.pool_size }} 条<template v-if="ranking.skipped_count">（涨停 {{ ranking.limitup_count }}，{{ ranking.skipped_count }} 条缺前 3 日 K 线）</template>（{{ ranking.pool_dates.length }} 个交易日） · 生成于 {{ ranking.run_at.replace('T', ' ').slice(0, 19) }}
-        <template v-if="ranking.model"> · {{ ranking.model }}</template>
+        <template v-if="ranking.trigger === 'external'"> · 外部 AI 导入</template><template v-if="ranking.model"> · {{ ranking.model }}</template>
         <template v-if="ranking.snapshot"> · 行情：{{ snapshotLabel[ranking.snapshot.kind] ?? ranking.snapshot.kind }}<template v-if="ranking.snapshot.taken_at && ranking.snapshot.kind !== 'daily'"> {{ ranking.snapshot.taken_at.slice(11, 16) }}</template><template v-if="ranking.snapshot.volume_estimated"> · 成交量按已过 {{ ranking.snapshot.elapsed_minutes }} 分钟换算成全天（估）</template></template>
       </span>
     </div>

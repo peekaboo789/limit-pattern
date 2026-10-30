@@ -244,6 +244,9 @@ export interface AiRanking {
   pool_days?: number
   batches?: { total: number; failed: number; split: number; batch_size: number }
   unscored_count?: number
+  imported_count?: number
+  outside_candidates?: string[]
+  dropped_unknown?: string[]
   skipped_count?: number
   limitup_count?: number
   disclaimer: string

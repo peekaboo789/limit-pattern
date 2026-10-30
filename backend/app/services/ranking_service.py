@@ -264,31 +264,44 @@ def _rank(session, day: date, chat, trigger: str, snapshot: dict) -> dict:
 
     market = market_context(session, day)
     scores = _score_batches(day, items, chat, market_line(market))
+    extra = {
+        "batches": {k: PROGRESS.get(k) for k in ("total", "failed", "split", "batch_size")},
+        "unscored_count": sum(1 for item in items if item["code"] not in scores),
+    }
+    model = "" if chat is not None else str(read_settings_file().get("ai_model") or "")
+    return _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, extra)
+
+
+def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, extra=None, names=None) -> dict:
+    items = pool["items"]
+    by_code = {item["code"]: item for item in items}
     ranked = []
-    for item in items:
-        got = scores.get(item["code"])
+    order = list(by_code) + [code for code in scores if code not in by_code]
+    for code in order:
+        got = scores.get(code)
         if got is None:
             continue
+        item = by_code.get(code) or {"code": code, "name": (names or {}).get(code, ""), "score": 0.0}
         ranked.append(
             {
-                "code": item["code"],
-                "name": item["name"],
-                "board_name": item["board_name"],
+                "code": code,
+                "name": item.get("name") or (names or {}).get(code, ""),
+                "board_name": item.get("board_name") or board_name(code),
                 "ai_score": got["score"],
                 "reason": got["reason"],
                 "risk": got.get("risk", ""),
                 "risk_deduct": got.get("risk_deduct", 0),
                 "sub": got.get("sub") or {},
                 "tags": got.get("tags") or [],
-                "similarity": item["score"],
-                "shape_score": item["shape_score"],
-                "volume_score": item["volume_score"],
-                "volume_pct_score": item["volume_pct_score"],
-                "best_match": item["best_match"],
+                "similarity": item.get("score"),
+                "shape_score": item.get("shape_score"),
+                "volume_score": item.get("volume_score"),
+                "volume_pct_score": item.get("volume_pct_score"),
+                "best_match": item.get("best_match"),
                 "close": (item.get("bars") or [{}])[-1].get("close"),
             }
         )
-    ranked.sort(key=lambda row: (-row["ai_score"], -row["similarity"], row["code"]))
+    ranked.sort(key=lambda row: (-row["ai_score"], -(row["similarity"] or 0), row["code"]))
     ranked = ranked[:KEEP]
     for index, row in enumerate(ranked, start=1):
         row["rank"] = index
@@ -297,14 +310,13 @@ def _rank(session, day: date, chat, trigger: str, snapshot: dict) -> dict:
         "date": day.isoformat(),
         "run_at": run_at,
         "trigger": trigger,
-        "model": "" if chat is not None else str(read_settings_file().get("ai_model") or ""),
+        "model": model,
         "candidate_count": len(items),
         "snapshot": snapshot,
         "pool_dates": pool["pool_dates"],
         "pool_size": pool["pool_size"],
         "pool_days": len(pool["pool_dates"]),
-        "batches": {k: PROGRESS.get(k) for k in ("total", "failed", "split", "batch_size")},
-        "unscored_count": sum(1 for item in items if item["code"] not in scores),
+        **(extra or {}),
         "skipped_count": len(pool.get("skipped") or []),
         "limitup_count": pool["pool_size"] + len(pool.get("skipped") or []),
         "disclaimer": DISCLAIMER,
