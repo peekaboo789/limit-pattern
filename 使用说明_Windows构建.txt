@@ -1,0 +1,22 @@
+﻿三日涨停形态统计 · Windows 本机构建说明
+
+需要先装：
+1. Python 3.12（64 位，3.11~3.13 也行）：https://www.python.org/downloads/windows/
+   安装时一定勾选 "Add python.exe to PATH"。
+2. 第一次构建需要联网（下载 Python 依赖，约 100~200 MB）。
+3. Node.js 不需要：压缩包里已经带了构建好的前端 frontend\dist。
+4. Microsoft Edge WebView2 Runtime（Win10/11 一般自带）：
+   https://developer.microsoft.com/zh-cn/microsoft-edge/webview2/
+   没有它程序会改用默认浏览器打开。
+
+方法一：打包成 EXE（推荐）
+  双击 build_windows.bat，等它跑完（5~15 分钟）。
+  完成后程序在 dist\LimitPattern\LimitPattern.exe，压缩包在 dist\LimitPattern-win64.zip。
+  步骤和 GitHub 上的 "Build Windows EXE" 完全一样（调用同一个 scripts\build_windows.ps1）。
+
+方法二：不打包，直接从源码运行（备用）
+  双击 run_dev_windows.bat。
+
+数据保存在 %LOCALAPPDATA%\LimitPattern。
+AI 榜单需要先在「设置」里填好 AI 接口；实时监控从生成榜单后的下一个交易日开始。
+相似度和 AI 评分都不是涨停概率。

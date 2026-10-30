@@ -24,7 +24,14 @@ Set-Location $Root
 
 Write-Host "== frontend =="
 $frontendIndex = Join-Path $Root "frontend\dist\index.html"
-if (Test-Path (Join-Path $Root "frontend\package.json")) {
+$hasNpm = [bool](Get-Command npm -ErrorAction SilentlyContinue)
+if ((Test-Path $frontendIndex) -and (($env:LP_USE_PREBUILT_FRONTEND -eq "1") -or (-not $hasNpm))) {
+    Write-Host "使用已构建好的 frontend/dist，跳过 npm"
+}
+elseif ((Test-Path (Join-Path $Root "frontend\package.json")) -and (-not $hasNpm)) {
+    throw "frontend/dist 不存在，也没有找到 npm。请安装 Node.js 22 后重试：https://nodejs.org/zh-cn/download"
+}
+elseif (Test-Path (Join-Path $Root "frontend\package.json")) {
     Push-Location (Join-Path $Root "frontend")
     if (Test-Path "package-lock.json") {
         npm ci
