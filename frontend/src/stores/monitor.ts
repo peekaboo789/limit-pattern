@@ -14,11 +14,36 @@ export const monitorState = reactive({
   toasts: [] as Toast[],
   sound: localStorage.getItem('lp-monitor-sound') !== '0',
   started: false,
+  alertsActive: true,
+  statusText: '',
   demoAlert: false,
   testResult: '',
 })
 
-const seen = new Set<string>()
+// 按天持久化已提醒的键，重启后不重复弹
+const SEEN_KEY = 'lp-monitor-seen'
+function loadSeen(): { date: string; keys: string[] } {
+  try {
+    return JSON.parse(localStorage.getItem(SEEN_KEY) || '') as { date: string; keys: string[] }
+  } catch {
+    return { date: '', keys: [] }
+  }
+}
+const stored = loadSeen()
+const seen = new Set<string>(stored.keys ?? [])
+let seenDate = stored.date ?? ''
+function persistSeen(date: string) {
+  if (date.startsWith('test-')) return
+  if (date !== seenDate) {
+    for (const key of [...seen]) if (!key.startsWith(`${date}:`)) seen.delete(key)
+    seenDate = date
+  }
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify({ date, keys: [...seen].filter((key) => key.startsWith(`${date}:`)) }))
+  } catch {
+    // 存不了就算了
+  }
+}
 let timer: number | undefined
 
 export function setSound(on: boolean) {
@@ -53,6 +78,7 @@ function show(date: string, event: MonitorEvent) {
   const key = `${date}:${event.code}:${event.level}`
   if (seen.has(key)) return
   seen.add(key)
+  persistSeen(date)
   const pct = event.pct == null ? '' : `${event.pct >= 0 ? '+' : ''}${event.pct.toFixed(2)}%`
   const title = event.level === 'alert' ? '涨幅超 6% 报警' : '涨幅超 3% 提醒'
   const text = `${event.code} ${event.name} ${pct}${event.rank ? `（昨日第 ${event.rank} 名）` : ''}`
@@ -96,7 +122,9 @@ export async function testAlerts() {
 async function poll() {
   try {
     const payload = await api.monitorEvents(monitorState.lastId)
-    for (const event of payload.items) show(payload.date, event)
+    monitorState.alertsActive = payload.alerts_active !== false
+    monitorState.statusText = payload.status_text ?? ''
+    if (monitorState.alertsActive) for (const event of payload.items) show(payload.date, event)
     monitorState.lastId = Math.max(monitorState.lastId, payload.last_id)
   } catch {
     // 后端暂时不通，下一轮再试

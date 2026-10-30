@@ -124,6 +124,8 @@ def default_settings() -> dict:
         "ai_thinking": "auto",
         "ai_thinking_learned": {},
         "ai_timeout_seconds": 120,
+        "alert_trading_hours_only": True,
+        "alert_include_auction": False,
         "ai_batch_size": 10,
         "ai_parallel": 3,
         "excluded_boards": ["star"],
@@ -272,6 +274,8 @@ def public_settings() -> dict:
         "ai_api_key_set": bool(key),
         "ai_thinking": str(raw.get("ai_thinking") or "auto"),
         "ai_timeout_seconds": ai_int(raw, "ai_timeout_seconds"),
+        "alert_trading_hours_only": raw.get("alert_trading_hours_only") is not False,
+        "alert_include_auction": raw.get("alert_include_auction") is True,
         "ai_batch_size": ai_int(raw, "ai_batch_size"),
         "ai_parallel": ai_int(raw, "ai_parallel"),
         "data_source": str(raw.get("data_source") or "auto"),
@@ -336,6 +340,11 @@ def _update_settings(changes: dict) -> dict:
         if mode not in ("auto", "on", "off"):
             raise ValueError("深度思考只能是 auto / on / off")
         current["ai_thinking"] = mode
+    for name in ("alert_trading_hours_only", "alert_include_auction"):
+        if changes.get(name) is not None:
+            if not isinstance(changes[name], bool):
+                raise ValueError("报警时段开关只能是 true / false")
+            current[name] = changes[name]
     for name, (low, high, _default) in AI_LIMITS.items():
         if changes.get(name) is not None:
             try:

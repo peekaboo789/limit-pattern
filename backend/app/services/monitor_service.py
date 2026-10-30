@@ -52,6 +52,54 @@ def market_open(moment: datetime | None = None) -> bool:
     return calendar_open(moment or now())
 
 
+AUCTION_OPEN = (9, 15)
+AUCTION_CLOSE = (9, 25)
+PHASE_TEXT = {
+    "trading": "交易中",
+    "auction": "集合竞价",
+    "pre_open": "未开盘，报警暂停",
+    "lunch": "午休，报警暂停",
+    "closed": "已收盘，报警暂停",
+    "non_trading_day": "非交易日，报警暂停",
+}
+
+
+def alert_phase(moment: datetime | None = None, settings: dict | None = None) -> dict:
+    """当前处在哪个时段、是否允许报警。默认只在 9:30–11:30、13:00–15:00 的交易日报警。"""
+    from datetime import time as _t
+
+    from backend.app.core.calendar import is_trading_day
+
+    settings = read_settings_file() if settings is None else settings
+    moment = moment or now()
+    local = moment.astimezone(SHANGHAI) if moment.tzinfo else moment.replace(tzinfo=SHANGHAI)
+    clock = local.time()
+    if not is_trading_day(local.date()):
+        phase = "non_trading_day"
+    elif _t(9, 30) <= clock < _t(11, 30) or _t(13, 0) <= clock < _t(15, 0):
+        phase = "trading"
+    elif _t(*AUCTION_OPEN) <= clock < _t(*AUCTION_CLOSE):
+        phase = "auction"
+    elif clock < _t(9, 30):
+        phase = "pre_open"
+    elif clock < _t(13, 0):
+        phase = "lunch"
+    else:
+        phase = "closed"
+    hours_only = settings.get("alert_trading_hours_only") is not False
+    include_auction = settings.get("alert_include_auction") is True
+    if not hours_only:
+        active = True
+    else:
+        active = phase == "trading" or (phase == "auction" and include_auction)
+    text = PHASE_TEXT[phase]
+    if phase == "auction":
+        text = "集合竞价" + ("" if active else "，报警暂停")
+    elif not hours_only and phase != "trading":
+        text = text.replace("报警暂停", "仍报警（已关闭「仅在交易时段报警」）")
+    return {"phase": phase, "alerts_active": active, "text": text}
+
+
 def _spot_chain() -> list[str]:
     configured = str(read_settings_file().get("data_source") or "auto").lower()
     if configured in SPOT_ORDER:
@@ -133,11 +181,15 @@ def snapshot(session, moment: datetime | None = None) -> dict:
     moment = moment or now()
     day = moment.astimezone(SHANGHAI).date() if moment.tzinfo else moment.date()
     is_open = market_open(moment)
+    phase = alert_phase(moment)
+    active = phase["alerts_active"]
     board = previous_ranking(session, day)
     base = {
         "date": day.isoformat(),
         "market_open": is_open,
-        "status_text": "交易中" if is_open else "休市",
+        "phase": phase["phase"],
+        "alerts_active": active,
+        "status_text": phase["text"],
         "ranking_date": None,
         "thresholds": {"warn": WARN_PCT, "alert": ALERT_PCT},
         "source": "",
@@ -150,7 +202,7 @@ def snapshot(session, moment: datetime | None = None) -> dict:
         return base
     base["ranking_date"] = board.get("date")
     entries = board["items"]
-    cache = _quotes([entry["code"] for entry in entries], is_open)
+    cache = _quotes([entry["code"] for entry in entries], is_open or active)
     base["source"] = cache["source"]
     base["error"] = cache["error"]
     items = []
@@ -169,10 +221,10 @@ def snapshot(session, moment: datetime | None = None) -> dict:
             "level": level_for(pct),
         }
         items.append(item)
-        if is_open and item["level"] != "normal":
+        if active and item["level"] != "normal":  # 非报警时段只显示最后的数字，不记报警
             _record(session, day, item)
     base["items"] = items
-    base["alert_count"] = sum(1 for item in items if item["level"] == "alert")
+    base["alert_count"] = sum(1 for item in items if item["level"] == "alert") if active else 0
     base["warn_count"] = sum(1 for item in items if item["level"] == "warn")
     return base
 
@@ -180,7 +232,9 @@ def snapshot(session, moment: datetime | None = None) -> dict:
 def events(session, since: int = 0, moment: datetime | None = None) -> dict:
     moment = moment or now()
     day = moment.astimezone(SHANGHAI).date() if moment.tzinfo else moment.date()
-    snapshot(session, moment)
+    phase = alert_phase(moment)
+    if phase["alerts_active"]:
+        snapshot(session, moment)  # 非报警时段不拉行情，也不产生新报警
     rows = (
         session.query(IntradayWatchAlert)
         .filter(IntradayWatchAlert.trade_date == day, IntradayWatchAlert.id > since)
@@ -203,4 +257,14 @@ def events(session, since: int = 0, moment: datetime | None = None) -> dict:
         for row in rows
     ]
     last = items[-1]["id"] if items else since
-    return {"date": day.isoformat(), "market_open": market_open(moment), "last_id": last, "items": items}
+    if not phase["alerts_active"]:
+        items = []  # 收盘后/重启后不再补发当天早些时候的报警；游标照常前移
+    return {
+        "date": day.isoformat(),
+        "market_open": market_open(moment),
+        "phase": phase["phase"],
+        "alerts_active": phase["alerts_active"],
+        "status_text": phase["text"],
+        "last_id": last,
+        "items": items,
+    }

@@ -25,6 +25,8 @@ export interface Settings {
   ai_api_key_set: boolean
   ai_thinking?: string
   ai_timeout_seconds?: number
+  alert_trading_hours_only?: boolean
+  alert_include_auction?: boolean
   ai_batch_size?: number
   ai_parallel?: number
   data_source: string
@@ -270,6 +272,8 @@ export interface MonitorSnapshot {
   date: string
   market_open: boolean
   status_text: string
+  phase?: string
+  alerts_active?: boolean
   ranking_date: string | null
   thresholds: { warn: number; alert: number }
   source: string
@@ -293,6 +297,9 @@ export interface MonitorEvent {
 export interface MonitorEvents {
   date: string
   market_open: boolean
+  phase?: string
+  alerts_active?: boolean
+  status_text?: string
   last_id: number
   items: MonitorEvent[]
 }

@@ -20,6 +20,8 @@ const form = reactive({
   ai_timeout_seconds: 120,
   ai_batch_size: 10,
   ai_parallel: 3,
+  alert_trading_hours_only: true,
+  alert_include_auction: false,
 })
 const sourceOptions = computed(() =>
   meta.value?.data_source_options?.length ? meta.value.data_source_options : FALLBACK_SOURCES,
@@ -42,6 +44,8 @@ function apply(settings: Settings) {
   form.ai_timeout_seconds = settings.ai_timeout_seconds ?? 120
   form.ai_batch_size = settings.ai_batch_size ?? 10
   form.ai_parallel = settings.ai_parallel ?? 3
+  form.alert_trading_hours_only = settings.alert_trading_hours_only !== false
+  form.alert_include_auction = settings.alert_include_auction === true
 }
 
 const switching = ref(false)
@@ -153,6 +157,8 @@ async function save() {
       ai_timeout_seconds: number
       ai_batch_size: number
       ai_parallel: number
+      alert_trading_hours_only: boolean
+      alert_include_auction: boolean
     } = {
       retention_trading_days: form.retention_trading_days,
       sample_pool_trading_days: form.sample_pool_trading_days,
@@ -163,6 +169,8 @@ async function save() {
       ai_timeout_seconds: Number(form.ai_timeout_seconds),
       ai_batch_size: Number(form.ai_batch_size),
       ai_parallel: Number(form.ai_parallel),
+      alert_trading_hours_only: form.alert_trading_hours_only,
+      alert_include_auction: form.alert_include_auction,
     }
     if (form.ai_api_key.trim()) body.ai_api_key = form.ai_api_key.trim()
     apply(await api.saveSettings(body))
@@ -204,6 +212,14 @@ onMounted(() => {
         <span>涨停样本池（近 N 个交易日）</span>
         <input v-model.number="form.sample_pool_trading_days" type="number" min="3" max="60" step="1" />
         <span class="hint">默认 30，可改 3 到 60。相似度、AI 排名、聚类、次日池和回测只和这段时间里涨停过的股票比。形态特征固定看涨停前 3 根 K 线。当前生效：{{ meta?.sample_pool_trading_days ?? '-' }} 个交易日。</span>
+      </label>
+      <label class="field" style="margin-top: 12px">
+        <span><input v-model="form.alert_trading_hours_only" type="checkbox" /> 仅在交易时段报警</span>
+        <span class="hint">默认开：只在交易日 9:30–11:30、13:00–15:00 弹 ≥3% 提醒和 ≥6% 红框；盘前、午休、收盘后、周末节假日只显示最后行情，也不拉行情。「测试提醒」任何时候都能用。</span>
+      </label>
+      <label class="field" style="margin-top: 8px">
+        <span><input v-model="form.alert_include_auction" type="checkbox" :disabled="!form.alert_trading_hours_only" /> 集合竞价 9:15–9:25 也报警</span>
+        <span class="hint">默认关。竞价价格会撤单变动，容易误报。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>数据源</span>

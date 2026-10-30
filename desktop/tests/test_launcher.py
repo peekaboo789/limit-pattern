@@ -365,3 +365,24 @@ def test_notifier_fallback_chain():
     assert silent.notify("a", "b") == "log"
     api = launcher.ExportApi(launcher.Notifier(None, toast=lambda t, m: True))
     assert api.notify_test("alert") == "toast"
+
+
+def test_monitor_watcher_persists_cursor_and_idles(tmp_path):
+    from desktop import launcher
+
+    sent = []
+    state = tmp_path / "monitor_notified.json"
+    event = {"id": 7, "code": "600000", "name": "浦发银行", "level": "alert", "pct": 6.1, "rank": 1}
+
+    def make(pages):
+        notifier = launcher.Notifier(None, toast=lambda t, m: sent.append(t) or True, box=lambda t, m: True)
+        return launcher.MonitorWatcher("http://127.0.0.1:1/", notifier, fetch=lambda url: pages.pop(0), state_path=state)
+
+    first = make([{"date": "2026-06-15", "alerts_active": True, "last_id": 7, "items": [event]}])
+    assert first.poll_once() == 1 and len(sent) == 1
+    restarted = make([{"date": "2026-06-15", "alerts_active": True, "last_id": 7, "items": [event]}])
+    assert restarted.last_id == 7
+    assert restarted.poll_once() == 0 and len(sent) == 1  # 重启后同一条不再弹
+    closed = make([{"date": "2026-06-15", "alerts_active": False, "last_id": 7, "items": []}])
+    closed.poll_once()
+    assert closed.active is False

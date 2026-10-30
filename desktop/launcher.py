@@ -825,6 +825,10 @@ class Notifier:
         self._seen: set[str] = set()
         self._lock = threading.Lock()
 
+    def remember(self, key: str) -> None:
+        with self._lock:
+            self._seen.add(key)
+
     def notify(self, title: str, message: str, key: str | None = None) -> str:
         if key:
             with self._lock:
@@ -861,16 +865,49 @@ def event_key(date_text: str, event: dict) -> str:
 
 
 class MonitorWatcher:
-    """后台每 5 秒读 /api/monitor/events，页面没打开也会提醒。"""
+    """后台读 /api/monitor/events，页面没打开也会提醒。
+    非报警时段后端不拉行情；这里也放慢到每分钟看一次。已提醒的游标和键按天存盘，重启不重复弹。"""
 
-    def __init__(self, base_url: str, notifier: Notifier, interval: float = 5.0, fetch=None) -> None:
+    IDLE_INTERVAL = 60.0
+
+    def __init__(self, base_url: str, notifier: Notifier, interval: float = 5.0, fetch=None, state_path: Path | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.notifier = notifier
         self.interval = interval
         self.last_id = 0
+        self.active = True
+        self.day = ""
+        self.state_path = state_path
         self._fetch = fetch or self._http_json
         self._stop = threading.Event()
         self.thread: threading.Thread | None = None
+        self._load_state()
+
+    def _load_state(self) -> None:
+        if not self.state_path or not self.state_path.exists():
+            return
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            self.day = str(data.get("date") or "")
+            self.last_id = int(data.get("last_id") or 0)
+            for key in data.get("keys") or []:
+                self.notifier.remember(str(key))
+        except Exception as exc:
+            logger.debug("监控游标读取失败：%s", exc)
+
+    def _save_state(self, keys: list[str]) -> None:
+        if not self.state_path:
+            return
+        try:
+            old: list[str] = []
+            if self.state_path.exists():
+                data = json.loads(self.state_path.read_text(encoding="utf-8"))
+                if data.get("date") == self.day:
+                    old = list(data.get("keys") or [])
+            payload = {"date": self.day, "last_id": self.last_id, "keys": sorted(set(old + keys))}
+            self.state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:
+            logger.debug("监控游标保存失败：%s", exc)
 
     def _http_json(self, url: str) -> dict:
         import urllib.request
@@ -883,19 +920,30 @@ class MonitorWatcher:
         payload = self._fetch(f"{self.base_url}/api/monitor/events?since={self.last_id}")
         count = 0
         day = str(payload.get("date") or "")
+        if day and day != self.day:
+            self.day = day
+        self.active = payload.get("alerts_active") is not False
+        keys = []
         for event in payload.get("items") or []:
             title, message = format_event(event)
-            if self.notifier.notify(title, message, event_key(day, event)) != "duplicate":
+            key = event_key(day, event)
+            keys.append(key)
+            if self.notifier.notify(title, message, key) != "duplicate":
                 count += 1
+        before = self.last_id
         self.last_id = max(self.last_id, int(payload.get("last_id") or 0))
+        if keys or self.last_id != before:
+            self._save_state(keys)
         return count
 
     def _loop(self) -> None:
-        while not self._stop.wait(self.interval):
+        wait = self.interval
+        while not self._stop.wait(wait):
             try:
                 self.poll_once()
             except Exception as exc:
                 logger.debug("监控事件读取失败：%s", exc)
+            wait = self.interval if self.active else max(self.interval, self.IDLE_INTERVAL)
 
     def start(self) -> None:
         self.thread = threading.Thread(target=self._loop, name="limitpattern-monitor", daemon=True)
@@ -1118,7 +1166,7 @@ def _serve_and_open(args: argparse.Namespace, data_dir: Path, state: AppState) -
     if args.smoke:
         return 0
     state.notifier = Notifier(state)
-    state.watcher = MonitorWatcher(state.url, state.notifier)
+    state.watcher = MonitorWatcher(state.url, state.notifier, state_path=data_dir / "monitor_notified.json")
     state.watcher.start()
     launch_ui(state, args.open_browser)
     return 0
