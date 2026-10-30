@@ -64,3 +64,9 @@
 返回 `{ok, reply?, error?, endpoint, note, latency_ms}`；错误是具体原因（连接超时、读取超时、域名解析、SSL 证书、代理、HTTP 状态码和返回内容），不含密钥。
 地址填到 `/v1` 即可；阿里云百炼只填域名时自动补 `/compatible-mode/v1`。自动使用 Windows 系统代理和系统证书库（truststore）。
 AI 排名按每批 25 只、紧凑表格分批请求，单批读取超时 150 秒。
+
+### 深度思考（v0.2.3）
+
+设置项 `ai_thinking`: `auto`（默认，不发送 enable_thinking）/ `on` / `off`。返回 400 且提到 enable_thinking 时自动换另一个值重试一次，并按「地址|模型」记到 `ai_thinking_learned`。
+思考开启时百炼走 `stream=true`，只收 `delta.content`，跳过 `reasoning_content`；单批读取超时 300 秒。
+AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/progress`。

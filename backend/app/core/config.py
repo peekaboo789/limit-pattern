@@ -115,6 +115,8 @@ def default_settings() -> dict:
         "ai_api_key": os.environ.get("AI_API_KEY", "").strip(),
         "data_source": os.environ.get("DATA_PROVIDER", "auto").strip() or "auto",
         "active_source": "",
+        "ai_thinking": "auto",
+        "ai_thinking_learned": {},
         "excluded_boards": ["star"],
         "last_sync_at": None,
         "last_cleanup_at": None,
@@ -213,6 +215,7 @@ def public_settings() -> dict:
         "ai_base_url": url,
         "ai_model": model,
         "ai_api_key_set": bool(key),
+        "ai_thinking": str(raw.get("ai_thinking") or "auto"),
         "data_source": str(raw.get("data_source") or "auto"),
         "data_source_options": ["auto", "eastmoney", "tencent", "sina"],
         "active_source": str(raw.get("active_source") or ""),
@@ -259,6 +262,11 @@ def _update_settings(changes: dict) -> dict:
         current["ai_base_url"] = str(changes["ai_base_url"]).strip()
     if "ai_model" in changes and changes["ai_model"] is not None:
         current["ai_model"] = str(changes["ai_model"]).strip()
+    if changes.get("ai_thinking") is not None:
+        mode = str(changes["ai_thinking"]).strip()
+        if mode not in ("auto", "on", "off"):
+            raise ValueError("深度思考只能是 auto / on / off")
+        current["ai_thinking"] = mode
     if changes.get("ai_api_key"):
         current["ai_api_key"] = str(changes["ai_api_key"]).strip()
     if "data_source" in changes and changes["data_source"] is not None:

@@ -62,7 +62,13 @@ def candidates(session, day: date, limit: int = CANDIDATES) -> dict:
     return payload
 
 
-BATCH_SIZE = 25
+BATCH_SIZE = 20
+PARALLEL = 3
+PROGRESS: dict = {"running": False, "done": 0, "total": 0, "failed": 0}
+
+
+def progress() -> dict:
+    return dict(PROGRESS)
 
 
 def _prompt(day: date, items: list[dict]) -> str:
@@ -81,19 +87,31 @@ def _prompt(day: date, items: list[dict]) -> str:
 
 
 def _score_batches(day: date, items: list[dict], chat) -> dict[str, dict]:
-    """分批打分，单次请求小、超时风险低；某一批失败时其余批照常。全部失败才报错。"""
+    """每批 20 只、最多 3 批并发；某一批失败时其余批照常，全部失败才报错。"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    batches = [items[i : i + BATCH_SIZE] for i in range(0, len(items), BATCH_SIZE)]
+    PROGRESS.update(running=True, done=0, total=len(batches), failed=0)
+
+    def run(batch: list[dict]) -> dict[str, dict]:
+        prompt = _prompt(day, batch)
+        text = chat(prompt) if chat is not None else call_chat(prompt, system=SYSTEM_PROMPT, timeout=150.0)
+        return _parse_scores(text)
+
     scores: dict[str, dict] = {}
     errors: list[str] = []
-    for start in range(0, len(items), BATCH_SIZE):
-        batch = items[start : start + BATCH_SIZE]
-        prompt = _prompt(day, batch)
-        try:
-            text = chat(prompt) if chat is not None else call_chat(prompt, system=SYSTEM_PROMPT, timeout=150.0)
-            scores.update(_parse_scores(text))
-        except AiFailed as exc:
-            errors.append(str(exc))
-            if not scores and len(errors) >= 2:
-                break
+    try:
+        with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
+            futures = [pool.submit(run, batch) for batch in batches]
+            for future in as_completed(futures):
+                try:
+                    scores.update(future.result())
+                except (AiFailed, AiNotConfigured) as exc:
+                    errors.append(str(exc))
+                    PROGRESS["failed"] += 1
+                PROGRESS["done"] += 1
+    finally:
+        PROGRESS["running"] = False
     if not scores:
         raise AiFailed(errors[0] if errors else "AI 没有给出有效评分")
     return scores

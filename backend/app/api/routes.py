@@ -517,8 +517,15 @@ def post_ai_test(body: dict | None = None) -> dict:
     from backend.app.core.config import read_settings_file
 
     settings = dict(read_settings_file())
-    for field in ("ai_base_url", "ai_model", "ai_api_key"):
+    for field in ("ai_base_url", "ai_model", "ai_api_key", "ai_thinking"):
         value = (body or {}).get(field)
         if value:
             settings[field] = str(value).strip()
     return test_ai(settings)
+
+
+@router.get("/ai-ranking/progress")
+def get_ai_ranking_progress() -> dict:
+    from backend.app.services.ranking_service import progress
+
+    return progress()

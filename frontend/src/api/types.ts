@@ -16,6 +16,7 @@ export interface Settings {
   ai_base_url: string
   ai_model: string
   ai_api_key_set: boolean
+  ai_thinking?: string
   data_source: string
   data_source_options?: string[]
   active_source?: string

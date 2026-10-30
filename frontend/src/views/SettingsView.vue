@@ -15,6 +15,7 @@ const form = reactive({
   ai_model: '',
   data_source: 'auto',
   ai_api_key: '',
+  ai_thinking: 'auto',
 })
 const sourceOptions = computed(() =>
   meta.value?.data_source_options?.length ? meta.value.data_source_options : FALLBACK_SOURCES,
@@ -32,6 +33,7 @@ function apply(settings: Settings) {
   form.ai_model = settings.ai_model
   form.data_source = settings.data_source || 'auto'
   form.ai_api_key = ''
+  form.ai_thinking = settings.ai_thinking || 'auto'
 }
 
 const switching = ref(false)
@@ -51,10 +53,11 @@ async function testAi() {
       ai_base_url: form.ai_base_url.trim(),
       ai_model: form.ai_model.trim(),
       ai_api_key: form.ai_api_key.trim() || undefined,
+      ai_thinking: form.ai_thinking,
     })
     const note = result.note ? `（${result.note}）` : ''
     aiResult.value = result.ok
-      ? { ok: true, text: `连接成功，用时 ${result.latency_ms} 毫秒，模型回复：${result.reply}。调用地址 ${result.endpoint}${note}` }
+      ? { ok: true, text: `连接成功，用时 ${result.latency_ms} 毫秒，深度思考：${result.thinking ?? ''}，模型回复：${result.reply}。调用地址 ${result.endpoint}${note}` }
       : { ok: false, text: `${result.error}${note}` }
   } catch (reason) {
     aiResult.value = { ok: false, text: reason instanceof ApiError ? reason.detail : '测试请求没有返回' }
@@ -124,11 +127,13 @@ async function save() {
       ai_model: string
       data_source: string
       ai_api_key?: string
+      ai_thinking: string
     } = {
       retention_trading_days: form.retention_trading_days,
       ai_base_url: form.ai_base_url.trim(),
       ai_model: form.ai_model.trim(),
       data_source: form.data_source,
+      ai_thinking: form.ai_thinking,
     }
     if (form.ai_api_key.trim()) body.ai_api_key = form.ai_api_key.trim()
     apply(await api.saveSettings(body))
@@ -240,6 +245,15 @@ onMounted(() => {
       <label class="field" style="margin-top: 12px">
         <span>模型</span>
         <input v-model="form.ai_model" placeholder="deepseek-chat" />
+      </label>
+      <label class="field" style="margin-top: 12px">
+        <span>深度思考</span>
+        <select v-model="form.ai_thinking">
+          <option value="auto">自动（不发送参数，报错时自动改用可用的值并记住）</option>
+          <option value="on">开</option>
+          <option value="off">关</option>
+        </select>
+        <span class="hint">有的模型只能开思考（如 qwen3.8 系列），开启后用流式返回，单批最长等 5 分钟。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>API Key</span>

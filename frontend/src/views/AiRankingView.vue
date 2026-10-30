@@ -10,6 +10,7 @@ const selected = ref('')
 const ranking = ref<AiRanking | null>(null)
 const loading = ref(false)
 const generating = ref(false)
+const progressText = ref('')
 const error = ref('')
 
 const exportParams = computed<ExportParams | null>(() => (ranking.value ? { type: 'ai_ranking', date: ranking.value.date } : null))
@@ -46,6 +47,15 @@ const snapshotLabel: Record<string, string> = {
 async function generate(snapshot?: 'morning') {
   generating.value = true
   error.value = ''
+  progressText.value = ''
+  const timer = window.setInterval(async () => {
+    try {
+      const p = await api.aiRankingProgress()
+      if (p.total) progressText.value = `AI 打分 ${p.done}/${p.total} 批` + (p.failed ? `（${p.failed} 批失败）` : '')
+    } catch {
+      /* 忽略 */
+    }
+  }, 2000)
   try {
     ranking.value = await api.generateAiRanking(snapshot ? { snapshot } : {})
     selected.value = ranking.value.date
@@ -55,7 +65,9 @@ async function generate(snapshot?: 'morning') {
     if (reason instanceof ApiError && reason.status === 409) error.value = '还没配置 AI 接口，请先到「设置」里填写'
     else error.value = reason instanceof ApiError ? reason.detail : '生成失败'
   } finally {
+    window.clearInterval(timer)
     generating.value = false
+    progressText.value = ''
   }
 }
 
@@ -75,7 +87,7 @@ onMounted(async () => {
       <select v-if="dates.length" v-model="selected" @change="open(selected)">
         <option v-for="day in dates" :key="day" :value="day">{{ day }}</option>
       </select>
-      <button class="btn" type="button" :disabled="generating" @click="generate()">{{ generating ? 'AI 打分中…' : '立即生成' }}</button>
+      <button class="btn" type="button" :disabled="generating" @click="generate()">{{ generating ? (progressText || 'AI 打分中…') : '立即生成' }}</button>
       <button class="btn btn-ghost" type="button" :disabled="generating" title="下午用上午 11:30 收盘时冻结的快照打分" @click="generate('morning')">用 11:30 冻结快照</button>
       <ExportButton :params="exportParams" />
     </div>

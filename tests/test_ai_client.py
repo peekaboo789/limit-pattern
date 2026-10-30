@@ -20,24 +20,20 @@ def test_normalize_endpoint():
     assert normalize_endpoint("https://x/v1/chat/completions/")[0] == "https://x/v1/chat/completions"
 
 
-class _Client:
-    def __init__(self, behaviour, captured):
-        self.behaviour, self.captured = behaviour, captured
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def post(self, url, headers=None, json=None):
-        self.captured.update(url=url, json=json)
-        return self.behaviour(url)
-
-
 def _patch(monkeypatch, behaviour, captured=None):
     captured = {} if captured is None else captured
-    monkeypatch.setattr(ai_client.httpx, "Client", lambda **kwargs: _Client(behaviour, captured))
+    calls = captured.setdefault("calls", [])
+
+    def handler(request):
+        import json as _json
+
+        body = _json.loads(request.content or b"{}")
+        captured.update(url=str(request.url), json=body)
+        calls.append(body)
+        return behaviour(str(request.url)) if behaviour.__code__.co_argcount == 1 else behaviour(str(request.url), body)
+
+    monkeypatch.setattr(ai_client, "_TRANSPORT", httpx.MockTransport(handler))
+    monkeypatch.setattr(ai_client, "_save_learned", lambda *a: captured.setdefault("learned", a))
     return captured
 
 
@@ -73,7 +69,67 @@ def test_http_error_shows_status_and_body_without_key(monkeypatch):
         ai_client.chat("s", "p", settings=SETTINGS)
     text = str(info.value)
     assert "HTTP 401" in text and "Incorrect API key" in text and KEY not in text
+    assert "enable_thinking" not in captured["json"]  # 自动模式不发送该参数
+
+
+THINK_400 = '{"error":{"code":"invalid_parameter_error","message":"The value of the enable_thinking parameter is restricted to True."}}'
+
+
+def _sse(*chunks):
+    import json as _json
+
+    lines = [f"data: {_json.dumps(c, ensure_ascii=False)}" for c in chunks] + ["data: [DONE]"]
+    return "\n\n".join(lines) + "\n\n"
+
+
+def test_retry_with_thinking_and_stream(monkeypatch):
+    def behaviour(url, body):
+        if body.get("enable_thinking") is not True:
+            return httpx.Response(400, text=THINK_400)
+        assert body.get("stream") is True
+        text = _sse(
+            {"choices": [{"delta": {"reasoning_content": "先想一想"}}]},
+            {"choices": [{"delta": {"content": "连接"}}]},
+            {"choices": [{"delta": {"content": "成功"}}]},
+        )
+        return httpx.Response(200, text=text, headers={"content-type": "text/event-stream"})
+
+    captured = _patch(monkeypatch, behaviour)
+    assert ai_client.chat("s", "p", settings=SETTINGS) == "连接成功"
+    assert len(captured["calls"]) == 2
+    assert captured["learned"][2:] == (True, True)
+
+
+def test_retry_opposite_when_off_rejected(monkeypatch):
+    def behaviour(url, body):
+        if body.get("enable_thinking") is True:
+            return httpx.Response(400, text='{"error":{"message":"enable_thinking must be false for this model"}}')
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok", "reasoning_content": "x"}}]})
+
+    captured = _patch(monkeypatch, behaviour)
+    settings = {**SETTINGS, "ai_thinking_learned": {f"{SETTINGS['ai_base_url']}|qwen": {"thinking": True, "stream": False}}}
+    captured["calls"].clear()
+    assert ai_client.chat("s", "p", settings=settings) == "ok"
+    assert [c.get("enable_thinking") for c in captured["calls"]] == [True, False]
+
+
+def test_forced_mode_sent(monkeypatch):
+    captured = _patch(monkeypatch, lambda url: httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]}))
+    ai_client.chat("s", "p", settings={**SETTINGS, "ai_thinking": "off"})
     assert captured["json"]["enable_thinking"] is False
+
+
+def test_parse_stream_skips_reasoning():
+    lines = [
+        'data: {"choices":[{"delta":{"reasoning_content":"思考"}}]}',
+        "",
+        ": keep-alive",
+        'data: {"choices":[{"delta":{"content":"{\\"a\\":1}"}}]}',
+        "data: not-json",
+        "data: [DONE]",
+        'data: {"choices":[{"delta":{"content":"after"}}]}',
+    ]
+    assert ai_client.parse_stream(lines) == '{"a":1}'
 
 
 def test_ai_test_endpoint(client, monkeypatch):

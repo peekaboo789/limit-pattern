@@ -50,11 +50,11 @@ export const api = {
 
   startSync: () => request<SyncTask>('/api/sync', { method: 'POST' }),
 
-  testAi: (body: { ai_base_url?: string; ai_model?: string; ai_api_key?: string }) =>
-    request<{ ok: boolean; error?: string; reply?: string; endpoint: string; note?: string; latency_ms: number }>(
+  testAi: (body: { ai_base_url?: string; ai_model?: string; ai_api_key?: string; ai_thinking?: string }) =>
+    request<{ ok: boolean; error?: string; reply?: string; endpoint: string; note?: string; latency_ms: number; thinking?: string }>(
       '/api/ai/test',
       { method: 'POST', body: JSON.stringify(body) },
-      60000,
+      360000,
     ),
 
   cancelSync: () => request<SyncStatus>('/api/sync/cancel', { method: 'POST' }),
@@ -104,7 +104,10 @@ export const api = {
   aiRankingDates: () => request<{ dates: string[] }>('/api/ai-ranking/dates'),
 
   generateAiRanking: (options: { date?: string; snapshot?: 'morning' } = {}) =>
-    request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(options) }, 300000),
+    request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(options) }, 900000),
+
+  aiRankingProgress: () =>
+    request<{ running: boolean; done: number; total: number; failed: number }>('/api/ai-ranking/progress', {}, 5000),
 
   clusterStatus: () => request<{ available: boolean; message: string }>('/api/cluster/status'),
 
