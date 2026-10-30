@@ -39,7 +39,7 @@ def test_parse_external_is_defensive():
     scores, meta = parse_external(text)
     assert meta["model"] == "gpt-x"
     assert list(scores) == ["600000", "600100", "600101"]
-    assert scores["600000"]["score"] == 81 and scores["600000"]["risk_deduct"] == 4
+    assert scores["600000"]["score"] == 81
     assert scores["600000"]["tags"] == ["放量突破", "均线多头"] and scores["600101"]["reason"] == "缩量"
     bare, _ = parse_external('[{"code":"600102","score":60}]')
     assert list(bare) == ["600102"]
@@ -52,7 +52,13 @@ def test_import_external_ranking_is_monitored(client, monkeypatch):
     body = {"text": json.dumps({"date": days[-1].isoformat(), "model": "外部模型", "items": items}, ensure_ascii=False)}
     saved = client.post("/api/ai-ranking/import", json=body).json()
     assert saved["trigger"] == "external" and saved["model"] == "外部模型"
-    assert len(saved["items"]) == 20 and saved["items"][0]["code"] == "600100" and saved["items"][0]["rank"] == 1
+    assert len(saved["items"]) == 20 and saved["items"][0]["rank"] == 1
+    assert {row["code"] for row in saved["items"]} <= {f"{600100 + i}" for i in range(25)}
+    composites = [row["composite_score"] or 0 for row in saved["items"]]
+    assert composites == sorted(composites, reverse=True)  # 外部挑的票按系统综合评分排
+    first = saved["items"][0]
+    assert first["model_score"] == 90 - (int(first["code"]) - 600100)
+    assert first["model_gap"] == round(first["model_score"] - first["composite_score"], 2)
     assert all("checks" in row for row in saved["items"]) and "check_count" in saved
     market = saved["market"]
     assert market["up"] + market["down"] + market["flat"] + market["suspended"] == market["listed"]
@@ -67,6 +73,6 @@ def test_import_external_ranking_is_monitored(client, monkeypatch):
     monkeypatch.setattr(monitor_service, "now", lambda: datetime(nxt.year, nxt.month, nxt.day, 10, 0, tzinfo=SHANGHAI))
     try:
         snap = client.get("/api/monitor").json()
-        assert snap["ranking_date"] == days[-1].isoformat() and snap["items"][0]["code"] == "600100"
+        assert snap["ranking_date"] == days[-1].isoformat() and snap["items"][0]["code"] == saved["items"][0]["code"]
     finally:
         monitor_service.set_spot_fetcher()

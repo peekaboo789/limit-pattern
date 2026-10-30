@@ -11,9 +11,7 @@ from datetime import date
 
 from backend.app.core.config import read_settings_file
 from backend.app.services.ranking_service import (
-    DIMENSIONS,
     KEEP,
-    RISK_MAX,
     SYSTEM_PROMPT,
     _parse_entry,
     _save_ranking,
@@ -30,13 +28,13 @@ SNAPSHOT_TEXT = {
 }
 
 CLOSING = (
-    "请按上面的系统提示和评分框架，对以上全部候选逐只评估，选出总分最高的前 {keep} 只，按总分从高到低排列。\n"
+    "以上每只的「综合」已由系统按固定公式算好（见评分框架），排名以系统综合评分为准，你不需要也不能改它。\n"
+    "请对全部候选逐只解读，挑出你认为最值得关注的前 {keep} 只，给出你自己的相对判断分 score（0–100，只作对照，页面显示为模型分和与系统分的偏差）。\n"
     "只返回一个 JSON，不要附加其他文字，格式：\n"
-    '{{"date":"{day}","model":"你的模型名","items":[{{"code":"600000","score":78,'
-    '"sub":{{"kline":80,"volume":75,"position":70,"gene":60,"similarity":85,"market":55}},'
-    '"risk_deduct":5,"reason":"60字以内，点出最关键的形态与量能特征","risk":"30字以内","tags":["缩量回调","均线多头"]}}]}}\n'
-    "要求：code 必须是上面出现过的 6 位代码；score、sub 各项为 0–100 的数字；risk_deduct 为 0–{risk}；"
-    "tags 1–4 个；只用给出的数据，不编造新闻、公告、题材；评分是形态复盘分，不是涨停概率，不写买入建议或目标价。"
+    '{{"date":"{day}","model":"你的模型名","items":[{{"code":"600000","score":72,'
+    '"reason":"60字以内，写成模型依据，点出最关键的形态与量能特征","risk":"30字以内","tags":["缩量回调","均线多头"]}}]}}\n'
+    "要求：code 必须是上面出现过的 6 位代码；score 为 0–100 的数字；tags 1–4 个；只用给出的数据，不编造新闻、公告、题材；"
+    "null 不是 0 分；评分是形态复盘分，不是涨停概率，不写买入建议或目标价。"
 )
 
 
@@ -50,8 +48,10 @@ def build_ai_input(session, day: date, snapshot: dict | None = None, top: int = 
     from backend.app.services.ai_context import LEGEND, market_context, market_line, stock_line
 
     snapshot = snapshot or {"kind": "daily"}
+    from backend.app.services.similarity_service import feed_order
+
     pool = candidates(session, day, top)
-    items = pool["items"]
+    items = feed_order(pool["items"])  # 已涨停段在前，段内按最高相似度降序
     if not items:
         raise LookupError("这一天没有可导出的候选股票")
     settings = read_settings_file()
@@ -70,7 +70,7 @@ def build_ai_input(session, day: date, snapshot: dict | None = None, top: int = 
         f"- 样本池：{pool['pool_size']} 条（涨停 {pool['pool_size'] + skipped}，{skipped} 条缺前 3 日 K 线），"
         f"近 {len(dates)} 个交易日 {dates[0] if dates else '-'} 至 {dates[-1] if dates else '-'}",
         f"- K 线：{bars_text}",
-        f"- 候选：相似度前 {len(items)} 只",
+        f"- 候选：全市场（含已涨停）按最高相似度前 {len(items)} 只，已涨停 {sum(1 for i in items if i.get('is_limit_up'))} 只排在前面",
         f"- 程序版本：{_version()}",
     ]
     lines = [*header, "", h("市场环境"), market_line(market_context(session, day)), "", h("系统提示与评分框架")]
@@ -81,7 +81,7 @@ def build_ai_input(session, day: date, snapshot: dict | None = None, top: int = 
     lines.extend(stock_line(item, item.get("metrics") or {}) for item in items)
     if md:
         lines.append("```")
-    lines += ["", h("输出要求"), CLOSING.format(keep=KEEP, day=day.isoformat(), risk=RISK_MAX)]
+    lines += ["", h("输出要求"), CLOSING.format(keep=KEEP, day=day.isoformat())]
     text = "\n".join(lines) + "\n"
     return text, f"ai_input_{day.isoformat()}.{'md' if md else 'txt'}"
 
@@ -155,7 +155,7 @@ def parse_external(text: str) -> tuple[dict[str, dict], dict]:
         if parsed:
             scores[found.group(1)] = parsed
     if not scores:
-        raise AiFailed("没有解析出任何有效条目：每条需要 6 位 code 和 score（或 sub 各维度分）")
+        raise AiFailed("没有解析出任何有效条目：每条需要 6 位 code，以及 score 或 reason")
     return scores, meta if isinstance(meta, dict) else {}
 
 
@@ -181,10 +181,13 @@ def import_external(session, text: str, day: date | None = None, model: str = ""
         scores.pop(code)  # 本地完全没有这只股票，多半是外部 AI 编的
     if not scores:
         raise AiFailed("导入的代码都不在本地股票列表里")
+    from backend.app.services.ranking_service import outside_items
+
+    outside = outside_items(session, day, [code for code in scores if code not in known], names)
     extra = {
         "imported_count": len(scores),
         "outside_candidates": sorted(code for code in scores if code not in known),
         "dropped_unknown": unknown,
     }
     model = (model or str(meta.get("model") or "") or "外部 AI").strip()[:60]
-    return _save_ranking(session, day, pool, market_context(session, day), scores, "external", {"kind": "daily", "taken_at": None, "count": 0}, model, extra, names)
+    return _save_ranking(session, day, pool, market_context(session, day), scores, "external", {"kind": "daily", "taken_at": None, "count": 0}, model, extra, names, select="scores", outside=outside)

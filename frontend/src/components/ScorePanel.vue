@@ -5,22 +5,19 @@ import { computed } from 'vue'
 
 const props = defineProps<{
   score: number
-  shape: number
-  volume: number
-  volumePct: number
-  other: Record<string, number>
+  euclidean?: number | null
+  cosine?: number | null
+  groups?: Record<string, number>
 }>()
 
 const radius = 52
 const circumference = 2 * Math.PI * radius
 
 const metrics = computed(() => {
-  const rows = [
-    { key: 'shape', label: 'K线形态', value: props.shape },
-    { key: 'volume', label: '成交量', value: props.volume },
-    { key: 'volume_pct', label: '量比', value: props.volumePct },
-  ]
-  for (const [key, value] of Object.entries(props.other)) {
+  const rows: { key: string; label: string; value: number }[] = []
+  if (typeof props.euclidean === 'number') rows.push({ key: 'euclidean', label: '欧氏分 ×0.8', value: props.euclidean })
+  if (typeof props.cosine === 'number') rows.push({ key: 'cosine', label: '余弦分 ×0.2', value: props.cosine })
+  for (const [key, value] of Object.entries(props.groups ?? {})) {
     if (typeof value === 'number' && Number.isFinite(value)) {
       rows.push({ key, label: scoreLabel(key), value })
     }

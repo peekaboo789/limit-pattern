@@ -1,15 +1,19 @@
 const SCORE_LABELS: Record<string, string> = {
   amplitude: '振幅',
-  turnover: '换手',
   body: 'K线实体',
   gap: '跳空缺口',
   shape: 'K线形态',
   shape_score: 'K线形态',
-  volume: '成交量',
+  volume: '成交量 15%',
   volume_score: '成交量',
   volume_pct: '量比',
   volume_pct_score: '量比',
-  amount: '成交额',
+  amount: '成交额 10%',
+  price_trend: '价格走势 35%',
+  kline_structure: 'K线结构 20%',
+  turnover: '换手 10%',
+  position: '历史位置 5%',
+  three_day_trend: '三日趋势 5%',
 }
 
 export function scoreLabel(key: string): string {

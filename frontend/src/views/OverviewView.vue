@@ -214,11 +214,11 @@ watch(
             <th>排名</th>
             <th>代码</th>
             <th>名称</th>
-            <th>综合相似度</th>
+            <th title="对样本池（已去掉该股自己的全部样本）逐一比，取最大值；选前 100 就用它">最高相似度</th>
             <th>最相似涨停</th>
-            <th class="right">形态</th>
-            <th class="right">成交量</th>
-            <th class="right">量比</th>
+            <th class="right">平均</th>
+            <th class="right" title="相似度 ≥ 高度阈值（默认 90）的样本数 / 比对样本数">高度相似</th>
+            <th class="right">档位</th>
           </tr>
         </thead>
         <tbody>
@@ -234,7 +234,7 @@ watch(
             <td>{{ row.name }}</td>
             <td>
               <span class="meter"><i :style="{ '--w': `${clampPercent(row.score)}%`, background: scoreColor(row.score) }" /></span>
-              <b :style="{ color: scoreColor(row.score) }">{{ formatScore(row.score) }}</b>
+              <b :style="{ color: scoreColor(row.score) }">{{ formatScore(row.max_similarity ?? row.score) }}</b>
             </td>
             <td class="wrap">
               <div>{{ row.best_match.name }}</div>
@@ -246,9 +246,9 @@ watch(
                 </span>
               </div>
             </td>
-            <td class="right">{{ formatScore(row.shape_score) }}</td>
-            <td class="right">{{ formatScore(row.volume_score) }}</td>
-            <td class="right">{{ formatScore(row.volume_pct_score) }}</td>
+            <td class="right">{{ formatScore(row.avg_similarity) }}</td>
+            <td class="right">{{ row.high_similarity_count ?? '—' }}/{{ row.sample_count ?? '—' }}</td>
+            <td class="right">{{ row.band || '—' }}<span v-if="row.is_limit_up" class="chip" style="margin-left: 4px">已涨停</span></td>
           </tr>
         </tbody>
       </table>

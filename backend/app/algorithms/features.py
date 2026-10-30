@@ -1,4 +1,9 @@
-"""67 维形态向量：20 项日特征 × 3 天 + 7 项三日聚合。"""
+"""67 维形态向量，按旧版《前 100 行是怎么挑出来的》第五节逐项实现。
+
+每天 20 个特征 × 3 天（T-3、T-2、T-1）= 60 维，加 7 个三日汇总 = 67 维。
+缺数的特征（新浪没有成交额/换手、没有前一天可比等）写 NaN，标准化之后按池中位数填，
+即标准化后为 0，不表达偏离（修正旧版文档第八节第 5 条指出的「先填 0 再标准化」问题）。
+"""
 
 from __future__ import annotations
 
@@ -6,41 +11,45 @@ import math
 from dataclasses import dataclass, field
 from datetime import date
 
-from backend.app.core.constants import GROUP_WEIGHTS, MIN_LISTED_TRADING_DAYS, PRICE_INNER
+from backend.app.core.constants import GROUP_WEIGHTS, MIN_LISTED_TRADING_DAYS
 
-# 顺序即向量里的顺序。前 60 维是 T-3、T-2、T-1 各一遍，后 7 维是三日聚合。
-DAILY_SPEC: list[tuple[str, str]] = [
-    ("open_change", "price"),
-    ("high_change", "price"),
-    ("low_change", "price"),
-    ("close_change", "price"),
-    ("body_percent", "kline"),
-    ("upper_shadow", "kline"),
-    ("lower_shadow", "kline"),
-    ("amplitude", "kline"),
-    ("volume_log", "volume"),
-    ("volume_ratio_5", "volume"),
-    ("volume_ratio_10", "volume"),
-    ("amount_log", "amount"),
-    ("amount_ratio_5", "amount"),
-    ("amount_change", "amount"),
-    ("turnover_rate", "turnover"),
-    ("turnover_ratio_5", "turnover"),
-    ("position_5", "position"),
-    ("position_10", "position"),
-    ("position_20", "position"),
-    ("position_60", "position"),
+NAN = float("nan")
+
+# (字段, 组, 组内权重)。顺序即向量里的顺序。
+DAILY_SPEC: list[tuple[str, str, float]] = [
+    ("open_change", "price_trend", 0.15),
+    ("high_change", "price_trend", 0.25),
+    ("low_change", "price_trend", 0.20),
+    ("close_change", "price_trend", 0.40),
+    ("amplitude", "kline_structure", 0.25),
+    ("body_length", "kline_structure", 0.25),
+    ("upper_shadow", "kline_structure", 0.25),
+    ("lower_shadow", "kline_structure", 0.25),
+    ("volume_change", "volume", 1 / 3),
+    ("volume_ratio_5", "volume", 1 / 3),
+    ("volume_ratio_10", "volume", 1 / 3),
+    ("amount_change", "amount", 1 / 3),
+    ("amount_ratio_5", "amount", 1 / 3),
+    ("amount_ratio_10", "amount", 1 / 3),
+    ("turnover_rate", "turnover", 0.5),
+    ("turnover_change", "turnover", 0.5),
+    ("position_5", "position", 0.25),
+    ("position_10", "position", 0.25),
+    ("position_20", "position", 0.25),
+    ("position_60", "position", 0.25),
 ]
 AGGREGATE_NAMES = [
-    "return_3d",
-    "slope_close",
-    "volatility_3d",
+    "three_day_return",
+    "volume_growth",
+    "amount_growth",
+    "turnover_change_3d",
+    "close_trend",
     "volume_trend",
-    "amplitude_sum",
-    "up_days",
-    "position_change",
+    "amount_trend",
 ]
+DAY_LABELS = ("T-3", "T-2", "T-1")
 VECTOR_DIM = len(DAILY_SPEC) * 3 + len(AGGREGATE_NAMES)
+GROUPS = ("price_trend", "kline_structure", "volume", "amount", "turnover", "position", "three_day_trend")
 
 
 @dataclass
@@ -69,39 +78,39 @@ class WindowResult:
 def feature_names() -> list[str]:
     names: list[str] = []
     for offset in ("t3", "t2", "t1"):
-        for name, _group in DAILY_SPEC:
+        for name, _group, _inner in DAILY_SPEC:
             names.append(f"{offset}_{name}")
     names.extend(AGGREGATE_NAMES)
     return names
 
 
+def feature_groups() -> list[str]:
+    groups = [group for _n, group, _i in DAILY_SPEC] * 3
+    return groups + ["three_day_trend"] * len(AGGREGATE_NAMES)
+
+
 def dimension_weights(group_weights: dict[str, float] | None = None) -> list[float]:
-    """每一维的权重，加总为 1。价格组内部按 close > high > low > open。"""
+    """逐维权重 = 组权重 × 组内权重；先按组归一（每组合计恰好等于组权重），再整体归一。"""
     groups = dict(GROUP_WEIGHTS if group_weights is None else group_weights)
-    per_group_count: dict[str, int] = {}
-    for _name, group in DAILY_SPEC:
-        per_group_count[group] = per_group_count.get(group, 0) + 1
-    weights: list[float] = []
-    for _name, group in DAILY_SPEC:
-        inner = PRICE_INNER[_name.split("_")[0]] if group == "price" else 1.0 / per_group_count[group]
-        # 三个交易日平分该组权重
-        weights.append(groups[group] / 3.0 * inner)
-    weights = weights * 3
-    trend = groups["trend"] / len(AGGREGATE_NAMES)
-    weights.extend([trend] * len(AGGREGATE_NAMES))
-    return weights
+    raw = [groups[group] * inner for _n, group, inner in DAILY_SPEC] * 3
+    raw += [groups["three_day_trend"] * (1 / len(AGGREGATE_NAMES))] * len(AGGREGATE_NAMES)
+    labels = feature_groups()
+    sums: dict[str, float] = {}
+    for weight, group in zip(raw, labels):
+        sums[group] = sums.get(group, 0.0) + weight
+    per_group = [weight / sums[group] * groups[group] for weight, group in zip(raw, labels)]
+    total = sum(per_group)
+    return [weight / total for weight in per_group]
 
 
 def _pct(price: float | None, base: float | None) -> float:
     if price is None or base is None or base <= 0:
-        return 0.0
+        return NAN
     return (price / base - 1.0) * 100.0
 
 
 def _position(history: list[Bar], window: int) -> float:
     chunk = history[-window:]
-    if not chunk:
-        return 0.5
     lo = min(bar.low for bar in chunk)
     hi = max(bar.high for bar in chunk)
     if hi <= lo:
@@ -109,33 +118,27 @@ def _position(history: list[Bar], window: int) -> float:
     return (chunk[-1].close - lo) / (hi - lo)
 
 
-def _mean(values: list[float]) -> float | None:
-    if not values:
-        return None
-    return sum(values) / len(values)
+def _ratio(current: float | None, previous: list[float | None]) -> float:
+    values = [value for value in previous if value is not None and value > 0]
+    if current is None or not values:
+        return NAN
+    return current / (sum(values) / len(values))
 
 
-def _ratio(current: float | None, previous: list[float]) -> float:
-    baseline = _mean([value for value in previous if value > 0])
-    if current is None or baseline is None or baseline <= 0:
-        return 1.0
-    return current / baseline
+def _change(current: float | None, previous: float | None) -> float:
+    if current is None or previous is None or previous <= 0:
+        return NAN
+    return (current / previous - 1.0) * 100.0
 
 
 def compute_day_features(history: list[Bar]) -> dict:
-    """history 最后一根是当天，更早的都在它前面。天数不够就按已有的天数算，列仍然有值。"""
+    """history 最后一根是当天。"""
     today = history[-1]
-    base = today.pre_close if today.pre_close and today.pre_close > 0 else (
-        history[-2].close if len(history) >= 2 else today.close
-    )
-    previous = history[:-1]
-    volumes = [bar.volume or 0.0 for bar in previous]
-    amounts = [bar.amount for bar in previous if bar.amount is not None]
-    turnovers = [bar.turnover_rate for bar in previous if bar.turnover_rate is not None]
-    amount = today.amount
-    turnover = today.turnover_rate
-    prev_amount = amounts[-1] if amounts else None
-    features = {
+    base = today.pre_close if today.pre_close and today.pre_close > 0 else (history[-2].close if len(history) >= 2 else None)
+    prev = history[:-1]
+    prev_bar = prev[-1] if prev else None
+    hi_body, lo_body = max(today.open, today.close), min(today.open, today.close)
+    feats = {
         "trade_date": today.trade_date.isoformat(),
         "open": today.open,
         "high": today.high,
@@ -143,95 +146,83 @@ def compute_day_features(history: list[Bar]) -> dict:
         "close": today.close,
         "pre_close": base,
         "volume": today.volume,
-        "amount": amount,
-        "turnover_rate": turnover,
+        "amount": today.amount,
+        "turnover_rate_raw": today.turnover_rate,
         "is_partial": today.is_partial,
         "open_change": _pct(today.open, base),
         "high_change": _pct(today.high, base),
         "low_change": _pct(today.low, base),
         "close_change": _pct(today.close, base),
-        "body_percent": _pct(today.close, base) - _pct(today.open, base),
-        "upper_shadow": _pct(today.high, base) - max(_pct(today.open, base), _pct(today.close, base)),
-        "lower_shadow": min(_pct(today.open, base), _pct(today.close, base)) - _pct(today.low, base),
-        "amplitude": _pct(today.high, base) - _pct(today.low, base),
-        "volume_log": math.log1p(today.volume or 0.0),
-        "volume_ratio_5": _ratio(today.volume, volumes[-5:]),
-        "volume_ratio_10": _ratio(today.volume, volumes[-10:]),
-        "amount_log": math.log1p(amount) if amount is not None else 0.0,
-        "amount_ratio_5": _ratio(amount, [value for value in amounts[-5:]]) if amount is not None else 0.0,
-        "amount_change": ((amount - prev_amount) / prev_amount) if amount is not None and prev_amount else 0.0,
-        "turnover_rate_feature": turnover if turnover is not None else 0.0,
-        "turnover_ratio_5": _ratio(turnover, [value for value in turnovers[-5:]]) if turnover is not None else 0.0,
+        "amplitude": (today.high - today.low) / base * 100 if base else NAN,
+        "body_length": abs(today.close - today.open) / base * 100 if base else NAN,
+        "upper_shadow": (today.high - hi_body) / base * 100 if base else NAN,
+        "lower_shadow": (lo_body - today.low) / base * 100 if base else NAN,
+        "volume_change": _change(today.volume, prev_bar.volume if prev_bar else None),
+        "volume_ratio_5": _ratio(today.volume, [b.volume for b in prev[-5:]]),
+        "volume_ratio_10": _ratio(today.volume, [b.volume for b in prev[-10:]]),
+        "amount_change": _change(today.amount, prev_bar.amount if prev_bar else None),
+        "amount_ratio_5": _ratio(today.amount, [b.amount for b in prev[-5:]]),
+        "amount_ratio_10": _ratio(today.amount, [b.amount for b in prev[-10:]]),
+        "turnover_rate": NAN if today.turnover_rate is None else float(today.turnover_rate),
+        "turnover_change": (
+            float(today.turnover_rate) - float(prev_bar.turnover_rate)
+            if today.turnover_rate is not None and prev_bar is not None and prev_bar.turnover_rate is not None
+            else NAN
+        ),
         "position_5": _position(history, 5),
         "position_10": _position(history, 10),
         "position_20": _position(history, 20),
         "position_60": _position(history, 60),
     }
-    # 向量里换手率用补过 0 的那一列，库里的原值仍可以是 null
-    features["turnover_rate_model"] = features["turnover_rate_feature"]
-    return features
+    # 给综合评分用：K 线实体饱满度 0~100（实体占振幅）
+    span = today.high - today.low
+    feats["body_percent"] = abs(today.close - today.open) / span * 100 if span > 0 else 0.0
+    return feats
 
 
-def _day_vector(features: dict) -> list[float]:
-    values: list[float] = []
-    for name, _group in DAILY_SPEC:
-        if name == "turnover_rate":
-            values.append(float(features["turnover_rate_model"]))
-        else:
-            values.append(float(features[name]))
-    return values
+def _trend(values: list[float | None]) -> float:
+    """趋势编码：三天依次走高 +1，依次走低 −1，其余 0；缺数 NaN。"""
+    if any(value is None for value in values):
+        return NAN
+    a, b, c = values
+    if a < b < c:
+        return 1.0
+    if a > b > c:
+        return -1.0
+    return 0.0
 
 
-def _aggregates(day_features: list[dict]) -> list[float]:
-    closes = [row["close_change"] for row in day_features]
-    # 三日收益，单位是百分数
+def _aggregates(days: list[dict]) -> list[float]:
     growth = 1.0
-    for change in closes:
-        growth *= 1.0 + change / 100.0
-    return_3d = (growth - 1.0) * 100.0
-    slope = closes[-1] - closes[0]
-    mean = sum(closes) / len(closes)
-    variance = sum((item - mean) ** 2 for item in closes) / len(closes)
-    volumes = [row["volume"] or 0.0 for row in day_features]
-    baseline = (volumes[0] + volumes[1]) / 2.0
-    volume_trend = volumes[2] / baseline if baseline > 0 else 1.0
-    amplitude_sum = sum(row["amplitude"] for row in day_features)
-    up_days = float(sum(1 for change in closes if change > 0))
-    position_change = day_features[-1]["position_20"] - day_features[0]["position_20"]
-    return [return_3d, slope, math.sqrt(variance), volume_trend, amplitude_sum, up_days, position_change]
+    for row in days:
+        change = row["close_change"]
+        growth = NAN if math.isnan(change) else growth * (1.0 + change / 100.0)
+    vols = [row["volume"] for row in days]
+    amts = [row["amount"] for row in days]
+    turns = [row["turnover_rate_raw"] for row in days]
+    return [
+        (growth - 1.0) * 100.0,
+        _change(vols[-1], vols[0]),
+        _change(amts[-1], amts[0]),
+        float(turns[-1]) - float(turns[0]) if turns[-1] is not None and turns[0] is not None else NAN,
+        _trend([row["close"] for row in days]),
+        _trend(vols),
+        _trend(amts),
+    ]
 
 
 def _prepare(bars: list[Bar], as_of: date, include_as_of_date: bool) -> list[Bar]:
-    """晚于评估日的行情先丢掉。同一天留最后一根，这样上午半天线能盖住库里的全天线。"""
+    """晚于评估日的行情丢掉；同一天留最后一根（上午半天线盖住库里的全天线）。"""
     kept: dict[date, Bar] = {}
     for bar in bars:
-        if bar.trade_date > as_of:
-            continue
-        if not include_as_of_date and bar.trade_date == as_of:
+        if bar.trade_date > as_of or (bar.trade_date == as_of and not include_as_of_date):
             continue
         kept[bar.trade_date] = bar
-    ordered = [kept[key] for key in sorted(kept)]
-    # 前收缺失时用上一根收盘价补上，避免窗口第一天没有涨跌幅
-    previous: float | None = None
-    prepared: list[Bar] = []
-    for bar in ordered:
-        pre_close = bar.pre_close if bar.pre_close and bar.pre_close > 0 else previous
-        prepared.append(
-            Bar(
-                trade_date=bar.trade_date,
-                open=bar.open,
-                high=bar.high,
-                low=bar.low,
-                close=bar.close,
-                pre_close=pre_close,
-                volume=bar.volume,
-                amount=bar.amount,
-                turnover_rate=bar.turnover_rate,
-                is_partial=bar.is_partial,
-            )
-        )
-        previous = bar.close
-    return prepared
+    return [kept[key] for key in sorted(kept)]
+
+
+def _valid(bar: Bar) -> bool:
+    return all(v is not None and v > 0 for v in (bar.open, bar.high, bar.low, bar.close)) and bool(bar.volume and bar.volume > 0)
 
 
 def build_three_day_window(
@@ -239,19 +230,30 @@ def build_three_day_window(
     as_of: date,
     *,
     include_as_of_date: bool,
+    expected_days: list[date] | None = None,
+    listed_days: int | None = None,
 ) -> WindowResult:
-    """样本窗口严格早于涨停日；候选窗口含评估日。两边故意错开一天。"""
+    """三道闸：可用交易日 < 3 → insufficient_trading_days；完整交易日 < 20 → listed_less_than_20_days
+    （半天线不占名额；listed_days 给了就用它，例如按上市日期数出来的交易日数）；
+    窗口三天有缺行情/停牌/零成交 → invalid_bar_in_window（expected_days 给了还要求三天正好是这三个交易日）。"""
     eligible = _prepare(bars, as_of, include_as_of_date)
-    if len(eligible) < MIN_LISTED_TRADING_DAYS:
-        return WindowResult(False, "insufficient_window")
+    if len(eligible) < 3:
+        return WindowResult(False, "insufficient_trading_days")
+    full = listed_days if listed_days is not None else sum(1 for bar in eligible if not bar.is_partial)
+    if full < MIN_LISTED_TRADING_DAYS:
+        return WindowResult(False, "listed_less_than_20_days")
     window = eligible[-3:]
-    day_features: list[dict] = []
+    if expected_days is not None and [bar.trade_date for bar in window] != list(expected_days):
+        return WindowResult(False, "invalid_bar_in_window", window)
+    if not all(_valid(bar) for bar in window):
+        return WindowResult(False, "invalid_bar_in_window", window)
+    day_features = []
     for bar in window:
         history = [item for item in eligible if item.trade_date <= bar.trade_date]
         day_features.append(compute_day_features(history))
     vector: list[float] = []
-    for features in day_features:
-        vector.extend(_day_vector(features))
+    for feats in day_features:
+        vector.extend(float(feats[name]) for name, _g, _i in DAILY_SPEC)
     vector.extend(_aggregates(day_features))
     if len(vector) != VECTOR_DIM:
         raise RuntimeError(f"向量维度是 {len(vector)}，应该是 {VECTOR_DIM}")
@@ -259,21 +261,17 @@ def build_three_day_window(
 
 
 def raw_day(features: dict) -> dict:
-    """相似匹配页要的原始数值。成交额、换手率缺了就保持 null，页面上写「—」。"""
-    close = features["close"]
-    pre_close = features["pre_close"]
-    change = None
-    if close is not None and pre_close:
-        change = close / pre_close - 1.0
+    close, pre_close = features["close"], features["pre_close"]
+    change = None if close is None or not pre_close else round((close / pre_close - 1.0) * 100, 4)
     return {
         "trade_date": features["trade_date"],
-        "change_percent": None if change is None else round(change * 100, 4),
+        "change_percent": change,
         "open": features["open"],
         "high": features["high"],
         "low": features["low"],
         "close": close,
         "pre_close": pre_close,
         "volume": features["volume"],
-        "amount": features["amount"] if features["amount"] else None,
-        "turnover_rate": features["turnover_rate"] if features["turnover_rate"] else None,
+        "amount": features["amount"] or None,
+        "turnover_rate": features["turnover_rate_raw"],
     }

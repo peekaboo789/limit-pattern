@@ -125,6 +125,9 @@ def default_settings() -> dict:
         "ai_thinking_learned": {},
         "ai_timeout_seconds": 120,
         "alert_trading_hours_only": True,
+        "euclidean_similarity_weight": 0.8,
+        "cosine_similarity_weight": 0.2,
+        "similarity_threshold_high": 90.0,
         "alert_include_auction": False,
         "ai_batch_size": 10,
         "ai_parallel": 3,
@@ -275,6 +278,9 @@ def public_settings() -> dict:
         "ai_thinking": str(raw.get("ai_thinking") or "auto"),
         "ai_timeout_seconds": ai_int(raw, "ai_timeout_seconds"),
         "alert_trading_hours_only": raw.get("alert_trading_hours_only") is not False,
+        "euclidean_similarity_weight": similarity_weights(raw)[0],
+        "cosine_similarity_weight": similarity_weights(raw)[1],
+        "similarity_threshold_high": similarity_threshold_high(raw),
         "alert_include_auction": raw.get("alert_include_auction") is True,
         "ai_batch_size": ai_int(raw, "ai_batch_size"),
         "ai_parallel": ai_int(raw, "ai_parallel"),
@@ -340,6 +346,23 @@ def _update_settings(changes: dict) -> dict:
         if mode not in ("auto", "on", "off"):
             raise ValueError("深度思考只能是 auto / on / off")
         current["ai_thinking"] = mode
+    if changes.get("euclidean_similarity_weight") is not None or changes.get("cosine_similarity_weight") is not None:
+        try:
+            eu = float(changes.get("euclidean_similarity_weight", current.get("euclidean_similarity_weight", 0.8)))
+            co = float(changes.get("cosine_similarity_weight", 1.0 - eu if changes.get("cosine_similarity_weight") is None else changes["cosine_similarity_weight"]))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("欧氏/余弦权重必须是数字") from exc
+        if eu < 0 or co < 0 or abs(eu + co - 1.0) > 1e-6:
+            raise ValueError("欧氏权重 + 余弦权重必须等于 1，且都不小于 0")
+        current["euclidean_similarity_weight"], current["cosine_similarity_weight"] = round(eu, 4), round(co, 4)
+    if changes.get("similarity_threshold_high") is not None:
+        try:
+            high = float(changes["similarity_threshold_high"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("高度相似阈值必须是数字") from exc
+        if not 60 <= high <= 100:
+            raise ValueError("高度相似阈值只能在 60–100 之间")
+        current["similarity_threshold_high"] = high
     for name in ("alert_trading_hours_only", "alert_include_auction"):
         if changes.get(name) is not None:
             if not isinstance(changes[name], bool):
@@ -414,3 +437,25 @@ def ai_int(raw: dict | None, name: str) -> int:
     except (TypeError, ValueError):
         return default
     return value if low <= value <= high else default
+
+
+def similarity_weights(raw: dict | None = None) -> tuple[float, float]:
+    """欧氏 / 余弦权重，默认 0.8 / 0.2（旧版 config.py:638-639）。"""
+    raw = read_settings_file() if raw is None else raw
+    try:
+        eu = float(raw.get("euclidean_similarity_weight", 0.8))
+        co = float(raw.get("cosine_similarity_weight", 0.2))
+    except (TypeError, ValueError):
+        return 0.8, 0.2
+    if eu < 0 or co < 0 or abs(eu + co - 1.0) > 1e-6:
+        return 0.8, 0.2
+    return eu, co
+
+
+def similarity_threshold_high(raw: dict | None = None) -> float:
+    raw = read_settings_file() if raw is None else raw
+    try:
+        value = float(raw.get("similarity_threshold_high", 90.0))
+    except (TypeError, ValueError):
+        return 90.0
+    return value if 60 <= value <= 100 else 90.0

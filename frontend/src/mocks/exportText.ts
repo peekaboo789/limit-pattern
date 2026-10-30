@@ -45,13 +45,13 @@ function scanText(date: string, top: number): string {
       item.best_match.code,
       item.best_match.name,
       item.best_match.limit_date,
-      formatScore(item.shape_score),
-      formatScore(item.volume_score),
-      formatScore(item.volume_pct_score),
+      formatScore(item.avg_similarity),
+      item.sample_count,
+      item.high_similarity_count,
     ].join('\t'),
   )
   return header(`扫描排行  ${scan.date}  前 ${top} 条  样本池 ${scan.pool_size}`, [
-    '排名\t代码\t名称\t综合相似度\t最相似代码\t最相似名称\t涨停日\t形态\t成交量\t成交量百分比',
+    '排名\t代码\t名称\t最高相似度\t最相似代码\t最相似名称\t涨停日\t平均相似度\t样本数\t高度相似数',
     ...lines,
   ])
 }
@@ -61,7 +61,7 @@ function similarityText(date: string, code: string | undefined, top: number): st
   const { compareWindow } = mockRuntime()
   const result = buildSimilarity(code, date, top, compareWindow)
   const lines = result.matches.map((match, index) => {
-    const extra = Object.entries(match.other_scores)
+    const extra = Object.entries(match.group_scores ?? {})
       .map(([key, value]) => `${key}=${formatScore(value)}`)
       .join(',')
     return [
@@ -70,9 +70,8 @@ function similarityText(date: string, code: string | undefined, top: number): st
       match.name,
       match.limit_date,
       formatScore(match.score),
-      formatScore(match.shape_score),
-      formatScore(match.volume_score),
-      formatScore(match.volume_pct_score),
+      formatScore(match.euclidean_score),
+      formatScore(match.cosine_score),
       match.window.join(','),
       extra,
     ].join('\t')
@@ -81,7 +80,7 @@ function similarityText(date: string, code: string | undefined, top: number): st
     `截止日期\t${date}`,
     `对比窗口\t${result.target.window.join(',')}`,
     `股票池\t${result.pool_dates.join(',')}  共 ${result.pool_size} 条，已排除自身`,
-    '排名\t代码\t名称\t涨停日\t综合相似度\t形态\t成交量\t成交量百分比\t样本窗口\t其他分项',
+    '排名\t代码\t名称\t涨停日\t相似度\t欧氏分\t余弦分\t样本窗口\t七组分',
     ...lines,
   ])
 }

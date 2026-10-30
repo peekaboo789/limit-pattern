@@ -285,7 +285,7 @@ def test_export_txt_has_bom_table_and_copy(client):
     assert response.content.startswith(b"\xef\xbb\xbf")
     text = response.content.decode("utf-8-sig")
     assert "相似度不是涨停概率" in text
-    assert "排名\t代码\t名称\t总分\t形态分\t量能分\t量比分\t最相似涨停股\t涨停日期" in text
+    assert "排名\t代码\t名称\t最高相似度\t平均相似度\t样本数\t高度相似数\t最相似涨停股\t涨停日期" in text
     assert "000001" in text
     from backend.app.core.config import exports_dir
 

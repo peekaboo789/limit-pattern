@@ -22,7 +22,7 @@ from backend.app.services.score_model import (
     WEIGHT_PATTERN,
     WEIGHT_TECHNICAL,
     WEIGHT_VOLUME,
-    capital_from_features,
+    capital_score_of,
     pattern_match_rate,
     risk_penalty,
     score_of,
@@ -96,16 +96,19 @@ def test_short_history_is_rejected():
     bars = _bars(2)
     window = build_three_day_window(bars, bars[-1].trade_date, include_as_of_date=True)
     assert not window.ok
-    assert window.reason == "insufficient_window"
+    assert window.reason == "insufficient_trading_days"
 
 
 def test_identical_vectors_score_100_and_order_is_stable():
     bars = _bars(40)
     window = build_three_day_window(bars, bars[-1].trade_date, include_as_of_date=True)
-    assert score_pair(window.vector, window.vector) == 100 or score_pair(window.vector, window.vector) > 99.9
-    other = window.vector.copy()
-    other[0] += 5
-    assert score_pair(window.vector, other) < score_pair(window.vector, window.vector)
+    vector = np.nan_to_num(np.asarray(window.vector, dtype=float))
+    pool = np.vstack([vector, vector * 1.5 + 1, vector * 0.5 - 1, vector + 2])
+    scores, _eu, _co = score_matrix(vector, pool)
+    assert scores[0, 0] == 100
+    assert scores[0, 1] < scores[0, 0]
+    # 单样本池：标准化后全 0，范数 ≤ 1e-9 时 cos 记 0，所以自比是 0.8·100 + 0.2·50 = 90（文档原样）
+    assert score_pair(vector, vector) == 90
 
 
 def test_self_match_can_be_masked_by_code():
@@ -272,7 +275,7 @@ def test_score_model_full_and_missing_capital():
         }
     )
     assert missing["weight_total"] == 0.85
-    assert abs(missing["weighted"] - round(58 / 0.85, 2)) < 0.02
+    assert abs(missing["weighted_score"] - round(58 / 0.85, 2)) < 0.02
 
 
 def test_risk_and_level_edges_and_empty_is_not_zero():
@@ -294,7 +297,7 @@ def test_risk_and_level_edges_and_empty_is_not_zero():
 
 
 def test_capital_stays_empty_even_when_amount_is_present():
-    assert capital_from_features({"amount": 1e9, "turnover_rate": 3, "volume": 100}) is None
+    assert capital_score_of({"amount": 1e9, "turnover_rate": 3, "volume": 100}) is None
     assert pattern_match_rate(0, 10) == 0
     assert pattern_match_rate(1, 0) is None
 
@@ -302,9 +305,8 @@ def test_capital_stays_empty_even_when_amount_is_present():
 def test_formula_text_mentions_only_the_fixed_weights():
     import re
 
-    found = set(re.findall(r"0\.\d+", FORMULA_TEXT + PROMPT_RUBRIC))
-    assert found <= {"0.35", "0.20", "0.15"}
-    assert {"0.35", "0.20", "0.15"} <= found
+    found = set(re.findall(r"\d+%", FORMULA_TEXT))
+    assert found == {"35%", "20%", "15%"}
     assert "不要重新计算" in PROMPT_RUBRIC
     for text in PUBLIC_TEXTS:
         assert "*" not in text

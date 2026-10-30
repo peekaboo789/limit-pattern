@@ -27,11 +27,14 @@ def _fake_chat(prompt: str) -> str:
     return json.dumps({"items": [{"code": code, "score": int(code) % 97, "reason": "量价接近"} for code in codes]})
 
 
-def test_ranking_needs_ai(client):
-    _seed_many()
-    response = client.post("/api/ai-ranking/generate", json={})
-    assert response.status_code == 409
+def test_ranking_works_without_ai(client):
+    days = _seed_many()
     assert client.get("/api/ai-ranking").status_code == 404
+    response = client.post("/api/ai-ranking/generate", json={"date": days[-1].isoformat()})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ai_error"] and body["items"]
+    assert all(item["model_score"] is None and item["composite_score"] is not None for item in body["items"])
 
 
 def test_ranking_keeps_top20_and_persists(client):
@@ -42,7 +45,10 @@ def test_ranking_keeps_top20_and_persists(client):
     assert len(items) == 20
     assert payload["candidate_count"] <= 100
     assert [item["rank"] for item in items] == list(range(1, 21))
-    assert all(items[i]["ai_score"] >= items[i + 1]["ai_score"] for i in range(19))
+    assert all(items[i]["composite_score"] >= items[i + 1]["composite_score"] for i in range(19))
+    assert all(set(item["contributions"]) == {"pattern", "technical", "volume", "capital", "history"} for item in items)
+    assert all(item["contributions"]["capital"] is None for item in items)
+    assert all(item["model_gap"] == round(item["model_score"] - item["composite_score"], 2) for item in items)
     assert all(0 <= item["ai_score"] <= 100 and item["reason"] for item in items)
     assert payload["disclaimer"] == "相似度不是涨停概率"
     assert (rankings_dir() / f"{days[-1].isoformat()}.json").is_file()
@@ -51,7 +57,7 @@ def test_ranking_keeps_top20_and_persists(client):
     assert client.get("/api/ai-ranking/dates").json()["dates"] == [days[-1].isoformat()]
     text = client.get("/api/export", params={"type": "ai_ranking", "date": days[-1].isoformat()})
     assert text.status_code == 200
-    assert "AI评分" in text.content.decode("utf-8-sig")
+    assert "综合评分" in text.content.decode("utf-8-sig")
 
 
 def test_monitor_levels_and_events_once(client, monkeypatch):

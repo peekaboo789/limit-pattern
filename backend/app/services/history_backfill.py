@@ -62,6 +62,7 @@ def bulk_bars(session, as_of: date):
         yield
     finally:
         session.info.pop("lp_bulk", None)
+        session.info.pop("lp_partials", None)
 
 
 def _forget_bulk(session, code: str) -> None:
@@ -70,7 +71,34 @@ def _forget_bulk(session, code: str) -> None:
         bulk[1].pop(code, None)
 
 
+PARTIAL_SOURCES = ("intraday", "morning_freeze")
+
+
+def _partials(session) -> set:
+    """盘中半天线（临时日线）的 (代码, 日期)：不占「上市满 20 个完整交易日」的名额。"""
+    cached = session.info.get("lp_partials")
+    if cached is not None:
+        return cached
+    found = {
+        (code, day)
+        for code, day in session.query(DailyQuote.stock_code, DailyQuote.trade_date).filter(DailyQuote.source.in_(PARTIAL_SOURCES))
+    }
+    if session.info.get("lp_bulk") is not None:
+        session.info["lp_partials"] = found
+    return found
+
+
 def load_bars(session, code: str, as_of: date) -> list[Bar]:
+    bars = _load_bars(session, code, as_of)
+    partial = _partials(session)
+    if partial:
+        for bar in bars:
+            if (code, bar.trade_date) in partial:
+                bar.is_partial = True
+    return bars
+
+
+def _load_bars(session, code: str, as_of: date) -> list[Bar]:
     """正式行情优先。晚于 as_of 的一律不要。"""
     bulk = session.info.get("lp_bulk")
     if bulk is not None and as_of <= bulk[0] and code in bulk[1]:

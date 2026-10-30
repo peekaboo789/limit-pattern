@@ -113,7 +113,7 @@ def test_backtest_has_no_lookahead(client):
         generate_ranking(session, days[-1], chat=_fake_chat)
         ai = ranking_backtest(session)
         assert [row["date"] for row in ai["days"]] == [days[-2].isoformat()]
-    assert band_of(95) == "90+" and band_of(10) == "<70"
+    assert band_of(95) == "90~100" and band_of(10) == "<60"
     pool = client.get("/api/next-day-pool", params={"top": 10}).json()
     assert pool["items"] and "band_limit_up_rate" in pool["items"][0]
     for kind in ("next_day_pool", "backtest"):

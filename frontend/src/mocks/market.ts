@@ -529,43 +529,43 @@ export function limitupsOn(date: string): PoolItem[] {
 
 interface Scores {
   score: number
-  shape_score: number
-  volume_score: number
-  volume_pct_score: number
-  other_scores: Record<string, number>
+  euclidean_score: number
+  cosine_score: number
+  group_scores: Record<string, number>
 }
 
 function clampScore(value: number): number {
   return round(Math.min(97.5, Math.max(41, value)), 1)
 }
 
+const MOCK_GROUPS = ['price_trend', 'kline_structure', 'volume', 'amount', 'turnover', 'position', 'three_day_trend']
+
+/** 演示数据：总分 = 0.8·欧氏分 + 0.2·余弦分（与后端同一口径，数值是伪随机的）。 */
 function scoreBundle(target: string, match: string, limitDate: string): Scores {
   const hash = hashString(`${target}|${match}|${limitDate}`)
   const unit = (shift: number) => ((hash >>> shift) & 0xff) / 255
   const boost = PAIR_BOOST[`${target}|${match}`] ?? 0
-  let shape = 58 + unit(0) * 34
-  let volume = 52 + unit(8) * 40
-  let volumePct = 54 + unit(16) * 38
-  let score = shape * 0.46 + volume * 0.27 + volumePct * 0.27
+  let euclid = 40 + unit(0) * 55
+  let cosine = 55 + unit(8) * 40
   if (boost) {
     const day = Number(limitDate.slice(-2))
-    score = 96.8 - boost * 0.22 + (Number.isFinite(day) ? day / 400 : 0)
-    shape = Math.min(97.4, score + 0.8)
-    volume = Math.min(96, score - 1.4)
-    volumePct = Math.min(96.5, score - 0.6)
+    euclid = 97 - boost * 0.25 + (Number.isFinite(day) ? day / 400 : 0)
+    cosine = 96 - boost * 0.1
   }
+  const group_scores: Record<string, number> = {}
+  MOCK_GROUPS.forEach((key, i) => {
+    group_scores[key] = clampScore(euclid - 8 + unit((i * 3) % 24) * 16)
+  })
   return {
-    score: clampScore(score),
-    shape_score: clampScore(shape),
-    volume_score: clampScore(volume),
-    volume_pct_score: clampScore(volumePct),
-    other_scores: {
-      amplitude: clampScore(50 + unit(3) * 42 + (boost ? 18 : 0)),
-      turnover: clampScore(48 + unit(11) * 44 + (boost ? 12 : 0)),
-      body: clampScore(49 + unit(19) * 42 + (boost ? 16 : 0)),
-      gap: clampScore(46 + unit(23) * 46 + (boost ? 8 : 0)),
-    },
+    score: clampScore(0.8 * euclid + 0.2 * cosine),
+    euclidean_score: round(euclid, 2),
+    cosine_score: round(cosine, 2),
+    group_scores,
   }
+}
+
+function bandName(score: number): string {
+  return score >= 90 ? '高度' : score >= 80 ? '较高' : score >= 70 ? '一般' : score >= 60 ? '低' : '弱'
 }
 
 export function buildSimilarity(code: string, date: string, top: number, windowSize: number): SimilarityResponse {
@@ -602,8 +602,15 @@ export function buildScan(date: string, top: number, minScore: number): ScanResp
   const items = SCAN_CODES.filter((code) => !poolCodes.has(code))
     .map((code) => {
       let best: { event: LimitEvent; scores: Scores } | null = null
+      let sum = 0
+      let high = 0
+      let count = 0
       for (const event of pool) {
+        if (event.code === code) continue
         const scores = scoreBundle(code, event.code, event.limit_date)
+        sum += scores.score
+        count += 1
+        if (scores.score >= 90) high += 1
         if (!best || scores.score > best.scores.score) best = { event, scores }
       }
       if (!best || best.scores.score < minScore) return null
@@ -617,9 +624,14 @@ export function buildScan(date: string, top: number, minScore: number): ScanResp
           name: best.event.name,
           limit_date: best.event.limit_date,
         },
-        shape_score: best.scores.shape_score,
-        volume_score: best.scores.volume_score,
-        volume_pct_score: best.scores.volume_pct_score,
+        max_similarity: best.scores.score,
+        avg_similarity: count ? round(sum / count, 2) : null,
+        sample_count: count,
+        high_similarity_count: high,
+        band: bandName(best.scores.score),
+        top_sample: best.event.code,
+        is_limit_up: false,
+        group_scores: best.scores.group_scores,
       }
       return item
     })

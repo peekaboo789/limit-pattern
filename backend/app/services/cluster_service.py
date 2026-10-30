@@ -18,7 +18,7 @@ from backend.app.core.clock import SHANGHAI
 from backend.app.core.config import data_dir
 
 INDEX = {name: i for i, name in enumerate(feature_names())}
-CLOSE_IDX = INDEX["return_3d"]
+CLOSE_IDX = INDEX["three_day_return"]
 VOLUME_IDX = INDEX["t1_volume_ratio_5"]
 POSITION_IDX = INDEX["t1_position_20"]
 # 中心形态小图：三天收盘涨跌和量比（t3 最早，t1 是涨停前一天）
@@ -113,12 +113,15 @@ def run_on_dataset(dataset: dict, k: int | None = None, method: str = "kmeans") 
     if len(samples) < 3:
         base["note"] = "样本不足（至少 3 个），聚不了类"
         return base
-    matrix = np.asarray([s["vector"] for s in samples], dtype=float)
+    matrix = np.asarray([[np.nan if v is None else v for v in s["vector"]] for s in samples], dtype=float)
+    if np.isnan(matrix).any():  # 缺失特征按样本池中位数补（与相似度同口径）
+        medians = np.nan_to_num(np.nanmedian(np.where(np.isnan(matrix).all(axis=0), 0.0, matrix), axis=0))
+        matrix = np.where(np.isnan(matrix), medians, matrix)
     result = cluster_vectors(
         matrix,
         k=k,
         method=method,
-        close_index=index.get("return_3d", CLOSE_IDX),
+        close_index=index.get("three_day_return", CLOSE_IDX),
         volume_index=index.get("t1_volume_ratio_5", VOLUME_IDX),
         position_index=index.get("t1_position_20", POSITION_IDX),
     )
@@ -140,7 +143,7 @@ def run_on_dataset(dataset: dict, k: int | None = None, method: str = "kmeans") 
                 "size": len(members),
                 "members": members,
                 "pattern": _pattern(center, names) if center else [],
-                "return_3d": round(float(center[index["return_3d"]]), 3) if center and "return_3d" in index else None,
+                "return_3d": round(float(center[index["three_day_return"]]), 3) if center and "three_day_return" in index else None,
             }
         )
     for s, label, point in zip(samples, labels, result.get("points") or []):

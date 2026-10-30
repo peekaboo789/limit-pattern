@@ -35,7 +35,7 @@ onUnmounted(() => {
       </span>
     </div>
     <p class="muted" style="margin: 0 0 8px">
-      <template v-if="ranking">最新榜单 {{ ranking.date }}，第一名 {{ ranking.items[0]?.name ?? '—' }}（AI {{ ranking.items[0]?.ai_score ?? '—' }}）。</template>
+      <template v-if="ranking">最新榜单 {{ ranking.date }}，第一名 {{ ranking.items[0]?.name ?? '—' }}（综合 {{ ranking.items[0]?.composite_score ?? ranking.items[0]?.ai_score ?? '—' }}）。</template>
       <template v-else>还没有 AI 榜单。</template>
       <template v-if="snap?.ranking_date"> 正在监控 {{ snap.ranking_date }} 的前 20 名：超 3% {{ snap.warn_count ?? 0 }} 只，超 6% {{ snap.alert_count ?? 0 }} 只。</template>
     </p>

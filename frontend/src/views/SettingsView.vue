@@ -20,6 +20,8 @@ const form = reactive({
   ai_timeout_seconds: 120,
   ai_batch_size: 10,
   ai_parallel: 3,
+  euclidean_similarity_weight: 0.8,
+  similarity_threshold_high: 90,
   alert_trading_hours_only: true,
   alert_include_auction: false,
 })
@@ -44,6 +46,8 @@ function apply(settings: Settings) {
   form.ai_timeout_seconds = settings.ai_timeout_seconds ?? 120
   form.ai_batch_size = settings.ai_batch_size ?? 10
   form.ai_parallel = settings.ai_parallel ?? 3
+  form.euclidean_similarity_weight = settings.euclidean_similarity_weight ?? 0.8
+  form.similarity_threshold_high = settings.similarity_threshold_high ?? 90
   form.alert_trading_hours_only = settings.alert_trading_hours_only !== false
   form.alert_include_auction = settings.alert_include_auction === true
 }
@@ -157,6 +161,9 @@ async function save() {
       ai_timeout_seconds: number
       ai_batch_size: number
       ai_parallel: number
+      euclidean_similarity_weight: number
+      cosine_similarity_weight: number
+      similarity_threshold_high: number
       alert_trading_hours_only: boolean
       alert_include_auction: boolean
     } = {
@@ -169,6 +176,9 @@ async function save() {
       ai_timeout_seconds: Number(form.ai_timeout_seconds),
       ai_batch_size: Number(form.ai_batch_size),
       ai_parallel: Number(form.ai_parallel),
+      euclidean_similarity_weight: Number(form.euclidean_similarity_weight),
+      cosine_similarity_weight: Math.round((1 - Number(form.euclidean_similarity_weight)) * 1000) / 1000,
+      similarity_threshold_high: Number(form.similarity_threshold_high),
       alert_trading_hours_only: form.alert_trading_hours_only,
       alert_include_auction: form.alert_include_auction,
     }
@@ -212,6 +222,16 @@ onMounted(() => {
         <span>涨停样本池（近 N 个交易日）</span>
         <input v-model.number="form.sample_pool_trading_days" type="number" min="3" max="60" step="1" />
         <span class="hint">默认 30，可改 3 到 60。相似度、AI 排名、聚类、次日池和回测只和这段时间里涨停过的股票比。形态特征固定看涨停前 3 根 K 线。当前生效：{{ meta?.sample_pool_trading_days ?? '-' }} 个交易日。</span>
+      </label>
+      <label class="field">
+        <span>相似度：欧氏分权重（余弦分 = 1 − 该值）</span>
+        <input v-model.number="form.euclidean_similarity_weight" type="number" min="0" max="1" step="0.05" />
+        <span class="hint">默认 0.8 / 0.2。相似度 = 欧氏分 × 该值 + 余弦分 × (1 − 该值)；欧氏分 = 100·exp(−(d/尺度)²)，尺度 = 样本池两两距离中位数。当前：{{ meta?.euclidean_similarity_weight ?? 0.8 }} / {{ meta?.cosine_similarity_weight ?? 0.2 }}</span>
+      </label>
+      <label class="field">
+        <span>高度相似阈值</span>
+        <input v-model.number="form.similarity_threshold_high" type="number" min="60" max="100" step="1" />
+        <span class="hint">默认 90。相似度 ≥ 该值的样本计入「高度相似数」，也决定历史成功率的取样。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span><input v-model="form.alert_trading_hours_only" type="checkbox" /> 仅在交易时段报警</span>

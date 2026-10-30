@@ -23,7 +23,7 @@ RETENTION_MIN_TRADING_DAYS = 3
 RETENTION_MAX_TRADING_DAYS = 250
 
 # 三日窗口本身只要 3 根 K 线。明细只留大约一周，不再要求 20 日历史。
-MIN_LISTED_TRADING_DAYS = 3
+MIN_LISTED_TRADING_DAYS = 20  # 完整交易日不足 20 天的不比（旧版 features.py:128）
 FULL_HISTORY_TRADING_DAYS = 72
 
 # 相似度：加权欧氏 0.8 + 余弦 0.2
@@ -38,13 +38,13 @@ BAND_WEAK = 60.0
 
 # 特征组权重，和必须等于 1
 GROUP_WEIGHTS: dict[str, float] = {
-    "price": 0.35,
-    "kline": 0.20,
+    "price_trend": 0.35,
+    "kline_structure": 0.20,
     "volume": 0.15,
     "amount": 0.10,
     "turnover": 0.10,
     "position": 0.05,
-    "trend": 0.05,
+    "three_day_trend": 0.05,
 }
 
 # 组内价格权重：close > high > low > open

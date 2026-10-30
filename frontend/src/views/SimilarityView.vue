@@ -222,7 +222,8 @@ watch(
       </div>
       <Disclaimer :text="result.disclaimer" />
       <p class="muted" style="margin-top: 0">
-        股票池 {{ result.pool_dates.map(shortDate).join('、') }} · 已排除自身
+        股票池 {{ result.pool_dates.map(shortDate).join('、') }} · 已排除该股自己的全部样本
+        <template v-if="result.stats"> · 最高 {{ formatScore(result.stats.max_similarity) }} · 平均 {{ formatScore(result.stats.avg_similarity) }} · 高度相似 {{ result.stats.high_similarity_count }}/{{ result.stats.sample_count }} · {{ result.stats.band }}</template>
       </p>
       <div v-if="!result.matches.length" class="empty">股票池里没有可对比的其他样本</div>
       <div v-else class="match-list">
@@ -242,7 +243,7 @@ watch(
             <span class="code">{{ match.code }}</span>
             · 涨停 {{ match.limit_date }}
           </div>
-          <div class="match-meta">形态 {{ formatScore(match.shape_score) }} · 量 {{ formatScore(match.volume_score) }} · 量比 {{ formatScore(match.volume_pct_score) }}</div>
+          <div v-if="match.group_scores" class="match-meta">价格 {{ formatScore(match.group_scores.price_trend) }} · K线 {{ formatScore(match.group_scores.kline_structure) }} · 量 {{ formatScore(match.group_scores.volume) }}</div>
         </button>
       </div>
     </section>
@@ -279,16 +280,15 @@ watch(
 
       <section v-if="selected" class="card">
         <div class="card-head">
-          <h2>分项得分</h2>
+          <h2>相似度构成</h2>
           <span class="muted">{{ selected.name }} · {{ selected.limit_date }}</span>
         </div>
         <Disclaimer :text="result.disclaimer" />
         <ScorePanel
           :score="selected.score"
-          :shape="selected.shape_score"
-          :volume="selected.volume_score"
-          :volume-pct="selected.volume_pct_score"
-          :other="selected.other_scores"
+          :euclidean="selected.euclidean_score"
+          :cosine="selected.cosine_score"
+          :groups="selected.group_scores"
         />
       </section>
     </div>

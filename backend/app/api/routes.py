@@ -407,8 +407,6 @@ def post_ai_ranking(body: dict | None = None) -> dict:
     from backend.app.services.ranking_service import generate_ranking
     from backend.app.services.summary_service import AiFailed, AiNotConfigured, ai_ready
 
-    if not ai_ready():
-        raise HTTPException(status_code=409, detail="未配置AI接口，请先在设置里填写")
     raw_day = (body or {}).get("date")
     day = _parse_day(raw_day, default_latest=False) if raw_day else None
     prefer = "morning" if (body or {}).get("snapshot") == "morning" else "auto"

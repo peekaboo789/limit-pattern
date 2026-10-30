@@ -12,14 +12,34 @@ from backend.app.models.tables import AiRanking, DailyQuote
 from backend.app.services.retention import quote_dates
 from backend.app.services.similarity_service import DISCLAIMER, scan_market
 
-BANDS = ((90.0, "90+"), (80.0, "80-90"), (70.0, "70-80"), (0.0, "<70"))
+from backend.app.core.constants import MIN_BAND_OBSERVATIONS
+
+BAND_FLOORS = (90.0, 80.0, 70.0, 60.0)
+BACKTEST_DISCLAIMER = (
+    "本模块检验的是「形态相似度」与「下一交易日涨停」的历史统计关联性，"
+    "输出的历史实际发生率不是预测保证，不构成投资建议。"
+)
 
 
-def band_of(score: float) -> str:
-    for low, label in BANDS:
-        if score >= low:
-            return label
-    return "<70"
+def band_floors_from_settings() -> tuple[float, float, float, float]:
+    from backend.app.core.config import similarity_threshold_high
+
+    high = similarity_threshold_high()
+    floors = sorted({high, 80.0, 70.0, 60.0}, reverse=True)
+    return tuple(floors[:4]) if len(floors) >= 4 else BAND_FLOORS
+
+
+def band_of(score: float, floors: tuple[float, ...] = BAND_FLOORS) -> str:
+    """→ "90~100" / "80~90" / "70~80" / "60~70" / "<60"，下界含。"""
+    for index, floor in enumerate(floors):
+        if score >= floor:
+            upper = 100 if index == 0 else floors[index - 1]
+            return f"{floor:g}~{upper:g}"
+    return f"<{floors[-1]:g}"
+
+
+def band_labels(floors: tuple[float, ...] = BAND_FLOORS) -> list[str]:
+    return [band_of(f, floors) for f in floors] + [f"<{floors[-1]:g}"]
 
 
 def _next_outcomes(session, day: date) -> dict[str, dict]:
@@ -39,10 +59,16 @@ def _empty_band(label: str) -> dict:
     return {"band": label, "count": 0, "limit_up": 0, "up3": 0, "pct_sum": 0.0, "pct_n": 0}
 
 
-def _finish(stats: dict) -> dict:
+def _finish(stats: dict, baseline: float | None = None) -> dict:
     count = stats["count"]
+    rate = stats["limit_up"] / count * 100 if count else None
+    enough = count >= MIN_BAND_OBSERVATIONS
     return {
         "band": stats["band"],
+        "sample_count": count,
+        "limit_up_count": stats["limit_up"],
+        "enough": enough,
+        "band_lift": round(rate / baseline, 4) if enough and rate is not None and baseline else None,
         "count": count,
         "limit_up": stats["limit_up"],
         "limit_up_rate": round(stats["limit_up"] / count * 100, 1) if count else None,
@@ -75,8 +101,8 @@ def similarity_backtest(session, top: int = 50) -> dict:
 
     days = [day for day in quote_dates(session)]
     if not days:
-        return {"kind": "similarity", "top": top, "disclaimer": DISCLAIMER, "days": [], "bands": [_finish(_empty_band(l)) for _x, l in BANDS]}
-    key = (days[-1], session.query(func.count(DailyQuote.id)).scalar(), top)
+        return {"kind": "similarity", "top": top, "disclaimer": BACKTEST_DISCLAIMER, "baseline_rate": None, "days": [], "bands": [_finish(_empty_band(l)) for l in band_labels(band_floors_from_settings())]}
+    key = (days[-1], session.query(func.count(DailyQuote.id)).scalar(), top, band_floors_from_settings())
     if _CACHE.get("key") == key:
         return _CACHE["value"]
     session.info["lp_no_backfill"] = True
@@ -90,26 +116,38 @@ def similarity_backtest(session, top: int = 50) -> dict:
 
 
 def _similarity_backtest(session, days: list, top: int) -> dict:
-    bands = {label: _empty_band(label) for _low, label in BANDS}
+    """每个评估日对全部候选按最高相似度分档，统计次日涨停发生率；基准 = 全部候选的次日涨停率。"""
+    floors = band_floors_from_settings()
+    labels = band_labels(floors)
+    bands = {label: _empty_band(label) for label in labels}
+    total = _empty_band("all")
     per_day = []
     for index in range(len(days) - 1):
         day, nxt = days[index], days[index + 1]
-        scan = scan_market(session, day, top, 0)
+        scan = scan_market(session, day, 100000, 0, details=False)
         if not scan["items"]:
             continue
         outcomes = _next_outcomes(session, nxt)
         day_stats = _empty_band("all")
-        for item in scan["items"]:
+        top_stats = _empty_band(f"top{top}")
+        for rank, item in enumerate(scan["items"]):
             outcome = outcomes.get(item["code"])
-            _add(bands[band_of(item["score"])], outcome)
+            _add(bands[band_of(item["max_similarity"], floors)], outcome)
             _add(day_stats, outcome)
-        per_day.append({"date": day.isoformat(), "next_date": nxt.isoformat(), **_finish(day_stats)})
+            _add(total, outcome)
+            if rank < top:
+                _add(top_stats, outcome)
+        per_day.append({"date": day.isoformat(), "next_date": nxt.isoformat(), **_finish(day_stats), "top": _finish(top_stats)})
+    baseline = total["limit_up"] / total["count"] * 100 if total["count"] else None
     return {
         "kind": "similarity",
         "top": top,
-        "disclaimer": DISCLAIMER + "；历史发生率不是单只股票的概率",
+        "disclaimer": BACKTEST_DISCLAIMER,
+        "band_floors": list(floors),
+        "min_band_observations": MIN_BAND_OBSERVATIONS,
+        "baseline_rate": None if baseline is None else round(baseline, 2),
         "days": per_day,
-        "bands": [_finish(bands[label]) for _low, label in BANDS],
+        "bands": [_finish(bands[label], baseline) for label in labels],
     }
 
 
@@ -144,31 +182,50 @@ def ranking_backtest(session) -> dict:
     }
 
 
+def band_lifts(session) -> tuple[dict[str, float | None], dict]:
+    history = similarity_backtest(session, top=100)
+    return {band["band"]: band.get("band_lift") for band in history["bands"]}, history
+
+
+def prediction_for(item: dict, lifts: dict, floors=None) -> dict:
+    from backend.app.services.score_model import prediction_score
+
+    floors = floors or band_floors_from_settings()
+    return prediction_score(item.get("max_similarity"), item.get("carry_rate"), lifts.get(band_of(item.get("max_similarity") or 0, floors)))
+
+
 def next_day_pool(session, day: date | None = None, top: int = 30) -> dict:
-    """次日观察池：评估日扫描结果，附上该分档在最近几天的历史发生率。不是预测。"""
+    """次日观察池：评估日最高相似度前 N，附档位历史发生率与预测分。不是预测保证。"""
     days = quote_dates(session)
     if not days:
-        return {"date": None, "items": [], "bands": [], "disclaimer": DISCLAIMER}
+        return {"date": None, "items": [], "bands": [], "disclaimer": BACKTEST_DISCLAIMER}
     day = day or days[-1]
-    history = similarity_backtest(session, top=50)
+    lifts, history = band_lifts(session)
     rates = {band["band"]: band for band in history["bands"]}
+    floors = band_floors_from_settings()
     scan = scan_market(session, day, top, 0)
     items = []
     for item in scan["items"]:
-        band = rates.get(band_of(item["score"])) or {}
+        label = band_of(item["max_similarity"], floors)
+        band = rates.get(label) or {}
         items.append(
             {
                 **item,
-                "band": band_of(item["score"]),
-                "band_samples": band.get("count", 0),
+                "band_range": label,
+                "band_samples": band.get("sample_count", 0),
                 "band_limit_up_rate": band.get("limit_up_rate"),
                 "band_up3_rate": band.get("up3_rate"),
+                **prediction_for(item, lifts, floors),
             }
         )
+    from backend.app.core.constants import PREDICTION_FORMULA
+
     return {
         "date": day.isoformat(),
         "pool_dates": scan["pool_dates"],
-        "disclaimer": "观察池按相似度挑选，附历史发生率；不是涨停概率，也不是买卖建议",
+        "disclaimer": BACKTEST_DISCLAIMER,
+        "formula": PREDICTION_FORMULA,
+        "baseline_rate": history.get("baseline_rate"),
         "bands": history["bands"],
         "items": items,
     }

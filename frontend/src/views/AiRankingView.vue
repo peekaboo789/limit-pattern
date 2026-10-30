@@ -43,19 +43,28 @@ const poolDays = ref(30)
 void api.settings().then((value) => (poolDays.value = value.sample_pool_trading_days ?? 30)).catch(() => undefined)
 // 0.3.5 之前生成的榜单没有 pool_days 字段，那时样本池还是旧的 3 日口径
 const isOld = computed(() => !!ranking.value && ranking.value.pool_days == null)
-const DEFAULT_DIMS = [
-  { key: 'kline', label: 'K线形态', weight: 25 },
-  { key: 'volume', label: '量能', weight: 20 },
-  { key: 'position', label: '位置与趋势', weight: 15 },
-  { key: 'gene', label: '涨停基因', weight: 15 },
-  { key: 'similarity', label: '相似度', weight: 15 },
-  { key: 'market', label: '市场环境', weight: 10 },
-]
+const INDICATOR_LABELS: Record<string, string> = {
+  similarity_score: '三日形态相似度',
+  pattern_match_rate: '涨停形态匹配率（不加权）',
+  technical_score: '技术形态评分',
+  volume_score: '成交量评分',
+  capital_score: '资金评分',
+  history_limit_up_rate: '历史相似样本成功率',
+  risk_score: '风险评分',
+}
+function composite(row: AiRankingItem) {
+  if (row.formula && !row.formula.has_signal) return '—'
+  return row.composite_score == null ? '—' : row.composite_score.toFixed(2)
+}
+function levelText(row: AiRankingItem) {
+  return row.level || '—'
+}
 function toggle(code: string) {
   expanded.value = expanded.value === code ? null : code
 }
-function subText(value: number | null | undefined) {
-  return value == null ? '缺' : value.toFixed(0)
+function gapText(gap: number | null | undefined) {
+  if (gap == null) return '—'
+  return gap > 0 ? `+${gap.toFixed(1)}` : gap.toFixed(1)
 }
 const error = ref('')
 
@@ -137,7 +146,7 @@ onMounted(async () => {
       <select v-if="dates.length" v-model="selected" @change="open(selected)">
         <option v-for="day in dates" :key="day" :value="day">{{ day }}</option>
       </select>
-      <button class="btn" type="button" :disabled="generating" @click="generate()">{{ generating ? (progressText || 'AI 打分中…') : '立即生成' }}</button>
+      <button class="btn" type="button" :disabled="generating" @click="generate()">{{ generating ? (progressText || '计算中…') : '立即生成' }}</button>
       <button class="btn btn-ghost" type="button" :disabled="generating" title="下午用上午 11:30 收盘时冻结的快照打分" @click="generate('morning')">用 11:30 冻结快照</button>
       <ExportButton :params="exportParams" />
       <AiInputExport />
@@ -147,8 +156,8 @@ onMounted(async () => {
 
   <section v-if="importOpen" class="card">
     <h2>导入外部 AI 结果</h2>
-    <p class="hint">把外部 AI 按导出文件要求返回的 JSON 原样粘进来（带 ```json 围栏或前后说明文字也行）。保存为一份「外部 AI」榜单，第二个交易日的实时监控会照常使用。</p>
-    <textarea v-model="importText" rows="8" style="width: 100%; font-family: monospace" placeholder='{"date":"2026-10-30","model":"…","items":[{"code":"600000","score":78,"sub":{…},"risk_deduct":5,"reason":"…","risk":"…","tags":["…"]}]}' />
+    <p class="hint">把外部 AI 按导出文件要求返回的 JSON 原样粘进来（带 ```json 围栏或前后说明文字也行）。系统按固定公式给这些票算综合评分并排序，外部给的 score 记为模型分并显示偏差。保存为一份「外部 AI」榜单，第二个交易日的实时监控会照常使用。</p>
+    <textarea v-model="importText" rows="8" style="width: 100%; font-family: monospace" placeholder='{"date":"2026-10-30","model":"…","items":[{"code":"600000","score":72,"reason":"…","risk":"…","tags":["…"]}]}' />
     <div style="margin-top: 8px; display: flex; gap: 8px; align-items: center">
       <label class="muted">评估日 <input v-model="importDate" placeholder="留空用 JSON 里的 date 或最新交易日" style="width: 16em" /></label>
       <button class="btn" type="button" :disabled="importing || !importText.trim()" @click="doImport">{{ importing ? '导入中…' : '保存为榜单' }}</button>
@@ -167,9 +176,11 @@ onMounted(async () => {
       </span>
     </div>
     <p v-if="ranking?.unscored_count" class="alert">
-      有 {{ ranking.unscored_count }} 只没拿到 AI 评分（{{ ranking.batches?.failed ?? 0 }} 批失败），已保留其余结果。
+      有 {{ ranking.unscored_count }} 只没拿到 AI 解读（{{ ranking.batches?.failed ?? 0 }} 批失败）；排名按系统综合评分，不受影响。
       <button class="btn btn-ghost" type="button" :disabled="generating" @click="generate()">重新生成</button>
     </p>
+    <p v-if="ranking?.ai_error" class="hint">{{ ranking.ai_error }}</p>
+    <p v-if="ranking?.formula_text" class="hint" style="margin: 4px 0">{{ ranking.formula_text }} 排名只看系统综合评分，AI 只给依据和对照分。</p>
     <p v-if="ranking && isOld" class="alert">
       这份榜单是用旧样本池生成的（{{ ranking.pool_dates.length }} 个交易日，{{ ranking.pool_size }} 条），当前设置是近 {{ poolDays }} 个交易日。
       <button class="btn btn-ghost" type="button" :disabled="generating" @click="generate()">用当前样本池重新生成</button>
@@ -185,13 +196,24 @@ onMounted(async () => {
     <div v-else class="table-wrap ai-wrap">
       <table class="ai-table">
         <colgroup>
-          <col style="width: 44px" /><col style="width: 120px" /><col style="width: 64px" /><col style="width: 100px" />
-          <col style="width: 128px" /><col />
+          <col style="width: 40px" /><col style="width: 112px" /><col style="width: 78px" />
+          <col style="width: 50px" /><col style="width: 50px" /><col style="width: 50px" /><col style="width: 50px" /><col style="width: 50px" /><col style="width: 50px" />
+          <col style="width: 70px" /><col style="width: 56px" /><col style="width: 60px" /><col />
         </colgroup>
         <thead>
           <tr>
-            <th>排名</th><th>股票</th><th class="right">AI 评分</th><th class="right" title="相似度 = 形态×0.6 + 成交量×0.25 + 量比×0.15">相似度</th>
-            <th>最相似涨停</th><th>标签 · 理由（点行展开）</th>
+            <th>排名</th><th>股票</th>
+            <th class="right" :title="ranking.formula_text || '系统综合评分'">综合评分</th>
+            <th class="right" title="形态贡献（权重 35%，读最高相似度）">形态</th>
+            <th class="right" title="技术贡献（20%）">技术</th>
+            <th class="right" title="量能贡献（15%）">量能</th>
+            <th class="right" title="资金贡献（15%）：没有真实资金流数据，恒缺，权重摊给其余项">资金</th>
+            <th class="right" title="历史成功率贡献（15%）：高度相似样本次日继续涨停的已发生频率">历史</th>
+            <th class="right" title="风险分 ≥80 扣 20、≥60 扣 10、≥40 扣 5">风险</th>
+            <th class="right" title="模型自评分（只作对照）与系统综合评分的差：正数 = 模型给得更高">模型分/差</th>
+            <th class="right" title="预测分 = 0.5×最高相似度 + 0.3×相似度加权连板率 + 0.2×档位倍率（2 倍封顶），缺项摊权重">预测分</th>
+            <th class="right" title="最高相似度（选前 100 用它）">相似度</th>
+            <th>模型依据（点行展开）</th>
           </tr>
         </thead>
         <tbody>
@@ -200,30 +222,46 @@ onMounted(async () => {
             <td class="rank" :class="{ top: row.rank <= 3 }">{{ String(row.rank).padStart(2, '0') }}</td>
             <td class="stock">
               <div class="stock-name">{{ row.name }}<span v-if="row.checks?.length" class="check-badge" :title="checkTitle(row)">⚠ 核对</span></div>
-              <div class="muted small"><span class="code">{{ row.code }}</span> · {{ row.board_name }}</div>
+              <div class="muted small"><span class="code">{{ row.code }}</span> · {{ row.board_name }}<template v-if="row.is_limit_up"> · 已涨停</template></div>
             </td>
-            <td class="right"><b>{{ num(row.ai_score) }}</b></td>
             <td class="right">
-              <div>{{ num(row.similarity) }}</div>
-              <div class="muted small" title="形态 / 成交量 / 量比">{{ num(row.shape_score) }}/{{ num(row.volume_score) }}/{{ num(row.volume_pct_score) }}</div>
+              <b>{{ composite(row) }}</b>
+              <div class="muted small">{{ levelText(row) }}</div>
             </td>
-            <td class="wrap">
-              <template v-if="row.best_match">{{ row.best_match.name }}<div class="muted small code nowrap">{{ row.best_match.code }}</div><div class="muted small code nowrap">{{ row.best_match.limit_date }}</div></template>
-              <span v-else class="muted">—</span>
+            <td class="right">{{ num(row.contributions?.pattern) }}</td>
+            <td class="right">{{ num(row.contributions?.technical) }}</td>
+            <td class="right">{{ num(row.contributions?.volume) }}</td>
+            <td class="right">{{ num(row.contributions?.capital) }}</td>
+            <td class="right">{{ num(row.contributions?.history) }}</td>
+            <td class="right" :style="{ color: row.risk_penalty ? '#dc2626' : undefined }">{{ row.risk_penalty == null ? '—' : row.risk_penalty ? `−${row.risk_penalty}` : '0' }}</td>
+            <td class="right">
+              <div>{{ num(row.model_score) }}</div>
+              <div class="muted small">{{ gapText(row.model_gap) }}</div>
+            </td>
+            <td class="right">{{ num(row.prediction_score) }}</td>
+            <td class="right">
+              <div>{{ num(row.max_similarity ?? row.similarity) }}</div>
+              <div v-if="row.sample_count" class="muted small" title="高度相似样本数 / 比对样本数">{{ row.high_similarity_count }}/{{ row.sample_count }}</div>
             </td>
             <td class="wrap reason-cell">
               <div v-if="row.tags?.length" class="tag-list"><span v-for="tag in row.tags" :key="tag" class="tag">{{ tag }}</span></div>
-              <div class="reason" :class="{ open: expanded === row.code }" :title="row.reason">{{ row.reason }}</div>
+              <div class="reason" :class="{ open: expanded === row.code }" :title="row.reason">{{ row.reason || '—' }}</div>
             </td>
           </tr>
           <tr v-if="expanded === row.code" class="detail-row">
-            <td colspan="6">
-              <div class="chips">
-                <span v-for="dim in ranking.dimensions ?? DEFAULT_DIMS" :key="dim.key" class="chip">
-                  {{ dim.label }}（{{ dim.weight }}%）<b>{{ subText(row.sub?.[dim.key]) }}</b>
-                </span>
-                <span class="chip" style="color: #dc2626">风险扣分 −{{ (row.risk_deduct ?? 0).toFixed(0) }}</span>
+            <td colspan="13">
+              <div v-if="row.formula" class="chips">
+                <span v-for="(value, key) in row.formula.indicators" :key="key" class="chip">{{ INDICATOR_LABELS[key] ?? key }} <b>{{ num(value) }}</b></span>
+                <span class="chip">有数权重 <b>{{ row.formula.weight_total }}</b></span>
+                <span v-if="row.formula.missing_items?.length" class="chip">缺项 <b>{{ row.formula.missing_items.join('、') }}</b></span>
               </div>
+              <div v-else class="chips">
+                <span class="chip">这份榜单是 0.4.0 以前生成的，没有系统综合评分</span>
+              </div>
+              <p class="hint" style="margin: 6px 0 0">
+                单股历史总分：<template v-if="row.pick_history && row.pick_history.picks">{{ row.pick_history.total ?? '—' }}（上榜 {{ row.pick_history.picks }} 次，次日涨停 {{ row.pick_history.hit }}/{{ row.pick_history.hit + row.pick_history.miss }}，命中率 {{ row.pick_history.hit_rate == null ? '—' : row.pick_history.hit_rate + '%' }}，待定 {{ row.pick_history.pending }}）</template><template v-else>—（还没有已定判的上榜记录）</template>
+                <template v-if="row.best_match"> · 最相似涨停 {{ row.best_match.name }} {{ row.best_match.code }} @ {{ row.best_match.limit_date }}</template>
+              </p>
               <p v-if="row.risk" class="hint" style="margin: 6px 0 0; color: #b45309">风险提示：{{ row.risk }}</p>
               <ul v-if="row.checks?.length" class="hint check-list">
                 <li v-for="item in row.checks" :key="item.claim">⚠ 说法「{{ item.claim }}」与日线不符：{{ item.fact }}</li>

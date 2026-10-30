@@ -79,7 +79,7 @@ onUnmounted(() => {
           <span class="code muted">{{ item.code }}</span>
         </div>
         <div class="monitor-pct" :class="item.pct == null ? 'flat' : item.pct >= 0 ? 'up' : 'down'">{{ pctText(item.pct) }}</div>
-        <div class="muted">现价 {{ item.price ?? '—' }} · AI {{ item.ai_score ?? '—' }}</div>
+        <div class="muted">现价 {{ item.price ?? '—' }} · 综合 {{ item.ai_score ?? "—" }}</div>
       </article>
     </div>
   </section>

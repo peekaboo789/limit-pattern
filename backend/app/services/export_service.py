@@ -13,7 +13,7 @@ from backend.app.providers.markets import classify, is_in_scope
 from backend.app.services.similarity_service import DISCLAIMER, pool_dates, scan_market, similar_to
 from backend.app.services.summary_service import _streak, get_summary
 
-COLUMNS = ["排名", "代码", "名称", "总分", "形态分", "量能分", "量比分", "最相似涨停股", "涨停日期"]
+COLUMNS = ["排名", "代码", "名称", "最高相似度", "平均相似度", "样本数", "高度相似数", "最相似涨停股", "涨停日期"]
 
 
 def _cell(value) -> str:
@@ -57,9 +57,9 @@ def _scan_rows(payload: dict) -> list[list]:
                 item.get("code"),
                 item.get("name"),
                 item.get("score"),
-                item.get("shape_score"),
-                item.get("volume_score"),
-                item.get("volume_pct_score"),
+                item.get("avg_similarity"),
+                item.get("sample_count"),
+                item.get("high_similarity_count"),
                 best,
                 match.get("limit_date"),
             ]
@@ -76,9 +76,9 @@ def _similarity_rows(payload: dict) -> list[list]:
                 item.get("code"),
                 item.get("name"),
                 item.get("score"),
-                item.get("shape_score"),
-                item.get("volume_score"),
-                item.get("volume_pct_score"),
+                item.get("avg_similarity"),
+                item.get("sample_count"),
+                item.get("high_similarity_count"),
                 f"{item.get('code') or ''} {item.get('name') or ''}".strip(),
                 item.get("limit_date"),
             ]
@@ -211,18 +211,18 @@ def render_export(session, kind: str, day: date, code: str | None, top: int) -> 
                 f"炸板 {market.get('broken')} 炸板率 {market.get('broken_rate')}% 最高连板 {market.get('max_height')}"
             )
         body.append("")
-        dims = [("kline", "K线"), ("volume", "量能"), ("position", "位置"), ("gene", "涨停基因"), ("similarity", "相似"), ("market", "环境")]
-        columns = ["排名", "代码", "名称", "板块", "AI评分", *[label for _k, label in dims], "风险扣分", "标签", "相似度", "形态", "成交量", "量比", "最相似样本", "理由", "风险提示"]
+        dims = [(d["key"], d["label"]) for d in payload.get("dimensions") or []]
+        columns = ["排名", "代码", "名称", "板块", "综合评分", "等级", *[label for _k, label in dims], "风险扣分", "模型分", "偏差", "预测分", "标签", "最高相似度", "平均相似度", "样本数", "最相似样本", "模型依据", "风险提示"]
         lines = ["\t".join(columns)]
         for item in payload.get("items") or []:
             match = item.get("best_match") or {}
             cells = [
                 item.get("rank"), item.get("code"), item.get("name"), item.get("board_name"),
-                item.get("ai_score"),
-                *[(item.get("sub") or {}).get(key) for key, _label in dims],
-                item.get("risk_deduct"), "、".join(item.get("tags") or []),
-                item.get("similarity"), item.get("shape_score"),
-                item.get("volume_score"), item.get("volume_pct_score"),
+                item.get("composite_score", item.get("ai_score")), item.get("level"),
+                *[(item.get("contributions") or {}).get(key) for key, _label in dims],
+                item.get("risk_penalty"), item.get("model_score"), item.get("model_gap"), item.get("prediction_score"),
+                "、".join(item.get("tags") or []),
+                item.get("max_similarity", item.get("similarity")), item.get("avg_similarity"), item.get("sample_count"),
                 f"{match.get('code', '')} {match.get('limit_date', '')}".strip(), item.get("reason"), item.get("risk"),
             ]
             lines.append("\t".join(_cell(cell) for cell in cells))

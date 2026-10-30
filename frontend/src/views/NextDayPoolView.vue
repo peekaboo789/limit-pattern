@@ -50,12 +50,13 @@ onMounted(load)
   <section class="card">
     <div class="card-head"><h2>{{ pool?.date ?? '—' }} 观察池</h2></div>
     <Disclaimer :text="pool?.disclaimer" />
+    <p v-if="pool?.formula" class="hint">{{ pool.formula }}<template v-if="pool.baseline_rate != null"> 基准（全部候选次日涨停率）{{ pool.baseline_rate }}%。</template></p>
     <div v-if="loading" class="skeleton" />
     <div v-else-if="!pool?.items.length" class="empty">没有数据</div>
     <div v-else class="table-wrap">
       <table>
         <thead>
-          <tr><th>排名</th><th>代码</th><th>名称</th><th class="right">相似度</th><th>分档</th><th class="right">分档样本</th><th class="right">分档历史涨停率</th><th class="right">分档历史冲 3% 率</th><th>最相似涨停</th></tr>
+          <tr><th>排名</th><th>代码</th><th>名称</th><th class="right" title="最高相似度">相似度</th><th class="right" :title="pool.formula || '预测分'">预测分</th><th class="right" title="相似度加权连板率（证据上限 20 个样本）">连板率</th><th class="right" title="档位历史涨停率 / 全部候选基准涨停率，观测不足 50 条不给">档位倍率</th><th>分档</th><th class="right">分档样本</th><th class="right">分档历史涨停率</th><th class="right">分档历史冲 3% 率</th><th>最相似涨停</th></tr>
         </thead>
         <tbody>
           <tr v-for="(row, index) in pool.items" :key="row.code">
@@ -63,7 +64,10 @@ onMounted(load)
             <td class="code">{{ row.code }}</td>
             <td>{{ row.name }}</td>
             <td class="right"><b>{{ row.score.toFixed(1) }}</b></td>
-            <td>{{ row.band }}</td>
+            <td class="right"><b>{{ row.prediction_score == null ? '—' : row.prediction_score.toFixed(1) }}</b></td>
+            <td class="right">{{ rate(row.carry_rate ?? null) }}</td>
+            <td class="right">{{ row.band_lift == null ? '—' : `${row.band_lift.toFixed(2)}×` }}</td>
+            <td>{{ row.band_range ?? row.band }} <span class="muted">{{ row.band_range ? row.band : '' }}</span></td>
             <td class="right">{{ row.band_samples }}</td>
             <td class="right">{{ rate(row.band_limit_up_rate) }}</td>
             <td class="right">{{ rate(row.band_up3_rate) }}</td>

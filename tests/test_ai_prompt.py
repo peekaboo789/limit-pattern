@@ -57,9 +57,9 @@ def test_parse_fenced_missing_subscores_and_trailing_comma():
     ]}, ensure_ascii=False)[:-2] + "],}\n```"
     scores = ranking_service._parse_scores(text)
     first = scores["600000"]
-    assert first["score"] == pytest.approx((80 * 25 + 60 * 20) / 45 - 5, abs=0.1)
-    assert first["sub"]["gene"] is None and first["tags"] == ["缩量回调", "均线多头"]
-    assert scores["000001"]["score"] == 100 and all(v is None for v in scores["000001"]["sub"].values())
+    assert first["score"] == 70  # 旧格式只有 sub：取各维度均值当模型自评，只作对照
+    assert first["tags"] == ["缩量回调", "均线多头"]
+    assert scores["000001"]["score"] == 100
     assert "000002" not in scores
 
 

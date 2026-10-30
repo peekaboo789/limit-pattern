@@ -19,7 +19,9 @@ LEGEND = (
     "位20/位60=收盘在近20/60日高低区间中的位置(0~1)，距高=距近20日最高%，60日不足按已有天数；"
     "涨停=近30个交易日涨停次数，末板=最近一次涨停日，连板=截至评估日连续涨停数，炸板=近30日触及涨停未封住次数，"
     "回撤=最近一次涨停收盘至今涨跌%；上影=评估日上影线占振幅比例；"
-    "相似=综合相似度/形态/量能/量比，样本=前3个最相似涨停样本(代码@涨停日:分)。缺失写 -。"
+    "相似=最高/平均相似度、高度相似样本数/有效样本数、档位(高度/较高/一般/低/弱)，今日=当日已涨停；"
+    "样本=前3个最相似涨停样本(代码@涨停日:分)；"
+    "综合=系统综合评分与等级，贡献=形态/技术/量能/资金/历史各项贡献分、风险扣分，指标=技术/量能/风险/历史成功率分。缺失写 -（不是 0）。"
 )
 
 
@@ -134,7 +136,24 @@ def stock_line(item: dict, metrics: dict) -> str:
         f"{item['code']} {item.get('name', '')} {item.get('board_name') or ''} | 近5日 {recent or '-'} | MA {ma_text} 斜率 {slope} | "
         f"位20 {_f(metrics.get('pos20'), 2)} 位60 {_f(metrics.get('pos60'), 2)}({metrics.get('days60', 0)}日) 距高 {_f(metrics.get('dist20'))} | "
         f"涨停 {metrics.get('limit_count', 0)} 末板 {last_limit} 连板 {metrics.get('streak', 0)} 炸板 {metrics.get('broken', 0)} 回撤 {_f(metrics.get('pullback'))} 上影 {_f(metrics.get('upper_shadow'), 2)} | "
-        f"相似 {_f(item.get('score'), 0)}/{_f(item.get('shape_score'), 0)}/{_f(item.get('volume_score'), 0)}/{_f(item.get('volume_pct_score'), 0)} 样本 {samples}"
+        f"相似 {_f(item.get('max_similarity'))}/{_f(item.get('avg_similarity'))} {item.get('high_similarity_count', 0)}/{item.get('sample_count', 0)} {item.get('band') or '-'}"
+        f"{' 今日' if item.get('is_limit_up') else ''} 样本 {samples}"
+        f"{_formula_text(item.get('formula'))}"
+    )
+
+
+def _formula_text(formula: dict | None) -> str:
+    if not formula:
+        return ""
+    from backend.app.services.score_model import ITEMS
+
+    contributions = formula.get("contributions") or {}
+    indicators = formula.get("indicators") or {}
+    parts = "/".join(_f(contributions.get(key)) for key, _field, _w in ITEMS)
+    marks = "/".join(_f(indicators.get(k), 0) for k in ("technical_score", "volume_score", "risk_score", "history_limit_up_rate"))
+    return (
+        f" | 综合 {_f(formula.get('composite_score'))} {formula.get('level') or '-'} 贡献 {parts} 扣 {_f(formula.get('risk_penalty'), 0)}"
+        f" 指标 {marks}"
     )
 
 

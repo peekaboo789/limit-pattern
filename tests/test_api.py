@@ -157,7 +157,8 @@ def test_pool_is_three_days_and_excludes_self_and_future(client):
     for item in scan["items"]:
         assert item["best_match"]["code"] != item["code"]
         assert 0 <= item["score"] <= 100
-        assert "shape_score" in item and "volume_score" in item and "volume_pct_score" in item
+        assert item["score"] == item["max_similarity"]
+        assert {"avg_similarity", "sample_count", "high_similarity_count", "band", "top_sample", "is_limit_up"} <= set(item)
     own = client.get("/api/similarity", params={"code": "600000", "date": last}).json()
     assert own["pool_dates"] == pool["dates"]
     assert all(match["code"] != "600000" for match in own["matches"])

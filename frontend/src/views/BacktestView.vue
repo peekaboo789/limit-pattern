@@ -59,13 +59,16 @@ onMounted(load)
     <section class="card">
       <div class="card-head"><h2>相似度分档 · 下一交易日</h2></div>
       <Disclaimer :text="sim?.disclaimer" />
+      <p v-if="sim" class="hint">统计全部候选（不只前 100）在下一交易日的表现；基准 = 全部候选次日涨停率<template v-if="sim.baseline_rate != null"> {{ sim.baseline_rate }}%</template>。只有观测 ≥ {{ sim.min_band_observations ?? 50 }} 条的档位才算相对倍率并进入预测分。</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>分档</th><th class="right">样本</th><th class="right">涨停</th><th class="right">涨停率</th><th class="right">盘中冲 3% 率</th><th class="right">次日平均涨幅</th></tr></thead>
+          <thead><tr><th>分档</th><th class="right">样本</th><th class="right">涨停</th><th class="right">涨停率</th><th class="right" title="档位涨停率 / 基准涨停率；样本不足 50 条不给">相对基准</th><th class="right">盘中冲 3% 率</th><th class="right">次日平均涨幅</th></tr></thead>
           <tbody>
             <tr v-for="band in sim?.bands ?? []" :key="band.band">
               <td>{{ band.band }}</td><td class="right">{{ band.count }}</td><td class="right">{{ band.limit_up }}</td>
-              <td class="right">{{ rate(band.limit_up_rate) }}</td><td class="right">{{ rate(band.up3_rate) }}</td>
+              <td class="right">{{ rate(band.limit_up_rate) }}</td>
+              <td class="right">{{ band.band_lift != null ? `${band.band_lift.toFixed(2)}×` : band.enough === false ? '样本不足' : '—' }}</td>
+              <td class="right">{{ rate(band.up3_rate) }}</td>
               <td class="right">{{ band.avg_next_pct == null ? '—' : `${band.avg_next_pct.toFixed(2)}%` }}</td>
             </tr>
           </tbody>

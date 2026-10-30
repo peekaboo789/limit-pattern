@@ -1,4 +1,5 @@
-"""AI 前 20 榜单：取当前最相似的前 100 只，交给已配置的 AI 打 0-100 分，留前 20。
+"""前 20 榜单：全市场按最高相似度取前 100，系统按固定公式算综合评分，留综合评分前 20。
+AI 只当解读员：给出依据、风险、标签和一个自评分（页面显示为模型分与偏差），不决定排名。
 
 只用已经收盘或当前时刻之前的行情，不看未来。相似度不是涨停概率。
 """
@@ -21,35 +22,18 @@ logger = get_logger("ranking")
 CANDIDATES = 100
 KEEP = 20
 
-DIMENSIONS = (
-    ("kline", "K线形态", 25),
-    ("volume", "量能", 20),
-    ("position", "位置与趋势", 15),
-    ("gene", "涨停基因", 15),
-    ("similarity", "相似度", 15),
-    ("market", "市场环境", 10),
-)
+from backend.app.services.score_model import ITEM_LABELS, ITEMS, PROMPT_RUBRIC
+
+# 页面六栏：五项贡献 + 风险影响
+DIMENSIONS = tuple((key, ITEM_LABELS[key], round(weight * 100)) for key, _field, weight in ITEMS)
 RISK_MAX = 20
 
-SYSTEM_PROMPT = (
-    "你是一名资深 A 股短线交易与涨停板研究员，多年复盘涨停板、连板、首板、炸板、分歧转一致、龙头股和情绪周期。"
-    "现在要对一批候选股做形态复盘打分。数据只有本地日线算出的价格、成交量、换手和涨停记录，"
-    "没有新闻、公告、题材和基本面，不得编造或引用任何此类信息。\n"
-    "评分框架（各维度 0–100 分，按权重加权，再减风险扣分，得到总分 0–100）：\n"
-    "1. K线形态（25%）：实体与上下影结构、收盘位置、连续K线组合、平台/箱体突破、MA5/10/20 多头排列与斜率。\n"
-    "2. 量能（20%）：温和放量、缩量洗盘、放量突破、量比异常、换手率是否健康（过低无人气、过高筹码松动）。\n"
-    "3. 位置与趋势（15%）：在近20/60日区间的位置、距近期高点的距离、整体趋势方向。\n"
-    "4. 涨停基因（15%）：近30个交易日涨停次数、最近一次涨停、是否炸板、涨停后回撤幅度、连板高度。\n"
-    "5. 相似度（15%）：与近30个交易日涨停样本池的综合相似度及最相似样本。\n"
-    "6. 市场环境（10%）：当日涨停/跌停家数、炸板率、最高连板高度、涨跌比所反映的情绪周期位置。\n"
-    f"风险扣分（0–{RISK_MAX}）：高位急拉、长上影、放量滞涨、换手极高、连续加速后乖离过大、炸板后弱势等。\n"
-    "每只输出：总分 score、各维度分 sub、风险扣分 risk_deduct、理由 reason（60 字以内，点出最关键的形态与量能特征）、"
-    "风险提示 risk（30 字以内）、标签 tags（1–4 个，如 缩量回调、平台突破、首板回封、放量突破、均线多头、高位滞涨、分歧换手）。\n"
-    "规则：只用给出的数据；缺失字段（-）不当作 0，按已有信息判断；评分是形态复盘分，不是涨停概率，"
-    "不得写成买入建议、目标价或确定性判断。\n"
-    '只返回 JSON：{"items":[{"code":"600000","score":78,"sub":{"kline":80,"volume":75,"position":70,"gene":60,"similarity":85,"market":55},'
-    '"risk_deduct":5,"reason":"...","risk":"...","tags":["缩量回调","均线多头"]}]}'
+OUTPUT_FORMAT = (
+    "评分是形态复盘分，不是涨停概率。每只输出：你自己的相对判断 score（0–100，只作对照，页面以系统综合评分为准）、"
+    "依据 reason（60 字以内，写成模型依据）、风险提示 risk（30 字以内）、标签 tags（1–4 个）。\n"
+    '只返回 JSON：{"items":[{"code":"600000","score":72,"reason":"...","risk":"...","tags":["缩量回调","均线多头"]}]}'
 )
+SYSTEM_PROMPT = PROMPT_RUBRIC + "\n" + OUTPUT_FORMAT
 
 
 class RankingError(RuntimeError):
@@ -77,8 +61,10 @@ def _recent_bars(session, code: str, day: date, count: int = 3) -> list[dict]:
 
 
 def candidates(session, day: date, limit: int = CANDIDATES) -> dict:
+    """前 100：全市场（含已涨停）按 (−最高相似度, −最高相似度, 代码) 取前 100，再算综合评分。"""
     from backend.app.core.config import sample_pool_days
     from backend.app.services.ai_context import load_bars, stock_metrics
+    from backend.app.services.score_model import build_indicators, score_of
 
     payload = scan_market(session, day, limit, 0)
     pool = sample_pool_days()
@@ -86,6 +72,15 @@ def candidates(session, day: date, limit: int = CANDIDATES) -> dict:
         item["board_name"] = board_name(item["code"])
         item["bars"] = _recent_bars(session, item["code"], day)
         item["metrics"] = stock_metrics(load_bars(session, item["code"], day), pool)
+        item["indicators"] = build_indicators(
+            similarity=item["max_similarity"],
+            high_count=item["high_similarity_count"],
+            sample_count=item["sample_count"],
+            features=item.get("features"),
+            change_percent=item.get("change_percent"),
+            history_rate_percent=item.get("history_limit_up_rate"),
+        )
+        item["formula"] = score_of(item["indicators"])
     return payload
 
 
@@ -178,30 +173,23 @@ def _num(value) -> float | None:
 
 
 def _parse_entry(entry: dict) -> dict | None:
-    sub_raw = entry.get("sub") or entry.get("subscores") or entry.get("dimensions") or {}
-    sub: dict[str, float | None] = {}
-    if isinstance(sub_raw, dict):
-        for key, _label, _w in DIMENSIONS:
-            value = _num(sub_raw.get(key))
-            sub[key] = None if value is None else round(max(0.0, min(100.0, value)), 1)
-    deduct = _num(entry.get("risk_deduct"))
-    deduct = 0.0 if deduct is None else max(0.0, min(float(RISK_MAX), abs(deduct)))
+    """模型的那一份：自评 score（只作对照）、依据、风险、标签。旧格式的 sub 各维度分加权成自评。"""
     score = _num(entry.get("score"))
-    if score is None:
-        have = [(sub[key], w) for key, _l, w in DIMENSIONS if sub.get(key) is not None]
-        if not have:
-            return None
-        score = sum(v * w for v, w in have) / sum(w for _v, w in have) - deduct
+    sub_raw = entry.get("sub") or entry.get("subscores") or entry.get("dimensions") or {}
+    if score is None and isinstance(sub_raw, dict):
+        values = [v for v in (_num(x) for x in sub_raw.values()) if v is not None]
+        score = sum(values) / len(values) if values else None
+    reason = str(entry.get("reason") or "").strip()[:90]
+    if score is None and not reason:
+        return None
     tags = entry.get("tags") or []
     if isinstance(tags, str):
         tags = [t for t in tags.replace("，", ",").replace("、", ",").split(",")]
     tags = [str(t).strip()[:8] for t in tags if str(t).strip()][:4] if isinstance(tags, list) else []
     return {
-        "score": round(max(0.0, min(100.0, score)), 1),
-        "reason": str(entry.get("reason") or "").strip()[:90],
+        "score": None if score is None else round(max(0.0, min(100.0, score)), 1),
+        "reason": reason,
         "risk": str(entry.get("risk") or "").strip()[:60],
-        "risk_deduct": round(deduct, 1),
-        "sub": sub,
         "tags": tags,
     }
 
@@ -239,23 +227,26 @@ def generate_ranking(
     trigger: str = "manual",
     moment: datetime | None = None,
     prefer: str = "auto",
+    use_ai: bool = True,
 ) -> dict:
-    """day 为空时用「此刻」：交易时段用盘中快照当临时日线。指定 day 时只用那天及以前的正式日线。"""
+    """day 为空时用「此刻」：交易时段用盘中快照当临时日线。指定 day 时只用那天及以前的正式日线。
+    没配 AI 或 AI 全部失败时照样按综合评分出榜，只是没有模型依据。"""
     from backend.app.services.intraday_service import provisional_day
 
-    if chat is None and not ai_ready():
-        raise AiNotConfigured("未配置AI接口")
+    use_ai = use_ai and (chat is not None or ai_ready())
     if day is not None:
         if day > today():
             raise ValueError("不能用未来的日期")
-        return _rank(session, day, chat, trigger, {"kind": "daily", "taken_at": None, "count": 0})
+        return _rank(session, day, chat, trigger, {"kind": "daily", "taken_at": None, "count": 0}, use_ai)
     with provisional_day(session, moment, prefer) as (as_of, info):
         if as_of is None:
             raise LookupError("还没有行情")
-        return _rank(session, as_of, chat, trigger, info)
+        return _rank(session, as_of, chat, trigger, info, use_ai)
 
 
-def _rank(session, day: date, chat, trigger: str, snapshot: dict) -> dict:
+def _rank(session, day: date, chat, trigger: str, snapshot: dict, use_ai: bool = True) -> dict:
+    from backend.app.services.similarity_service import feed_order
+
     pool = candidates(session, day)
     items = pool["items"]
     if not items:
@@ -263,57 +254,176 @@ def _rank(session, day: date, chat, trigger: str, snapshot: dict) -> dict:
     from backend.app.services.ai_context import market_context, market_line
 
     market = market_context(session, day)
-    scores = _score_batches(day, items, chat, market_line(market))
+    scores: dict[str, dict] = {}
+    ai_error = "" if use_ai else "没有配置 AI 接口：只按系统综合评分出榜，没有模型依据"
+    if use_ai:
+        try:
+            scores = _score_batches(day, feed_order(items), chat, market_line(market))
+        except (AiFailed, AiNotConfigured) as exc:
+            ai_error = f"AI 解读失败（{exc}）：只按系统综合评分出榜"
     extra = {
-        "batches": {k: PROGRESS.get(k) for k in ("total", "failed", "split", "batch_size")},
-        "unscored_count": sum(1 for item in items if item["code"] not in scores),
+        "batches": {k: PROGRESS.get(k) for k in ("total", "failed", "split", "batch_size")} if use_ai else None,
+        "unscored_count": sum(1 for item in items if item["code"] not in scores) if use_ai else 0,
+        "ai_error": ai_error,
     }
-    model = "" if chat is not None else str(read_settings_file().get("ai_model") or "")
-    return _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, extra)
+    model = "" if chat is not None or not use_ai else str(read_settings_file().get("ai_model") or "")
+    return _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, extra, select="composite")
 
 
-def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, extra=None, names=None) -> dict:
+def outside_items(session, day: date, codes: list[str], names: dict | None = None) -> list[dict]:
+    """外部导入里不在前 100 的代码：也按同一公式算综合评分（扫全市场一次，不拼详细分组）。"""
+    if not codes:
+        return []
+    from backend.app.services.score_model import build_indicators, score_of
+
+    wanted = set(codes)
+    scan = scan_market(session, day, 100000, 0, details=False)
+    found = {item["code"]: item for item in scan["items"] if item["code"] in wanted}
+    out = []
+    for code in codes:
+        item = found.get(code) or {"code": code, "name": (names or {}).get(code, ""), "max_similarity": None,
+                                   "high_similarity_count": 0, "sample_count": 0}
+        item["board_name"] = board_name(code)
+        item["indicators"] = build_indicators(
+            similarity=item.get("max_similarity"),
+            high_count=item.get("high_similarity_count"),
+            sample_count=item.get("sample_count"),
+            features=item.get("features"),
+            change_percent=item.get("change_percent"),
+            history_rate_percent=item.get("history_limit_up_rate"),
+        )
+        item["formula"] = score_of(item["indicators"])
+        out.append(item)
+    return out
+
+
+def pick_history(session, day: date, codes: list[str]) -> dict[str, dict]:
+    """单股历史总分：该股在评估日之前上过的每日最终榜，自评均分 × (0.3 + 0.7·(h+1)/(settled+2))。
+    h = 次日涨停次数，settled = 已定判（次日行情已入库）的次数，pending 不进分母。"""
+    from backend.app.services.score_model import HISTORY_FORMULA, ALL_PENDING_FORMULA, hit_rate, score_from_history
+
+    stored = quote_dates(session)
+    rows = session.query(AiRanking).filter(AiRanking.trade_date < day).order_by(AiRanking.trade_date, AiRanking.id).all()
+    last: dict[date, dict] = {}
+    for row in rows:
+        last[row.trade_date] = row.payload
+    wanted = set(codes)
+    picks: dict[str, list[tuple[float, date]]] = {}
+    for pick_day, payload in last.items():
+        for item in payload.get("items") or []:
+            if item.get("code") in wanted:
+                value = item.get("model_score")
+                if value is None:
+                    value = item.get("ai_score")
+                if isinstance(value, (int, float)):
+                    picks.setdefault(item["code"], []).append((float(value), pick_day))
+    nexts = {}
+    for _code, entries in picks.items():
+        for _v, d in entries:
+            later = [x for x in stored if x > d and x <= day]
+            nexts[d] = later[0] if later else None
+    limit_ups = {
+        (c, d)
+        for c, d in session.query(DailyQuote.stock_code, DailyQuote.trade_date).filter(
+            DailyQuote.trade_date.in_([d for d in nexts.values() if d]), DailyQuote.is_limit_up.is_(True)
+        )
+    } if nexts else set()
+    out = {}
+    for code in codes:
+        entries = picks.get(code) or []
+        hit = sum(1 for _v, d in entries if nexts.get(d) and (code, nexts[d]) in limit_ups)
+        settled = sum(1 for _v, d in entries if nexts.get(d))
+        avg = round(sum(v for v, _d in entries) / len(entries), 2) if entries else None
+        out[code] = {
+            "picks": len(entries),
+            "hit": hit,
+            "miss": settled - hit,
+            "pending": len(entries) - settled,
+            "avg_score": avg,
+            "hit_rate": hit_rate(hit, settled - hit),
+            "total": score_from_history(avg, hit, settled),
+            "formula": HISTORY_FORMULA if settled else ALL_PENDING_FORMULA,
+        }
+    return out
+
+
+def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, extra=None, names=None, select="composite", outside=None) -> dict:
+    """选前 20：select="composite" 时从全部候选里按系统综合评分取；select="scores" 时只取 scores 里的代码（外部导入）。"""
+    from backend.app.services.score_model import read_composite, read_level, with_gap
+
     items = pool["items"]
     by_code = {item["code"]: item for item in items}
+    for item in outside or []:
+        by_code.setdefault(item["code"], item)
+    codes = list(by_code) if select == "composite" else [code for code in scores if code in by_code]
     ranked = []
-    order = list(by_code) + [code for code in scores if code not in by_code]
-    for code in order:
-        got = scores.get(code)
-        if got is None:
-            continue
-        item = by_code.get(code) or {"code": code, "name": (names or {}).get(code, ""), "score": 0.0}
+    for code in codes:
+        item = by_code[code]
+        got = scores.get(code) or {}
+        formula = with_gap(item.get("formula") or {}, got.get("score"))
+        composite = read_composite(formula)
         ranked.append(
             {
                 "code": code,
                 "name": item.get("name") or (names or {}).get(code, ""),
                 "board_name": item.get("board_name") or board_name(code),
-                "ai_score": got["score"],
-                "reason": got["reason"],
+                "composite_score": composite,
+                "level": read_level(formula),
+                "contributions": formula.get("contributions") or {},
+                "risk_penalty": formula.get("risk_penalty"),
+                "formula": formula,
+                "ai_score": composite,  # 兼容旧字段：监控页显示的是系统综合评分
+                "model_score": got.get("score"),
+                "model_gap": formula.get("model_gap"),
+                "reason": got.get("reason", ""),
                 "risk": got.get("risk", ""),
-                "risk_deduct": got.get("risk_deduct", 0),
-                "sub": got.get("sub") or {},
                 "tags": got.get("tags") or [],
-                "similarity": item.get("score"),
-                "shape_score": item.get("shape_score"),
-                "volume_score": item.get("volume_score"),
-                "volume_pct_score": item.get("volume_pct_score"),
+                "similarity": item.get("max_similarity"),
+                "max_similarity": item.get("max_similarity"),
+                "avg_similarity": item.get("avg_similarity"),
+                "sample_count": item.get("sample_count"),
+                "high_similarity_count": item.get("high_similarity_count"),
+                "band": item.get("band"),
+                "is_limit_up": item.get("is_limit_up"),
+                "carry_rate": item.get("carry_rate"),
+                "group_scores": item.get("group_scores"),
                 "best_match": item.get("best_match"),
-                "close": (item.get("bars") or [{}])[-1].get("close"),
+                "top_matches": item.get("top_matches"),
+                "close": (item.get("bars") or [{}])[-1].get("close") if item.get("bars") else None,
             }
         )
-    ranked.sort(key=lambda row: (-row["ai_score"], -(row["similarity"] or 0), row["code"]))
+    ranked.sort(key=lambda row: (-(row["composite_score"] if row["composite_score"] is not None else -1), -(row["max_similarity"] or 0), row["code"]))
     ranked = ranked[:KEEP]
     for index, row in enumerate(ranked, start=1):
         row["rank"] = index
     from backend.app.services.ranking_checks import check_ranked
 
     check_ranked(session, day, ranked)
+    history = pick_history(session, day, [row["code"] for row in ranked])
+    try:
+        from backend.app.services.backtest_service import band_lifts, prediction_for
+
+        lifts, _bt = band_lifts(session)
+    except Exception as exc:  # 回测失败不影响出榜
+        logger.warning("档位倍率没算出来：%s", exc)
+        lifts = {}
+    for row in ranked:
+        row["pick_history"] = history.get(row["code"])
+        row.update(prediction_for(row, lifts))
     run_at = datetime.now(SHANGHAI).isoformat(timespec="seconds")
+    from backend.app import __version__
+    from backend.app.core.config import similarity_weights
+    from backend.app.services.score_model import FORMULA_TEXT
+
     payload = {
         "date": day.isoformat(),
         "run_at": run_at,
         "trigger": trigger,
         "model": model,
+        "app_version": __version__,
+        "formula_version": 2,
+        "formula_text": FORMULA_TEXT,
+        "similarity_weights": list(similarity_weights()),
         "candidate_count": len(items),
         "snapshot": snapshot,
         "pool_dates": pool["pool_dates"],
@@ -396,9 +506,6 @@ def previous_ranking(session, moment_day: date | None = None) -> dict | None:
 def scheduled_ranking(trigger: str = "schedule") -> dict | None:
     from backend.app.core.database import session_scope
 
-    if not ai_ready():
-        logger.info("没配 AI，跳过定时榜单")
-        return None
     from backend.app.core.calendar import is_trading_day
 
     if not is_trading_day(today()):

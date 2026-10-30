@@ -29,6 +29,9 @@ export interface Settings {
   alert_include_auction?: boolean
   ai_batch_size?: number
   ai_parallel?: number
+  euclidean_similarity_weight?: number
+  cosine_similarity_weight?: number
+  similarity_threshold_high?: number
   data_source: string
   data_source_options?: string[]
   active_source?: string
@@ -48,6 +51,19 @@ export interface SettingsUpdate {
   ai_model?: string
   data_source?: string
   ai_api_key?: string
+  euclidean_similarity_weight?: number
+  cosine_similarity_weight?: number
+  similarity_threshold_high?: number
+}
+
+/** 一只候选对样本池（已去掉它自己的全部样本）的统计 */
+export interface SimilarityStats {
+  max_similarity: number | null
+  avg_similarity: number | null
+  sample_count: number
+  high_similarity_count: number
+  band: string
+  top_sample?: string | null
 }
 
 export interface SyncTask {
@@ -136,10 +152,10 @@ export interface SimilarityMatch {
   name: string
   limit_date: string
   score: number
-  shape_score: number
-  volume_score: number
-  volume_pct_score: number
-  other_scores: Record<string, number>
+  euclidean_score?: number
+  cosine_score?: number
+  group_scores?: Record<string, number>
+  next_limit_up?: boolean | null
   window: string[]
 }
 
@@ -152,6 +168,7 @@ export interface SimilarityResponse {
   pool_dates: string[]
   pool_size: number
   disclaimer: string
+  stats?: SimilarityStats
   matches: SimilarityMatch[]
 }
 
@@ -161,14 +178,16 @@ export interface ScanBestMatch {
   limit_date: string
 }
 
-export interface ScanItem {
+export interface ScanItem extends SimilarityStats {
   code: string
   name: string
   score: number
   best_match: ScanBestMatch
-  shape_score: number
-  volume_score: number
-  volume_pct_score: number
+  is_limit_up?: boolean
+  change_percent?: number | null
+  carry_rate?: number | null
+  history_limit_up_rate?: number | null
+  group_scores?: Record<string, number>
 }
 
 export interface ScanResponse {
@@ -214,6 +233,31 @@ export interface SummaryDocument {
   headline?: string
 }
 
+export interface ScoreFormula {
+  composite_score: number
+  weighted_score?: number
+  level: string
+  contributions: Record<string, number | null>
+  risk_penalty: number
+  missing_items: string[]
+  weight_total: number
+  indicators: Record<string, number | null>
+  model_score: number | null
+  model_gap: number | null
+  has_signal: boolean
+}
+
+export interface PickHistory {
+  picks: number
+  hit: number
+  miss: number
+  pending: number
+  avg_score: number | null
+  hit_rate: number | null
+  total: number | null
+  formula: string
+}
+
 export interface AiRankingItem {
   rank: number
   code: string
@@ -222,9 +266,25 @@ export interface AiRankingItem {
   ai_score: number
   reason: string
   similarity: number | null
-  shape_score: number | null
-  volume_score: number | null
-  volume_pct_score: number | null
+  composite_score?: number | null
+  level?: string
+  contributions?: Record<string, number | null>
+  risk_penalty?: number | null
+  formula?: ScoreFormula
+  model_score?: number | null
+  model_gap?: number | null
+  max_similarity?: number | null
+  avg_similarity?: number | null
+  sample_count?: number
+  high_similarity_count?: number
+  band?: string
+  is_limit_up?: boolean
+  carry_rate?: number | null
+  prediction_score?: number | null
+  pick_history?: PickHistory | null
+  shape_score?: number | null
+  volume_score?: number | null
+  volume_pct_score?: number | null
   best_match: { code: string; name: string; limit_date: string } | null
   close: number | null
   sub?: Record<string, number | null>
@@ -245,6 +305,10 @@ export interface AiRanking {
   pool_days?: number
   batches?: { total: number; failed: number; split: number; batch_size: number }
   unscored_count?: number
+  ai_error?: string
+  formula_text?: string
+  formula_version?: number
+  app_version?: string
   imported_count?: number
   check_count?: number
   outside_candidates?: string[]
@@ -311,6 +375,10 @@ export interface MonitorEvents {
 
 export interface BandStat {
   band: string
+  sample_count?: number
+  limit_up_count?: number
+  enough?: boolean
+  band_lift?: number | null
   count: number
   limit_up: number
   limit_up_rate: number | null
@@ -330,6 +398,8 @@ export interface SimilarityBacktest {
   disclaimer: string
   days: BacktestDay[]
   bands: BandStat[]
+  baseline_rate?: number | null
+  min_band_observations?: number
 }
 
 export interface RankingBacktest {
@@ -343,6 +413,16 @@ export interface NextDayPoolItem {
   code: string
   name: string
   score: number
+  max_similarity?: number
+  avg_similarity?: number
+  sample_count?: number
+  high_similarity_count?: number
+  is_limit_up?: boolean
+  carry_rate?: number | null
+  band_range?: string
+  prediction_score?: number | null
+  terms?: { shape: number | null; carry: number | null; band: number | null }
+  band_lift?: number | null
   band: string
   band_samples: number
   band_limit_up_rate: number | null
@@ -354,6 +434,8 @@ export interface NextDayPool {
   date: string | null
   pool_dates?: string[]
   disclaimer: string
+  formula?: string
+  baseline_rate?: number | null
   bands: BandStat[]
   items: NextDayPoolItem[]
 }
