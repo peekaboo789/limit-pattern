@@ -589,6 +589,17 @@ def _run(task_id: str) -> None:
         _set(running=False, progress=0, phase="failed", message=str(exc) or "同步失败")
     finally:
         _CANCEL.clear()
+        _warm_after_change()
+
+
+def _warm_after_change() -> None:
+    import os
+
+    if os.environ.get("LP_WARM", "1") == "0":
+        return
+    from backend.app.services.backtest_service import warm_cache
+
+    warm_cache()
 
 
 def item_code(future, futures, stocks) -> str:

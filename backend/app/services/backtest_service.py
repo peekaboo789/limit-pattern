@@ -91,6 +91,46 @@ def _add(stats: dict, outcome: dict | None) -> None:
 
 BACKTEST_DAYS = 10
 _CACHE: dict = {}
+import threading as _threading
+
+# 同一时刻只算一次：预热线程和用户请求共用这把锁，后来者等前一个算完直接读缓存
+_COMPUTE_LOCK = _threading.Lock()
+WARM: dict = {"running": False, "last_seconds": None, "last_error": "", "runs": 0}
+_WARM_GUARD = _threading.Lock()
+
+
+def warm_cache(sync: bool = False):
+    """后台预热次日预测分用的档位回测（top=100）。不阻塞启动 / GUI；已在预热就不再开线程。"""
+    def run():
+        import time as _t
+
+        from backend.app.core.database import session_scope
+
+        started = _t.perf_counter()
+        try:
+            with session_scope() as session:
+                similarity_backtest(session, top=100)
+            WARM["last_error"] = ""
+        except Exception as exc:  # 预热失败不影响使用，用户点的时候再算
+            WARM["last_error"] = str(exc)
+        finally:
+            WARM.update(running=False, last_seconds=round(_t.perf_counter() - started, 2))
+            WARM["runs"] += 1
+
+    with _WARM_GUARD:
+        if WARM["running"]:
+            return None
+        WARM["running"] = True
+    if sync:
+        run()
+        return None
+    thread = _threading.Thread(target=run, name="backtest-warm", daemon=True)
+    thread.start()
+    return thread
+
+
+def warm_status() -> dict:
+    return dict(WARM)
 
 
 def similarity_backtest(session, top: int = 50) -> dict:
@@ -114,13 +154,18 @@ def similarity_backtest(session, top: int = 50) -> dict:
            sample_pool_days(), similarity_weights(), similarity_threshold_high())
     if _CACHE.get("key") == key:
         return _CACHE["value"]
-    session.info["lp_no_backfill"] = True
-    try:
-        with bulk_bars(session, days[-1]):
-            value = _similarity_backtest(session, days[-(BACKTEST_DAYS + 1):], top)
-    finally:
-        session.info.pop("lp_no_backfill", None)
-    _CACHE.update(key=key, value=value)
+    with _COMPUTE_LOCK:
+        if _CACHE.get("key") == key:  # 等到了别人（预热）算好的结果
+            return _CACHE["value"]
+        session.info["lp_no_backfill"] = True
+        try:
+            with bulk_bars(session, days[-1]):
+                value = _similarity_backtest(session, days[-(BACKTEST_DAYS + 1):], top)
+        finally:
+            session.info.pop("lp_no_backfill", None)
+        _CACHE.update(key=key, value=value)
+        _CACHE.setdefault("computes", 0)
+        _CACHE["computes"] += 1
     return value
 
 

@@ -79,6 +79,12 @@ def create_app() -> FastAPI:
             purge_provisional(session)
         start_scheduler()
         bootstrap_if_empty()
+        import os as _os
+
+        if _os.environ.get("LP_WARM", "1") != "0":
+            from backend.app.services.backtest_service import warm_cache
+
+            warm_cache()  # 后台线程，不阻塞启动
         yield
         stop_scheduler()
 

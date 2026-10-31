@@ -132,6 +132,7 @@ export const api = {
 
   startCapture: (fallback = false) =>
     request<ManualResult | CaptureStatus>('/api/snapshot/capture', { method: 'POST', body: JSON.stringify(fallback ? { fallback: true } : {}) }, 120000),
+  backtestWarm: () => request<{ running: boolean; last_seconds: number | null; last_error: string }>('/api/backtest/warm', {}, 5000),
   captureStatus: () => request<CaptureStatus>('/api/snapshot/capture/status', {}, 5000),
   cancelCapture: () => request<CaptureStatus>('/api/snapshot/capture/cancel', { method: 'POST' }),
   manualSnapshot: (date?: string) => request<ManualResult>(`/api/snapshot/manual${query({ date })}`),

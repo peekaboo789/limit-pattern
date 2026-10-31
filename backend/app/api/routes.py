@@ -125,7 +125,13 @@ def get_settings_view() -> dict:
 @router.put("/settings")
 def put_settings(body: dict) -> dict:
     try:
-        return update_settings(body or {})
+        view = update_settings(body or {})
+        if {"sample_pool_trading_days", "euclidean_similarity_weight", "cosine_similarity_weight", "similarity_threshold_high",
+            "similarity_band_floors", "retention_trading_days"} & set(body or {}):
+            from backend.app.services.sync_service import _warm_after_change
+
+            _warm_after_change()  # 设置改了缓存键就变，后台重新预热
+        return view
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -507,6 +513,13 @@ def post_snapshot_capture(body: dict | None = None) -> dict:
     if plan["mode"] == "none":
         raise HTTPException(status_code=409, detail=f"{plan['reason']}。可以改用上一交易日 {plan['fallback'].isoformat()} 的数据。")
     return manual_capture.start()
+
+
+@router.get("/backtest/warm")
+def get_backtest_warm() -> dict:
+    from backend.app.services.backtest_service import warm_status
+
+    return warm_status()
 
 
 @router.get("/snapshot/capture/status")

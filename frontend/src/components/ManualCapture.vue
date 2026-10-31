@@ -11,6 +11,7 @@ const error = ref('')
 const fallbackHint = ref('')
 const busy = ref(false)
 const note = ref('')
+const warming = ref(false)
 let timer: number | undefined
 
 function stopPoll() {
@@ -100,6 +101,7 @@ function pct(done: number, total: number) {
 }
 
 onMounted(async () => {
+  api.backtestWarm().then((w) => { warming.value = w.running }).catch(() => undefined)
   await loadLatest()
   const s = await api.captureStatus().catch(() => null)
   if (s?.running) {
@@ -116,8 +118,9 @@ onBeforeUnmount(stopPoll)
     <div class="card-head">
       <h2>手动采集当日行情</h2>
       <div class="actions">
-        <button class="primary big" :disabled="busy" @click="capture(false)">采集当前行情并选前100</button>
-        <button v-if="busy" class="ghost" @click="cancel">取消</button>
+        <button class="btn big" :disabled="busy" @click="capture(false)">采集当前行情并选前100</button>
+        <span v-if="warming" class="muted">回测预热中…</span>
+        <button v-if="busy" class="btn btn-ghost" @click="cancel">取消</button>
       </div>
     </div>
     <p class="muted">盘中点一下：从数据源（新浪优先）拉全部 A 股（不含科创板）实时快照，成交量/额/换手按已过交易时间换算成全天估算，和样本池做形态对比，取前 100。快照是临时数据，不进样本、不进回测，收盘同步后被正式日线替换。</p>
@@ -127,7 +130,7 @@ onBeforeUnmount(stopPoll)
     </div>
     <p v-if="fallbackHint" class="warn">
       {{ fallbackHint }}
-      <button class="ghost" @click="capture(true)">改用上一交易日</button>
+      <button class="btn btn-ghost" @click="capture(true)">改用上一交易日</button>
     </p>
     <p v-if="error" class="error">{{ error }}</p>
     <template v-if="result">
@@ -142,8 +145,8 @@ onBeforeUnmount(stopPoll)
         </select>
       </div>
       <div class="actions">
-        <button class="ghost" :disabled="result.kind === 'daily'" @click="exportInput">导出 AI 输入（快照）</button>
-        <button class="ghost" :disabled="result.kind === 'daily'" @click="rank">用快照生成 AI 排名</button>
+        <button class="btn btn-ghost" :disabled="result.kind === 'daily'" @click="exportInput">导出 AI 输入（快照）</button>
+        <button class="btn btn-ghost" :disabled="result.kind === 'daily'" @click="rank">用快照生成 AI 排名</button>
         <span class="muted">{{ note }}</span>
       </div>
       <div class="table-wrap" :class="{ short: props.compact }">
