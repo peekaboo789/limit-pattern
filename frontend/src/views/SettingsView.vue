@@ -3,6 +3,8 @@ import { api, ApiError } from '@/api/client'
 import type { Settings, SourceTestResult } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { sourceLabel } from '@/utils/labels'
+import AiProfiles from '@/components/AiProfiles.vue'
+import ConfigTransfer from '@/components/ConfigTransfer.vue'
 import AccountPanel from '@/components/AccountPanel.vue'
 import UpdatePanel from '@/components/UpdatePanel.vue'
 import WeComSettings from '@/components/WeComSettings.vue'
@@ -363,7 +365,9 @@ onMounted(() => {
       <p v-if="aiResult" class="hint" :style="{ color: aiResult.ok ? '#16a34a' : '#dc2626', wordBreak: 'break-all' }">{{ aiResult.text }}</p>
     </section>
   </form>
+  <AiProfiles />
   <WeComSettings />
   <UpdatePanel />
   <AccountPanel />
+  <ConfigTransfer />
 </template>

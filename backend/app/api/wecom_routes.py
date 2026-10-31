@@ -286,3 +286,95 @@ def backups_list() -> dict:
     from backend.app.services import backups
 
     return {"dir": str(backups.backups_dir()), "items": [p.name for p in reversed(backups.list_backups())], "keep": backups.KEEP}
+
+
+# ---------- v0.5.2 配置导出 / 导入 ----------
+@router.get("/config/export")
+def config_export(secrets: bool = False, watchlist: bool = False):
+    import json as _json
+
+    from fastapi.responses import Response as _Resp
+
+    from backend.app.services import config_transfer
+    from backend.app.services.export_service import content_disposition
+
+    doc = config_transfer.export(include_secrets=secrets, include_watchlist=watchlist)
+    return _Resp(_json.dumps(doc, ensure_ascii=False, indent=2), media_type="application/json; charset=utf-8",
+                 headers={"Content-Disposition": content_disposition(config_transfer.filename(secrets)), "Cache-Control": "no-store"})
+
+
+@router.post("/config/import/preview")
+def config_import_preview(body: dict) -> dict:
+    from backend.app.services import config_transfer
+
+    try:
+        return config_transfer.preview((body or {}).get("file"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/config/import")
+def config_import(body: dict) -> dict:
+    from backend.app.services import config_transfer
+
+    body = body or {}
+    try:
+        return config_transfer.apply(body.get("file"), watchlist=body.get("watchlist", True) is not False, account=body.get("account") is True)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+# ---------- v0.5.2 多个 AI 模型 ----------
+def _profiles_call(fn, *args):
+    try:
+        return fn(*args)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/ai/profiles")
+def ai_profiles_list() -> dict:
+    from backend.app.core import ai_profiles
+
+    return ai_profiles.public()
+
+
+@router.post("/ai/profiles")
+def ai_profiles_add(body: dict) -> dict:
+    from backend.app.core import ai_profiles
+
+    return _profiles_call(ai_profiles.upsert, body or {})
+
+
+@router.put("/ai/profiles/{pid}")
+def ai_profiles_edit(pid: str, body: dict) -> dict:
+    from backend.app.core import ai_profiles
+
+    return _profiles_call(ai_profiles.upsert, body or {}, pid)
+
+
+@router.delete("/ai/profiles/{pid}")
+def ai_profiles_delete(pid: str) -> dict:
+    from backend.app.core import ai_profiles
+
+    return _profiles_call(ai_profiles.delete, pid)
+
+
+@router.post("/ai/profiles/{pid}/activate")
+def ai_profiles_activate(pid: str) -> dict:
+    from backend.app.core import ai_profiles
+
+    return _profiles_call(ai_profiles.activate, pid)
+
+
+@router.post("/ai/profiles/test")
+def ai_profiles_test(body: dict | None = None) -> dict:
+    """测试某个配置（body.id，可叠加未保存的 base_url / model / api_key）；不带 id 测表单里的新配置。"""
+    from backend.app.core import ai_profiles
+    from backend.app.core.ai_client import test_ai
+
+    body = dict(body or {})
+    settings = _profiles_call(ai_profiles.settings_for, body.pop("id", None) or "", body)
+    return test_ai(settings)

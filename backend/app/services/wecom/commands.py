@@ -219,6 +219,7 @@ def status_text() -> tuple[str, str]:
         f"版本：v{__version__}",
         f"数据日期：{h.get('data_date') or '—'}（已存 {h.get('stored_days')} 个交易日）",
         f"行情源：{h.get('active_source') or h.get('data_source')}",
+        f"AI 模型：{_model_line()}",
         f"同步：{'进行中 ' + str(st.get('progress')) + '%' if st.get('running') else (st.get('message') or '空闲')}",
         f"回测缓存：{'预热中' if warm.get('running') else ('出错 ' + warm['last_error'][:60] if warm.get('last_error') else '就绪')}",
     ]
@@ -226,3 +227,13 @@ def status_text() -> tuple[str, str]:
         lines.append("下次任务：")
         lines += [f"  {t} {name}" for name, t in jobs[:5]]
     return "🖥 系统状态", "\n".join(lines)
+
+
+def _model_line() -> str:
+    from backend.app.core import ai_profiles
+
+    pub = ai_profiles.public()
+    active = next((p for p in pub["items"] if p["active"]), None)
+    if not active:
+        return "未配置"
+    return f"{active['name']}（{active['model']}）" + ("" if active["api_key_set"] else " 缺密钥") + (f"，共 {len(pub['items'])} 个可切换" if len(pub["items"]) > 1 else "")

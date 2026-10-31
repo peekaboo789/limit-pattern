@@ -117,3 +117,8 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 - 账号：`GET /api/auth/status` → `{required, logged_in, setup_needed, username, from_env, headless}`；`POST /api/auth/setup {username,password}`（仅无账号时）；`POST /api/auth/login {username,password,remember}`（5 次失败 → 429 锁 5 分钟）；`POST /api/auth/logout`、`/api/auth/logout-all`；`GET /api/auth/sessions`；`POST /api/auth/change {current_password, username?, new_password?}`。设置里的 `access_password` 已废弃（自动迁移为 admin 账号）。
 - 企业微信：设置 `wecom_msg_format`（text 默认 / textcard / markdown）、`wecom_card_url`、`wecom_menu_autosync`；`POST /api/wecom/menu` 同步底部菜单，`GET /api/wecom/menu` 预览菜单 JSON；`POST /api/wecom/test {format?}`。回调支持 `MsgType=event, Event=click, EventKey`。
 - 更新：`GET /api/update/check?force=`、`POST /api/update/download`、`GET /api/update/status`、`POST /api/update/apply`（仅 Windows 桌面版）；`GET /api/backups`；设置 `update_mirror`。
+
+## v0.5.2
+
+- 配置：`GET /api/config/export?secrets=false&watchlist=false` → JSON 附件 `{format:"limit-pattern-config", version:1, app_version, exported_at, includes_secrets, settings, watchlist?, account?}`；`POST /api/config/import/preview {file}` → `{changes:[{key,label,old,new,secret}], watchlist_count, has_account, ...}`（密钥显示为「（密钥）」）；`POST /api/config/import {file, watchlist?=true, account?=false}` → `{backup, watchlist, account, settings}`。格式版本高于本程序时 422。
+- AI 模型：`GET /api/ai/profiles` → `{items:[{id,name,base_url,model,api_key_set,temperature,max_tokens,active}], active, active_name}`；`POST /api/ai/profiles`（新增，`activate:true` 可同时设为当前）；`PUT /api/ai/profiles/{id}`（`api_key` 空 = 不变，`api_key_clear:true` 清除）；`DELETE /api/ai/profiles/{id}`；`POST /api/ai/profiles/{id}/activate`；`POST /api/ai/profiles/test {id?, base_url?, model?, api_key?}`。当前模型同时镜像到旧字段 `ai_base_url / ai_model`，旧接口照常可用。
