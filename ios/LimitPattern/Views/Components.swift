@@ -148,7 +148,7 @@ struct StockDetailView: View {
     }
 }
 
-/// 导出按钮：下载后弹系统分享面板（可存到「文件」）。
+/// 导出按钮：下载后弹预览（分享 / 存到「文件」/ 拷贝全文）。
 struct ExportMenu: View {
     let title: String
     let options: [(String, String, [String: String?], String)] // (label, path, query, fallback filename)
@@ -162,12 +162,66 @@ struct ExportMenu: View {
             }
         } label: { Label(busy ? "导出中…" : title, systemImage: "square.and.arrow.up") }
         .buttonStyle(.glass)
-        .shareSheet($share)
-        .alert("导出失败", isPresented: .constant(error != nil)) { Button("好") { error = nil } } message: { Text(error ?? "") }
+        .exportPreview($share)
+        .alert("导出失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("好") { error = nil } } message: { Text(error ?? "") }
     }
     func run(_ o: (String, String, [String: String?], String)) async {
         busy = true; defer { busy = false }
         do { share = ShareFile(url: try await APIClient.shared.download(o.1, query: o.2, fallbackName: o.3)) }
         catch { self.error = error.localizedDescription }
+    }
+}
+
+/// 导出结果：预览文本、分享（微信 / 存储到文件 / AirDrop）、拷贝全文。
+struct ExportPreviewSheet: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var copied = false
+    @State private var showActivity = false
+    var text: String? {
+        guard let d = try? Data(contentsOf: url), d.count < 5_000_000 else { return nil }
+        var s = String(data: d, encoding: .utf8)
+        if s?.hasPrefix("\u{FEFF}") == true { s?.removeFirst() }
+        return s
+    }
+    var size: String { ByteCountFormatter.string(fromByteCount: Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0), countStyle: .file) }
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                GlassCard {
+                    Label(url.lastPathComponent, systemImage: "doc.text").font(.headline).lineLimit(2)
+                    Text("\(size) · 已用当前登录下载").font(.caption).foregroundStyle(.secondary)
+                }
+                GlassEffectContainer(spacing: 10) {
+                    HStack {
+                        ShareLink(item: url) { Label("分享 / 存到文件", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }
+                            .buttonStyle(.glassProminent).tint(Theme.gold)
+                        if let t = text {
+                            Button { UIPasteboard.general.string = t; copied = true; Notifier.hapticAlert() } label: {
+                                Label(copied ? "已拷贝" : "拷贝全文", systemImage: copied ? "checkmark" : "doc.on.doc").frame(maxWidth: .infinity)
+                            }.buttonStyle(.glass)
+                        }
+                    }
+                }
+                Button("更多方式（微信、AirDrop…）", systemImage: "ellipsis.circle") { showActivity = true }.buttonStyle(.glass)
+                ScrollView {
+                    Text(text.map { String($0.prefix(20000)) } ?? "（二进制文件，无法预览）")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                }
+                .glassEffect(.regular, in: .rect(cornerRadius: 18))
+            }
+            .padding()
+            .screenBackground()
+            .navigationTitle("导出完成").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成", systemImage: "checkmark") { dismiss() } } }
+            .sheet(isPresented: $showActivity) { ActivityView(url: url).presentationDetents([.medium, .large]) }
+        }
+    }
+}
+
+extension View {
+    func exportPreview(_ item: Binding<ShareFile?>) -> some View {
+        sheet(item: item) { f in ExportPreviewSheet(url: f.url) }
     }
 }

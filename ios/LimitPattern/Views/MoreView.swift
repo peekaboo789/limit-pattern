@@ -4,9 +4,13 @@ import WebKit
 struct MoreView: View {
     @Environment(AppState.self) private var state
     @AppStorage("local_alerts") private var localAlerts = true
+    @State private var openExport = UserDefaults.standard.string(forKey: "page") == "export"
 
     var body: some View {
         List {
+            Section {
+                NavigationLink(isActive: $openExport) { ExportCenterView() } label: { Label("数据导出（TXT / MD / JSON / CSV）", systemImage: "square.and.arrow.up.on.square") }
+            }
             Section("原生页面") {
                 NavigationLink { SimilarityView() } label: { Label("个股相似度 / 前 100", systemImage: "magnifyingglass") }
                 NavigationLink { NextDayPoolView() } label: { Label("次日观察池", systemImage: "binoculars") }

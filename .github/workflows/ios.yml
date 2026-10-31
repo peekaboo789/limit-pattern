@@ -83,6 +83,11 @@ jobs:
             xcrun simctl launch --terminate-running-process "$UDID" com.peekaboo789.limitpattern -server http://127.0.0.1:8000 -tab $t; sleep 8
             xcrun simctl io "$UDID" screenshot shots/0$((t+2))-tab$t.png
           done
+          curl -s -X POST http://127.0.0.1:8000/api/watchlist -H 'Content-Type: application/json' -d '{"codes":["600132","002365","601187"]}' || true
+          xcrun simctl launch --terminate-running-process "$UDID" com.peekaboo789.limitpattern -server http://127.0.0.1:8000 -tab 4 -page export; sleep 8
+          xcrun simctl io "$UDID" screenshot shots/07-export-center.png
+          xcrun simctl launch --terminate-running-process "$UDID" com.peekaboo789.limitpattern -server http://127.0.0.1:8000 -tab 4 -page export -autoexport watchlist; sleep 10
+          xcrun simctl io "$UDID" screenshot shots/08-export-preview.png
           tail -n 20 /tmp/server.log
 
       - uses: actions/upload-artifact@v4
