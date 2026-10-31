@@ -6,7 +6,7 @@ App 只通过 Docker 版的 `/api/*` 工作；回测、聚类、涨停池、设�
 
 | 方法 | 路径 | App 的用法 |
 | --- | --- | --- |
-| GET | `/api/health` | 免登录。读 `version`；低于 0.5.1 提示升级 |
+| GET | `/api/health` | 免登录。读 `version`；低于 0.5.2 提示升级 |
 | GET | `/api/auth/status` | `{required, logged_in, setup_needed, username, from_env, headless}`。`setup_needed` 时登录页变成「创建管理员账号」 |
 | POST | `/api/auth/setup` | `{username, password}`，仅无账号时，然后接着登录 |
 | POST | `/api/auth/login` | `{username, password, remember: true}` → HttpOnly cookie `lp_session`（记住我约 10 年）。5 次失败 429 锁 5 分钟，App 显示服务器的中文 `detail` |
