@@ -57,10 +57,14 @@ jobs:
           name: LimitPattern-unsigned-ipa
           path: ios/LimitPattern-unsigned.ipa
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Simulator screenshots (real backend, empty data)
         continue-on-error: true
         run: |
-          python3 -m venv /tmp/venv && /tmp/venv/bin/pip -q install -r requirements.txt
+          python -m venv /tmp/venv && /tmp/venv/bin/pip -q install -r requirements.txt
           mkdir -p /tmp/lpdata shots
           (LP_DATA_DIR=/tmp/lpdata LP_HOST=127.0.0.1 LP_PORT=8000 /tmp/venv/bin/python -m backend.app.main > /tmp/server.log 2>&1 &)
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 2; done
