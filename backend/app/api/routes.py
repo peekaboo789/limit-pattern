@@ -412,6 +412,8 @@ def post_ai_ranking(body: dict | None = None) -> dict:
     prefer = "morning" if (body or {}).get("snapshot") == "morning" else "auto"
     with session_scope() as session:
         try:
+            if (body or {}).get("snapshot") == "manual":
+                return _ranking_from_manual(session)
             return generate_ranking(session, day, trigger="manual", prefer=prefer)
         except AiNotConfigured as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -421,6 +423,19 @@ def post_ai_ranking(body: dict | None = None) -> dict:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _ranking_from_manual(session) -> dict:
+    """用最近一次手动采集的快照当评估日出榜（AI 没配或失败时只按综合评分）。"""
+    from backend.app.services import manual_capture
+    from backend.app.services.ranking_service import _rank
+    from backend.app.services.summary_service import ai_ready
+
+    payload = manual_capture.load_snapshot()
+    if payload is None:
+        raise LookupError("还没有手动采集过，先点「采集当前行情并选前100」")
+    with manual_capture.snapshot_day(session, payload) as (day, info):
+        return _rank(session, day, None, "manual", info, ai_ready())
 
 
 @router.get("/ai-ranking")
@@ -475,6 +490,53 @@ def get_calendar(year: int | None = None) -> dict:
         }
     )
     return info
+
+
+@router.post("/snapshot/capture")
+def post_snapshot_capture(body: dict | None = None) -> dict:
+    """手动采集当前行情并选前 100（后台运行，进度看 /snapshot/capture/status）。
+    正文 {"fallback": true}：开盘前 / 休市时直接用上一交易日正式日线（同步返回结果）。"""
+    from backend.app.services import manual_capture
+
+    if (body or {}).get("fallback"):
+        try:
+            return manual_capture.fallback_result()
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    plan = manual_capture.classify(manual_capture.now())
+    if plan["mode"] == "none":
+        raise HTTPException(status_code=409, detail=f"{plan['reason']}。可以改用上一交易日 {plan['fallback'].isoformat()} 的数据。")
+    return manual_capture.start()
+
+
+@router.get("/snapshot/capture/status")
+def get_snapshot_capture_status() -> dict:
+    from backend.app.services import manual_capture
+
+    return manual_capture.status()
+
+
+@router.post("/snapshot/capture/cancel")
+def post_snapshot_capture_cancel() -> dict:
+    from backend.app.services import manual_capture
+
+    return manual_capture.cancel()
+
+
+@router.get("/snapshot/manual")
+def get_snapshot_manual(date: str | None = None) -> dict:
+    """最近一次（或某天）手动采集的结果；带 superseded 表示当天正式日线已同步。"""
+    from backend.app.services import manual_capture
+
+    day = _parse_day(date, default_latest=False) if date else None
+    payload = manual_capture.load_snapshot(day)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="还没有手动采集过")
+    from backend.app.core.database import session_scope as _scope
+
+    with _scope() as session:
+        payload["superseded"] = manual_capture._official_exists(session, __import__("datetime").date.fromisoformat(payload["date"]))
+    return manual_capture.public(payload)
 
 
 @router.get("/snapshot/status")
@@ -584,7 +646,7 @@ def post_ai_test(body: dict | None = None) -> dict:
 
 
 @router.get("/ai-input")
-def get_ai_input(date: str | None = None, top: int = Query(100, ge=1, le=200), format: str = "txt"):
+def get_ai_input(date: str | None = None, top: int = Query(100, ge=1, le=200), format: str = "txt", snapshot: str | None = None):
     """导出前 100 给外部 AI 分析：TXT 或 MD。不带日期时盘中用实时快照，否则用最新正式日线。"""
     from backend.app.services.ai_export import build_ai_input
     from backend.app.services.export_service import content_disposition, save_copy
@@ -593,7 +655,15 @@ def get_ai_input(date: str | None = None, top: int = Query(100, ge=1, le=200), f
     fmt = "md" if str(format).lower() in {"md", "markdown"} else "txt"
     with session_scope() as session:
         try:
-            if date:
+            if snapshot == "manual":
+                from backend.app.services import manual_capture
+
+                payload = manual_capture.load_snapshot()
+                if payload is None:
+                    raise HTTPException(status_code=404, detail="还没有手动采集过")
+                with manual_capture.snapshot_day(session, payload) as (as_of, info):
+                    text, filename = build_ai_input(session, as_of, info, top, fmt)
+            elif date:
                 day = _parse_day(date, default_latest=True)
                 if day not in quote_dates(session):
                     raise HTTPException(status_code=404, detail="这一天没有行情")

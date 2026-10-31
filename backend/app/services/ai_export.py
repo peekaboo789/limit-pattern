@@ -59,8 +59,12 @@ def build_ai_input(session, day: date, snapshot: dict | None = None, top: int = 
     skipped = len(pool.get("skipped") or [])
     kind = str(snapshot.get("kind") or "daily")
     bars_text = SNAPSHOT_TEXT.get(kind, kind)
+    if snapshot.get("label"):
+        bars_text = f"{snapshot['label']}（手动采集）"
     if snapshot.get("taken_at"):
         bars_text += f"，快照时间 {snapshot['taken_at']}"
+    if snapshot.get("volume_estimated"):
+        bars_text += f"，成交量/额/换手已按已过 {snapshot.get('elapsed_minutes')} 分钟（完成比例 {snapshot.get('volume_fraction')}）换算成全天估算"
     md = fmt == "md"
     h = (lambda t: f"## {t}") if md else (lambda t: f"【{t}】")
     header = [

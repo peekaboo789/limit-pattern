@@ -501,3 +501,44 @@ export interface MarketContext {
   max_height: number
   leaders: string[]
 }
+
+export interface CaptureStatus {
+  running: boolean
+  phase: string
+  done: number
+  total: number
+  message: string
+  error: string
+  result_date?: string | null
+  taken_at?: string | null
+  elapsed_seconds?: number | null
+}
+
+export interface ManualItem {
+  code: string
+  name: string
+  board_name?: string | null
+  max_similarity: number
+  avg_similarity: number
+  sample_count: number
+  is_limit_up: boolean
+  change_percent: number | null
+  composite_score: number | null
+  level?: string | null
+  prediction_score?: number | null
+  close?: number | null
+}
+
+export interface ManualResult {
+  date: string
+  kind: string
+  taken_at: string | null
+  label: string
+  elapsed_minutes: number
+  volume_fraction: number
+  volume_estimated: boolean
+  count: number
+  superseded?: boolean
+  times?: { taken_at: string; label: string; count: number }[]
+  result: { items: ManualItem[]; pool_size: number; elapsed_seconds?: number; prediction_for?: string | null }
+}

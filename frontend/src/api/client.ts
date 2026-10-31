@@ -1,5 +1,5 @@
 import { ApiError, formatDetail, request } from './http'
-import type {
+import type { CaptureStatus, ManualResult,
   SourceTestResult,
   ClusterResult,
   CalendarInfo,
@@ -109,7 +109,7 @@ export const api = {
 
   aiRankingDates: () => request<{ dates: string[] }>('/api/ai-ranking/dates'),
 
-  generateAiRanking: (options: { date?: string; snapshot?: 'morning' } = {}) =>
+  generateAiRanking: (options: { date?: string; snapshot?: 'morning' | 'manual' } = {}) =>
     request<AiRanking>('/api/ai-ranking/generate', { method: 'POST', body: JSON.stringify(options) }, 3600000),
 
   aiRankingProgress: () =>
@@ -130,12 +130,18 @@ export const api = {
 
   nextDayPool: (top = 30) => request<NextDayPool>(`/api/next-day-pool${query({ top })}`, undefined, 120000),
 
+  startCapture: (fallback = false) =>
+    request<ManualResult | CaptureStatus>('/api/snapshot/capture', { method: 'POST', body: JSON.stringify(fallback ? { fallback: true } : {}) }, 120000),
+  captureStatus: () => request<CaptureStatus>('/api/snapshot/capture/status', {}, 5000),
+  cancelCapture: () => request<CaptureStatus>('/api/snapshot/capture/cancel', { method: 'POST' }),
+  manualSnapshot: (date?: string) => request<ManualResult>(`/api/snapshot/manual${query({ date })}`),
+
   monitor: () => request<MonitorSnapshot>('/api/monitor'),
 
   monitorEvents: (since: number) => request<MonitorEvents>(`/api/monitor/events${query({ since })}`),
 
-  aiInput: async (format: 'txt' | 'md', date?: string) => {
-    const response = await fetch(`/api/ai-input${query({ format, date, top: 100 })}`)
+  aiInput: async (format: 'txt' | 'md', date?: string, snapshot?: 'manual') => {
+    const response = await fetch(`/api/ai-input${query({ format, date, top: 100, snapshot })}`)
     const text = await response.text()
     if (!response.ok) {
       let detail = text.trim() || `导出失败（${response.status}）`

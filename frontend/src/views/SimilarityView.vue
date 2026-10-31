@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ManualCapture from '@/components/ManualCapture.vue'
 import { api, ApiError, isAbort } from '@/api/client'
 import type { KBar, PoolItem, SimilarityMatch, SimilarityResponse } from '@/api/types'
 import Disclaimer from '@/components/Disclaimer.vue'
@@ -174,6 +175,8 @@ watch(
       <p class="lede">把这只股票的近期窗口，和近 30 个交易日涨停过的股票（比涨停前 3 根 K 线）逐一对比。已排除自身。</p>
     </div>
   </header>
+
+  <ManualCapture />
 
   <form class="card" @submit.prevent="search">
     <div class="toolbar">

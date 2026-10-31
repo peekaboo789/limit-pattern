@@ -82,3 +82,11 @@ AI 排名按每批 25 只、紧凑表格分批请求，单批读取超时 150 �
 设置项 `ai_thinking`: `auto`（默认，不发送 enable_thinking）/ `on` / `off`。返回 400 且提到 enable_thinking 时自动换另一个值重试一次，并按「地址|模型」记到 `ai_thinking_learned`。
 思考开启时百炼走 `stream=true`，只收 `delta.content`，跳过 `reasoning_content`；单批读取超时 300 秒。
 AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/progress`。
+
+## 手动采集（v0.4.2）
+
+- `POST /api/snapshot/capture`：开始采集（后台运行），返回进度状态。9:30 前或休市日返回 409，`detail` 说明原因与可改用的上一交易日。正文 `{"fallback": true}` 直接同步返回上一交易日正式日线的前 100。
+- `GET /api/snapshot/capture/status`：`running, phase(start/fetch/compute/done/cancelled/error), done, total, message, error, result_date, taken_at, elapsed_seconds`。
+- `POST /api/snapshot/capture/cancel`：取消。
+- `GET /api/snapshot/manual?date=`：最近（或某天）的快照结果：`date, kind(intraday/close/daily), taken_at, label, elapsed_minutes, volume_fraction, volume_estimated, count, superseded, times[], result{items[], pool_size, pool_dates, elapsed_seconds, prediction_for}`。items 字段：`code, name, board_name, max_similarity, avg_similarity, sample_count, is_limit_up, change_percent, best_match, carry_rate, composite_score, level, contributions, risk_penalty, prediction_score, close`。
+- `GET /api/ai-input?snapshot=manual`、`POST /api/ai-ranking/generate {"snapshot":"manual"}`：以快照为输入。

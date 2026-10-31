@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ManualCapture from '@/components/ManualCapture.vue'
 import { api, ApiError, isAbort } from '@/api/client'
 import AiOverviewCard from '@/components/AiOverviewCard.vue'
 import Disclaimer from '@/components/Disclaimer.vue'
@@ -124,6 +125,8 @@ watch(
       <p class="lede">近 30 个交易日（设置可改）的涨停样本，以及全市场与该样本池的形态扫描。</p>
     </div>
   </header>
+
+  <ManualCapture compact />
 
   <section class="card">
     <div class="card-head">

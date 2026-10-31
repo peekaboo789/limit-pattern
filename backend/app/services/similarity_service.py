@@ -93,7 +93,7 @@ def _samples(session, as_of: date) -> tuple[list[date], list[dict], list[dict]]:
     samples: list[dict] = []
     skipped: list[dict] = []
     for row in rows:
-        if not is_in_scope(row.stock_code) or (row.source or "") in PARTIAL_SOURCES:
+        if not is_in_scope(row.stock_code) or (row.source or "") in ("intraday", "morning_freeze", "close"):  # 临时日线（含收盘报价快照）的涨停都不进样本池
             continue  # 盘中临时线上的「涨停」还没收盘，不进样本池
         reason = ensure_prior_bars(session, row.stock_code, row.trade_date, as_of)
         window = _window(session, listing, row.stock_code, min(row.trade_date, as_of), include=False) if row.trade_date <= as_of else None
