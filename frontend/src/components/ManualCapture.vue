@@ -13,6 +13,7 @@ const busy = ref(false)
 const note = ref('')
 const warming = ref(false)
 let timer: number | undefined
+let warmTimer: number | undefined
 
 function stopPoll() {
   if (timer) window.clearInterval(timer)
@@ -101,7 +102,12 @@ function pct(done: number, total: number) {
 }
 
 onMounted(async () => {
-  api.backtestWarm().then((w) => { warming.value = w.running }).catch(() => undefined)
+  const checkWarm = () =>
+    api.backtestWarm().then((w) => {
+      warming.value = w.running
+      if (w.running) warmTimer = window.setTimeout(checkWarm, 3000)
+    }).catch(() => undefined)
+  checkWarm()
   await loadLatest()
   const s = await api.captureStatus().catch(() => null)
   if (s?.running) {
@@ -110,7 +116,10 @@ onMounted(async () => {
     timer = window.setInterval(poll, 800)
   }
 })
-onBeforeUnmount(stopPoll)
+onBeforeUnmount(() => {
+  stopPoll()
+  if (warmTimer) window.clearTimeout(warmTimer)
+})
 </script>
 
 <template>
