@@ -1,0 +1,19 @@
+services:
+  limit-pattern:
+    image: ghcr.io/peekaboo789/limit-pattern:latest
+    container_name: limit-pattern
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      TZ: Asia/Shanghai
+      # 可选：网页访问密码（也可以在 设置 → 网页访问密码 里设）。不要把真实密码提交到 git，放在同目录 .env 里：LP_PASSWORD=...
+      LP_PASSWORD: ${LP_PASSWORD:-}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

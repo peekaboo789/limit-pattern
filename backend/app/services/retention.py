@@ -1,0 +1,159 @@
+"""明细只留最近若干个交易日。每日总结不在清理范围内。"""
+
+from __future__ import annotations
+
+from backend.app.core.clock import SHANGHAI
+from backend.app.core.config import calc_history_days, min_retention_days, retention_days, stamp
+from backend.app.core.database import session_scope
+from backend.app.models.tables import (
+    CalcBar,
+    DailyFeature,
+    DailyQuote,
+    DataQualityError,
+    LimitUpPattern,
+    PatternMatch,
+    SkippedRecord,
+    TradingDay,
+)
+from datetime import datetime
+
+
+def quote_dates(session, as_of=None) -> list:
+    query = session.query(DailyQuote.trade_date).distinct()
+    if as_of is not None:
+        query = query.filter(DailyQuote.trade_date <= as_of)
+    return [row[0] for row in query.order_by(DailyQuote.trade_date)]
+
+
+def purge_excluded_boards() -> dict:
+    """删掉配置里排除的板块。默认是科创板。启动和每次清理都会走这里。"""
+    from backend.app.core.config import excluded_boards
+    from backend.app.models.tables import Stock
+    from backend.app.providers.markets import classify
+
+    excluded = excluded_boards()
+    if not excluded:
+        return {"codes": 0}
+    with session_scope() as session:
+        codes: set[str] = set()
+        for column in (
+            DailyQuote.stock_code,
+            CalcBar.stock_code,
+            DailyFeature.stock_code,
+            LimitUpPattern.stock_code,
+            SkippedRecord.stock_code,
+            DataQualityError.stock_code,
+        ):
+            codes.update(row[0] for row in session.query(column).distinct() if row[0])
+        codes.update(row[0] for row in session.query(Stock.code).all())
+        doomed = [code for code in codes if classify(code)[1] in excluded]
+        deleted = _delete_codes(session, doomed)
+    if doomed:
+        from backend.app.services.history_backfill import clear_calc_memory
+
+        clear_calc_memory()
+    return {"codes": len(doomed), "deleted": deleted}
+
+
+def _delete_codes(session, codes: list[str]) -> dict[str, int]:
+    from backend.app.models.tables import PatternMatch, Stock
+
+    deleted = {
+        "daily_quotes": 0,
+        "calc_bars": 0,
+        "daily_features": 0,
+        "limit_up_patterns": 0,
+        "pattern_matches": 0,
+        "skipped_records": 0,
+        "data_quality_errors": 0,
+        "stocks": 0,
+    }
+    for start in range(0, len(codes), 400):
+        chunk = codes[start : start + 400]
+        deleted["daily_quotes"] += session.query(DailyQuote).filter(DailyQuote.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["calc_bars"] += session.query(CalcBar).filter(CalcBar.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["daily_features"] += session.query(DailyFeature).filter(DailyFeature.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["limit_up_patterns"] += session.query(LimitUpPattern).filter(LimitUpPattern.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["pattern_matches"] += session.query(PatternMatch).filter(PatternMatch.target_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["pattern_matches"] += session.query(PatternMatch).filter(PatternMatch.sample_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["skipped_records"] += session.query(SkippedRecord).filter(SkippedRecord.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["data_quality_errors"] += session.query(DataQualityError).filter(DataQualityError.stock_code.in_(chunk)).delete(synchronize_session=False)
+        deleted["stocks"] += session.query(Stock).filter(Stock.code.in_(chunk)).delete(synchronize_session=False)
+    return deleted
+
+
+def _calc_cutoff(last, count: int):
+    """从最新交易日往回数 count 个交易日（含最新），返回最早那天。"""
+    from backend.app.core.calendar import previous_trading_day
+
+    cursor = last
+    for _ in range(count - 1):
+        cursor = previous_trading_day(cursor)
+    return cursor
+
+
+def _archive_for_calc(session, cutoff, calc_cutoff) -> int:
+    """超出明细保留、但还在计算历史内的正式日线转存到 calc_bars（position_60 要用），已有的不覆盖。"""
+    if calc_cutoff >= cutoff:
+        return 0
+    have = {(c, d) for c, d in session.query(CalcBar.stock_code, CalcBar.trade_date).filter(CalcBar.trade_date >= calc_cutoff, CalcBar.trade_date < cutoff)}
+    rows = session.query(DailyQuote).filter(DailyQuote.trade_date >= calc_cutoff, DailyQuote.trade_date < cutoff).all()
+    batch = [
+        dict(stock_code=r.stock_code, trade_date=r.trade_date, open=r.open, high=r.high, low=r.low, close=r.close,
+             pre_close=r.pre_close, volume=r.volume, amount=r.amount, turnover_rate=r.turnover_rate)
+        for r in rows
+        if (r.stock_code, r.trade_date) not in have and None not in (r.open, r.high, r.low, r.close)
+    ]
+    if batch:
+        session.bulk_insert_mappings(CalcBar, batch)
+        session.flush()
+    return len(batch)
+
+
+def purge_expired() -> dict:
+    """删掉保留窗口之前的行情和标签。总结表和 summaries/ 文件不动。"""
+    excluded = purge_excluded_boards()
+    keep = max(retention_days(), min_retention_days())  # 永远不低于历史下限
+    with session_scope() as session:
+        days = quote_dates(session)
+        calc_cutoff = _calc_cutoff(days[-1], max(keep, calc_history_days())) if days else None
+        if not days:
+            deleted = {"daily_quotes": 0, "calc_bars": 0}
+            kept = []
+            cutoff = None
+        elif len(days) <= keep:
+            # 正式行情已经不多于保留天数。更早的补拉 K 线仍然要删掉。
+            cutoff = days[0]
+            deleted = {
+                "daily_quotes": 0,
+                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < calc_cutoff).delete(synchronize_session=False),
+            }
+            kept = [day.isoformat() for day in days]
+        else:
+            cutoff = days[-keep]
+            archived = _archive_for_calc(session, cutoff, calc_cutoff)
+            deleted = {
+                "daily_quotes": session.query(DailyQuote).filter(DailyQuote.trade_date < cutoff).delete(synchronize_session=False),
+                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < calc_cutoff).delete(synchronize_session=False),
+                "archived_to_calc_bars": archived,
+                "daily_features": session.query(DailyFeature).filter(DailyFeature.trade_date < cutoff).delete(synchronize_session=False),
+                "limit_up_patterns": session.query(LimitUpPattern).filter(LimitUpPattern.limit_up_date < cutoff).delete(synchronize_session=False),
+                "pattern_matches": session.query(PatternMatch).filter(PatternMatch.target_date < cutoff).delete(synchronize_session=False),
+                "skipped_records": session.query(SkippedRecord).filter(SkippedRecord.trade_date < cutoff).delete(synchronize_session=False),
+                "data_quality_errors": session.query(DataQualityError).filter(DataQualityError.trade_date < cutoff).delete(synchronize_session=False),
+                "trading_days": session.query(TradingDay).filter(TradingDay.trade_date < cutoff).delete(synchronize_session=False),
+            }
+            kept = [day.isoformat() for day in days if day >= cutoff]
+    from backend.app.services.history_backfill import clear_calc_memory
+
+    clear_calc_memory()
+    moment = datetime.now(SHANGHAI).isoformat(timespec="seconds")
+    stamp("last_cleanup_at", moment)
+    return {
+        "retention_trading_days": keep,
+        "cutoff": None if cutoff is None else cutoff.isoformat(),
+        "kept_dates": kept,
+        "deleted": deleted,
+        "excluded_boards": excluded,
+        "last_cleanup_at": moment,
+    }
