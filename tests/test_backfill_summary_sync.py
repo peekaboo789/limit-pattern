@@ -147,6 +147,6 @@ def test_scheduler_includes_summary_after_sync(monkeypatch):
 
     start_scheduler()
     try:
-        assert set(scheduled_job_ids()) == {"daily-sync", "daily-purge", "daily-summary", "ai-ranking-1450", "ai-ranking-1510", "morning-freeze"}
+        assert set(scheduled_job_ids()) == {"daily-sync", "daily-purge", "daily-summary", "ai-ranking-1450", "ai-ranking-1510", "morning-freeze", "monitor-loop"}
     finally:
         stop_scheduler()

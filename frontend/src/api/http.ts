@@ -82,6 +82,9 @@ export async function request<T>(path: string, init?: RequestInit, timeoutMs = 2
         : typeof payload === 'string' && payload
           ? payload
           : `请求失败（${response.status}）`
+    if (response.status === 401 && payload && typeof payload === 'object' && 'login_required' in payload) {
+      window.dispatchEvent(new CustomEvent('lp-login-required'))
+    }
     throw new ApiError(response.status, detail)
   }
 

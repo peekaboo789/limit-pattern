@@ -104,3 +104,10 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 - `GET /api/watchlist/monitor`：`alerts_active, alerts_enabled, phase, status_text, price_label, items:[{code,name,price,pct,high,low,volume_ratio,is_limit_up,max_similarity,composite_score,level,raw_level,star}]`。
 - 设置新增 `watchlist_alerts`（默认 true）。
 - `POST /api/ai-ranking/import` 另返回 `external_meta {title, market_sentiment, market_risk, disclaimer}`、`name_warnings`，条目带 `priority`、`extra_scores`、`name_warning`。
+
+## 访问密码与企业微信（v0.5.0）
+
+- `GET /api/auth/status` → `{required, logged_in, headless}`；`POST /api/auth/login {password}` 设置 HttpOnly cookie `lp_session`；`POST /api/auth/logout`。启用密码后其他 `/api/*` 未登录返回 401 `{detail, login_required:true}`（`/api/health`、`/api/wecom/callback` 除外）。
+- 设置字段：`wecom_enabled, wecom_corpid, wecom_agentid, wecom_proxy, wecom_touser, wecom_toparty, wecom_totag, wecom_admins, wecom_events[]`；只写字段 `wecom_secret, wecom_token, wecom_aes_key, wecom_webhook, access_password`（空 = 不变，`<字段>_clear: true` 清除；读取只返回 `<字段>_set`）。
+- `POST /api/wecom/test {channel?: all|app|webhook}` → `{ok, errcode, message}`。
+- `GET /api/wecom/callback?msg_signature&timestamp&nonce&echostr` URL 验证；`POST` 同参数 + 加密 XML，回 `success`，指令结果用应用消息异步回给发送者。

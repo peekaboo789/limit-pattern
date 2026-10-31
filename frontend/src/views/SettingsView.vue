@@ -3,6 +3,7 @@ import { api, ApiError } from '@/api/client'
 import type { Settings, SourceTestResult } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { sourceLabel } from '@/utils/labels'
+import WeComSettings from '@/components/WeComSettings.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 const FALLBACK_SOURCES = ['auto', 'eastmoney', 'tencent', 'sina']
@@ -360,4 +361,5 @@ onMounted(() => {
       <p v-if="aiResult" class="hint" :style="{ color: aiResult.ok ? '#16a34a' : '#dc2626', wordBreak: 'break-all' }">{{ aiResult.text }}</p>
     </section>
   </form>
+  <WeComSettings />
 </template>

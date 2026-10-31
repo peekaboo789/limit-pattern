@@ -464,6 +464,12 @@ def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, 
     session.add(AiRanking(trade_date=day, run_at=run_at, trigger=trigger, payload=payload))
     session.commit()
     _write_file(session, day)
+    try:
+        from backend.app.services.wecom import notify
+
+        notify.ranking_ready(display_order(dict(payload)))
+    except Exception:  # noqa: BLE001 - 推送失败不影响榜单
+        logger.warning("企业微信榜单推送没排上", exc_info=True)
     return payload
 
 

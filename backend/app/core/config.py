@@ -131,6 +131,8 @@ def default_settings() -> dict:
         "similarity_threshold_high": 90.0,
         "alert_include_auction": False,
         "watchlist_alerts": True,
+        **WECOM_DEFAULTS,
+        "access_password": "",
         "ai_batch_size": 10,
         "ai_parallel": 3,
         "excluded_boards": ["star"],
@@ -213,6 +215,76 @@ def migrate_settings() -> bool:
 
 
 _MIGRATED: set[str] = set()
+
+
+# v0.5.0 企业微信：secret / token / aes_key / webhook 只写不读（接口里只返回是否已设置）
+WECOM_EVENTS = ("alert", "ranking", "summary", "sync_failed", "capture")
+WECOM_DEFAULTS = {
+    "wecom_enabled": False,
+    "wecom_corpid": "",
+    "wecom_agentid": "",
+    "wecom_secret": "",
+    "wecom_proxy": "https://qyapi.weixin.qq.com",
+    "wecom_touser": "@all",
+    "wecom_toparty": "",
+    "wecom_totag": "",
+    "wecom_token": "",
+    "wecom_aes_key": "",
+    "wecom_admins": "",
+    "wecom_events": ["alert", "ranking", "summary", "sync_failed"],
+    "wecom_webhook": "",
+}
+WECOM_SECRET_FIELDS = ("wecom_secret", "wecom_token", "wecom_aes_key", "wecom_webhook")
+WECOM_TEXT_FIELDS = ("wecom_corpid", "wecom_agentid", "wecom_proxy", "wecom_touser", "wecom_toparty", "wecom_totag", "wecom_admins")
+
+
+def wecom_public(raw: dict) -> dict:
+    out = {k: raw.get(k, v) for k, v in WECOM_DEFAULTS.items() if k not in WECOM_SECRET_FIELDS}
+    out["wecom_enabled"] = raw.get("wecom_enabled") is True
+    for k in WECOM_SECRET_FIELDS:
+        out[f"{k}_set"] = bool(raw.get(k))
+    out["wecom_event_options"] = list(WECOM_EVENTS)
+    return out
+
+
+def _update_wecom(current: dict, changes: dict) -> None:
+    if "wecom_enabled" in changes and changes["wecom_enabled"] is not None:
+        if not isinstance(changes["wecom_enabled"], bool):
+            raise ValueError("企业微信开关只能是 true / false")
+        current["wecom_enabled"] = changes["wecom_enabled"]
+    for k in WECOM_TEXT_FIELDS:
+        if k in changes and changes[k] is not None:
+            value = str(changes[k]).strip()[:500]
+            if k == "wecom_proxy":
+                value = (value or WECOM_DEFAULTS["wecom_proxy"]).rstrip("/")
+                if not value.startswith(("http://", "https://")):
+                    raise ValueError("代理地址要以 http:// 或 https:// 开头")
+            if k == "wecom_agentid" and value and not value.isdigit():
+                raise ValueError("AgentId 是数字")
+            current[k] = value
+    for k in WECOM_SECRET_FIELDS:
+        value = changes.get(k)
+        if value:  # 空值表示不改；清除用 {"wecom_xxx_clear": true}
+            value = str(value).strip()
+            if k == "wecom_aes_key" and len(value) != 43:
+                raise ValueError("EncodingAESKey 应为 43 位")
+            current[k] = value
+        if changes.get(f"{k}_clear") is True:
+            current[k] = ""
+    if "wecom_events" in changes and changes["wecom_events"] is not None:
+        events = changes["wecom_events"]
+        if not isinstance(events, list) or any(e not in WECOM_EVENTS for e in events):
+            raise ValueError("推送事件只能是 " + "、".join(WECOM_EVENTS))
+        current["wecom_events"] = list(dict.fromkeys(events))
+    if changes.get("access_password"):
+        pw = str(changes["access_password"])
+        if len(pw) < 4:
+            raise ValueError("访问密码至少 4 位")
+        from backend.app.core.auth import hash_password
+
+        current["access_password"] = hash_password(pw[:200])  # 只存 PBKDF2 哈希
+    if changes.get("access_password_clear") is True:
+        current["access_password"] = ""
 
 
 def read_settings_file() -> dict:
@@ -305,6 +377,10 @@ def public_settings() -> dict:
         "market_scope": _market_scope_text(),
         "last_sync_at": raw.get("last_sync_at"),
         "last_cleanup_at": raw.get("last_cleanup_at"),
+        **wecom_public(raw),
+        "access_password_set": bool(raw.get("access_password") or os.environ.get("LP_PASSWORD")),
+        "access_password_from_env": bool(os.environ.get("LP_PASSWORD")),
+        "access_password_effective": bool(os.environ.get("LP_PASSWORD")) or (bool(raw.get("access_password")) and os.environ.get("LP_HEADLESS", "0") == "1"),
     }
 
 
@@ -397,6 +473,7 @@ def _update_settings(changes: dict) -> dict:
             current[name] = value
     if changes.get("ai_api_key"):
         current["ai_api_key"] = str(changes["ai_api_key"]).strip()
+    _update_wecom(current, changes)
     if "data_source" in changes and changes["data_source"] is not None:
         from backend.app.providers.router import normalize_source
 

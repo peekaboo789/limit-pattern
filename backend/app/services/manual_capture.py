@@ -289,6 +289,9 @@ def start(moment: datetime | None = None) -> dict:
             result = capture(moment)
             _set(phase="done", message=f"完成：{result['label']}，前 {len(result['result']['items'])} 只",
                  result_date=result["date"], taken_at=result["taken_at"], elapsed_seconds=result["result"]["elapsed_seconds"])
+            from backend.app.services.wecom import notify
+
+            notify.capture_done(result)
         except InterruptedError:
             _set(phase="cancelled", message="已取消", error="")
         except Exception as exc:

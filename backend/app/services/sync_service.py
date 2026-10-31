@@ -587,6 +587,12 @@ def _run(task_id: str) -> None:
     except Exception as exc:
         _note_error(str(exc))
         _set(running=False, progress=0, phase="failed", message=str(exc) or "同步失败")
+        try:
+            from backend.app.services.wecom import notify
+
+            notify.sync_failed(str(exc) or "同步失败")
+        except Exception:  # noqa: BLE001
+            pass
     finally:
         _CANCEL.clear()
         _warm_after_change()

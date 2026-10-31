@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.app import __version__
@@ -95,7 +95,19 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    @app.middleware("http")
+    async def access_password(request: Request, call_next):
+        from backend.app.core import auth
+
+        path = request.url.path
+        if request.method != "OPTIONS" and not auth.exempt(path) and auth.required() and not auth.valid(request.cookies.get(auth.COOKIE)):
+            return JSONResponse({"detail": "需要登录", "login_required": True}, status_code=401)
+        return await call_next(request)
+
     app.include_router(router, prefix="/api")
+    from backend.app.api.wecom_routes import router as wecom_router
+
+    app.include_router(wecom_router, prefix="/api")
     _mount_static(app)
     return app
 
@@ -106,7 +118,9 @@ app = create_app()
 def main() -> None:
     import uvicorn
 
-    uvicorn.run("backend.app.main:app", host="127.0.0.1", port=8765, factory=False)
+    import os
+
+    uvicorn.run("backend.app.main:app", host=os.environ.get("LP_HOST", "127.0.0.1"), port=int(os.environ.get("LP_PORT", "8765")), factory=False)
 
 
 if __name__ == "__main__":

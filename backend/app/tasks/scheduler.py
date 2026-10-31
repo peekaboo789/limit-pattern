@@ -73,6 +73,9 @@ def start_scheduler() -> None:
     scheduler.add_job(_safe_freeze, "cron", day_of_week="mon-fri", hour=11, minute=30, second=20, id="morning-freeze")
     scheduler.add_job(_safe_ranking, "cron", day_of_week="mon-fri", hour=14, minute=50, id="ai-ranking-1450")
     scheduler.add_job(_safe_ranking, "cron", day_of_week="mon-fri", hour=15, minute=10, id="ai-ranking-1510")
+    from backend.app.services.wecom.loop import INTERVAL_SECONDS, safe_tick
+
+    scheduler.add_job(safe_tick, "interval", seconds=INTERVAL_SECONDS, id="monitor-loop", max_instances=1, coalesce=True)
     scheduler.start()
     _SCHEDULER = scheduler
     logger.info("定时任务已启动：17:10 同步并写总结，17:40 清理明细，18:10 补写缺失的总结；交易日 14:50、15:10 生成 AI 榜单")

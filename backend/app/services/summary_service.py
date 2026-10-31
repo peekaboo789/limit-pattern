@@ -278,6 +278,12 @@ def _save_summary(session, day: date, payload: dict) -> dict:
     session.commit()
     path = summaries_dir() / f"{day.isoformat()}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        from backend.app.services.wecom import notify
+
+        notify.summary_done(payload)
+    except Exception:  # noqa: BLE001
+        pass
     return payload
 
 

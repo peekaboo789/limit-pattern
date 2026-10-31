@@ -322,7 +322,11 @@ npm run build
 
 ### Docker
 
-这一版还没有镜像。请用源码或 Windows 程序。
+镜像 `ghcr.io/peekaboo789/limit-pattern`（amd64 / arm64）。`docker compose up -d` 后浏览器打开 `http://服务器:8000`，定时任务和盘中监控都在容器里跑。详见 [docs/docker.md](docs/docker.md)。
+
+### 企业微信
+
+设置 → 企业微信：自建应用推送（盘中报警、榜单、总结、同步失败、采集），并可在企业微信里发 `榜单 / 自选 / 加自选 X / 删自选 X / 采集 / 总结 / 帮助`。详见 [docs/wecom.md](docs/wecom.md)。
 
 ## 配置
 
@@ -449,3 +453,8 @@ logs/launcher.log
 - 一键导入：粘贴或选 TXT/CSV/JSON 文件（UTF-8 或 GBK），逗号 / 空格 / 换行 / Tab 分隔的代码或名称，SH600132、600132.SH、「600132 重庆啤酒」这类同花顺 / 东方财富导出行，以及外部 AI 的 JSON（items 或 stocks 列表）。先预览：匹配、多候选（选一只）、找不到、重复，再确认。也可一键加入 AI 榜单或手动采集前 100。导出 TXT / CSV（UTF-8 BOM）。
 - 实时监控：现价、涨跌幅、量比（按已过交易时间折算）、涨停标记、最高最低，以及最近 AI 榜单 / 手动快照里的相似度和综合分。一次批量请求，交易中 5 秒一轮、其他时段 60 秒，全局只有一个轮询。报警阈值与时段规则和 AI 榜单监控相同（≥3% 提醒、≥6% 红框，午休 / 收盘后 / 周末节假日不报警，只显示最后行情）；设置里「自选股报警」可关。实时监控页和总览各有一个自选股卡片。
 - 外部 AI 导入还接受 `{"title","market_sentiment","stocks":[{code,name,score,deepseek_score,priority,reason,risk}],"market_risk","disclaimer"}`：按 priority 排序（没有再按 score、给定顺序），其他 `*_score` 显示在分数下面，标题 / 市场判断 / 免责声明单独显示，name 只用来核对（不一致提醒，仍按代码）；不足 20 只也可以，监控就用这几只。
+
+## v0.5.0 Docker 网页版 + 企业微信
+
+- Docker 镜像（amd64/arm64，GHCR）、`docker-compose.yml`、可选网页访问密码（`LP_PASSWORD` 或设置里设，PBKDF2 哈希 + 会话 cookie）；容器内跑全部定时任务和每 15 秒的盘中监控循环；网页版用浏览器通知。见 docs/docker.md。
+- 企业微信自建应用：access_token 缓存与自动刷新、文本/markdown 推送、超时重试、限流、去重；errcode 中文说明（60020 可信IP / 代理）；回调 URL 验证与 AES 解密（WXBizMsgCrypt），白名单成员可发指令；可选群机器人 webhook。见 docs/wecom.md。

@@ -74,6 +74,22 @@ export function dismiss(id: number) {
   monitorState.toasts = monitorState.toasts.filter((toast) => toast.id !== id)
 }
 
+/** 网页版（Docker）：页面开着时用浏览器 Notification API；桌面版走 pywebview。 */
+export function browserNotify(title: string, body: string, tag: string) {
+  if (typeof window === 'undefined' || !('Notification' in window)) return
+  try {
+    if (Notification.permission === 'granted') new Notification(title, { body, tag })
+  } catch {
+    /* 某些浏览器只允许在 Service Worker 里弹通知，忽略 */
+  }
+}
+
+export async function askBrowserNotify(): Promise<string> {
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported'
+  if (Notification.permission === 'default') return await Notification.requestPermission()
+  return Notification.permission
+}
+
 export function show(date: string, event: MonitorEvent, titlePrefix = '') {
   const key = `${titlePrefix ? 'wl:' : ''}${date}:${event.code}:${event.level}`
   if (seen.has(key)) return
@@ -86,6 +102,7 @@ export function show(date: string, event: MonitorEvent, titlePrefix = '') {
   beep(event.level)
   const notify = window.pywebview?.api?.notify
   if (typeof notify === 'function') void Promise.resolve(notify(title, text, key)).catch(() => undefined)
+  else browserNotify(title, text, key)
   window.setTimeout(() => dismiss(event.id), event.level === 'alert' ? 20000 : 10000)
 }
 
