@@ -355,7 +355,10 @@ def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, 
     by_code = {item["code"]: item for item in items}
     for item in outside or []:
         by_code.setdefault(item["code"], item)
-    codes = list(by_code) if select == "composite" else [code for code in scores if code in by_code]
+    if select != "composite":
+        for code in scores:  # 外部导入：一个都不丢，找不到候选数据就只留代码，综合分显示 —
+            by_code.setdefault(code, {"code": code, "name": (names or {}).get(code, ""), "max_similarity": None, "formula": {}})
+    codes = list(by_code) if select == "composite" else list(scores)
     ranked = []
     for code in codes:
         item = by_code[code]
@@ -392,8 +395,23 @@ def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, 
                 "close": (item.get("bars") or [{}])[-1].get("close") if item.get("bars") else None,
             }
         )
-    ranked.sort(key=lambda row: (-(row["composite_score"] if row["composite_score"] is not None else -1), -(row["max_similarity"] or 0), row["code"]))
-    ranked = ranked[:KEEP]
+    if select == "composite":
+        ranked.sort(key=lambda row: (-(row["composite_score"] if row["composite_score"] is not None else -1), -(row["max_similarity"] or 0), row["code"]))
+        ranked = ranked[:KEEP]
+    else:
+        # 外部导入：按外部 AI 的分数排，同分保持它给的顺序；全部保留，不按系统综合分重排
+        given = {code: index for index, code in enumerate(scores)}
+        ranked.sort(key=lambda row: (-(row["model_score"] if row["model_score"] is not None else -1e9), given[row["code"]]))
+        if len(ranked) > KEEP:  # 只留外部分最高的前 20，多出来的写进 rejected 说明
+            extra = dict(extra or {})
+            extra["rejected"] = list(extra.get("rejected") or []) + [
+                {"code": row["code"], "reason": f"超过 {KEEP} 只，按外部 AI 分排在第 {i} 位，未进榜"} for i, row in enumerate(ranked[KEEP:], start=KEEP + 1)
+            ]
+            ranked = ranked[:KEEP]
+    for row in ranked:
+        row["composite_rank"] = None
+    for index, row in enumerate(sorted([r for r in ranked if r["composite_score"] is not None], key=lambda r: -r["composite_score"]), start=1):
+        row["composite_rank"] = index
     for index, row in enumerate(ranked, start=1):
         row["rank"] = index
     from backend.app.services.ranking_checks import check_ranked
@@ -435,6 +453,7 @@ def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, 
         "disclaimer": DISCLAIMER,
         "market": market,
         "dimensions": [{"key": k, "label": l, "weight": w} for k, l, w in DIMENSIONS],
+        "order": "composite" if select == "composite" else "external",
         "items": ranked,
         "check_count": sum(1 for row in ranked if row.get("checks")),
     }

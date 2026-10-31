@@ -4,7 +4,7 @@ import type { AiRankingItem, AiRanking, ExportParams } from '@/api/types'
 import Disclaimer from '@/components/Disclaimer.vue'
 import AiInputExport from '@/components/AiInputExport.vue'
 import ExportButton from '@/components/ExportButton.vue'
-import { computed, onActivated, onMounted, ref } from 'vue'
+import { computed, onActivated, onMounted, ref, watch } from 'vue'
 
 const dates = ref<string[]>([])
 const selected = ref('')
@@ -26,12 +26,14 @@ async function doImport() {
   importHint.value = ''
   try {
     const saved = await api.importAiRanking(importText.value, importDate.value.trim() || undefined)
-    ranking.value = saved
+    // 立即用后端读回的这一天最新榜单刷新（不用页面里缓存的旧榜）
     selected.value = saved.date
     await loadDates()
-    const outside = saved.outside_candidates?.length ? `，${saved.outside_candidates.length} 只不在本地前 100 候选里` : ''
-    const dropped = saved.dropped_unknown?.length ? `，丢弃本地不存在的代码 ${saved.dropped_unknown.join('、')}` : ''
-    importHint.value = `已保存 ${saved.date} 的外部 AI 榜单（${saved.items.length} 只${outside}${dropped}）`
+    ranking.value = await api.aiRanking(saved.date).catch(() => saved)
+    sortMode.value = 'external'
+    const outside = saved.outside_candidates?.length ? `；${saved.outside_candidates.join('、')} 不在前 100 候选里，已单独计算综合分` : ''
+    const rejected = saved.rejected?.length ? `；未导入 ${saved.rejected.map((r) => `${r.code}（${r.reason}）`).join('、')}` : ''
+    importHint.value = `已替换 ${saved.date} 榜单：${saved.items.length} 只，按外部 AI 排序${outside}${rejected}`
     importText.value = ''
   } catch (reason) {
     importHint.value = reason instanceof ApiError ? reason.detail : '导入失败'
@@ -52,6 +54,23 @@ const INDICATOR_LABELS: Record<string, string> = {
   history_limit_up_rate: '历史相似样本成功率',
   risk_score: '风险评分',
 }
+// 排序：外部导入默认按外部 AI 分（同分保持原顺序），系统生成默认按综合分
+const sortMode = ref<'external' | 'composite'>('composite')
+const isExternal = computed(() => ranking.value?.trigger === 'external')
+watch(
+  () => ranking.value?.run_at,
+  () => {
+    sortMode.value = isExternal.value ? 'external' : 'composite'
+  },
+  { immediate: true },
+)
+const rows = computed(() => {
+  const items = (ranking.value?.items ?? []).map((row, index) => ({ row, index }))
+  if (sortMode.value === 'external')
+    items.sort((a, b) => (b.row.model_score ?? -1e9) - (a.row.model_score ?? -1e9) || a.index - b.index)
+  else items.sort((a, b) => (b.row.composite_score ?? -1) - (a.row.composite_score ?? -1) || a.index - b.index)
+  return items.map((item, i) => ({ ...item.row, rank: i + 1 }))
+})
 function composite(row: AiRankingItem) {
   if (row.formula && !row.formula.has_signal) return '—'
   return row.composite_score == null ? '—' : row.composite_score.toFixed(2)
@@ -205,13 +224,19 @@ onActivated(async () => {
         <template v-if="ranking.trigger === 'external'"> · 外部 AI 导入</template><template v-if="ranking.model"> · {{ ranking.model }}</template>
         <template v-if="ranking.snapshot"> · 行情：{{ snapshotLabel[ranking.snapshot.kind] ?? ranking.snapshot.kind }}<template v-if="ranking.snapshot.taken_at && ranking.snapshot.kind !== 'daily'"> {{ ranking.snapshot.taken_at.slice(11, 16) }}</template><template v-if="ranking.snapshot.volume_estimated"> · 成交量按已过 {{ ranking.snapshot.elapsed_minutes }} 分钟换算成全天（估）</template></template>
       </span>
+      <label v-if="ranking?.items.length" class="muted sort-toggle">排序：
+        <select v-model="sortMode">
+          <option value="external">外部 AI</option>
+          <option value="composite">系统综合分</option>
+        </select>
+      </label>
     </div>
     <p v-if="ranking?.unscored_count" class="alert">
       有 {{ ranking.unscored_count }} 只没拿到 AI 解读（{{ ranking.batches?.failed ?? 0 }} 批失败）；排名按系统综合评分，不受影响。
       <button class="btn btn-ghost" type="button" :disabled="generating" @click="generate()">重新生成</button>
     </p>
     <p v-if="ranking?.ai_error" class="hint">{{ ranking.ai_error }}</p>
-    <p v-if="ranking?.formula_text" class="hint" style="margin: 4px 0">{{ ranking.formula_text }} 排名只看系统综合评分，AI 只给依据和对照分。</p>
+    <p v-if="ranking?.formula_text" class="hint" style="margin: 4px 0">{{ ranking.formula_text }} <template v-if="isExternal">这是外部 AI 导入的榜单：默认按外部 AI 的分数排名，系统综合分作对照；次日监控用这 {{ ranking.items.length }} 只。</template><template v-else>排名只看系统综合评分，AI 只给依据和对照分。</template></p>
     <p v-if="ranking && isOld" class="alert">
       这份榜单是用旧样本池生成的（{{ ranking.pool_dates.length }} 个交易日，{{ ranking.pool_size }} 条），当前设置是近 {{ poolDays }} 个交易日。
       <button class="btn btn-ghost" type="button" :disabled="generating" @click="generate()">用当前样本池重新生成</button>
@@ -234,7 +259,7 @@ onActivated(async () => {
         <thead>
           <tr>
             <th>排名</th><th>股票</th>
-            <th class="right" :title="ranking.formula_text || '系统综合评分'">综合评分</th>
+            <th class="right" :title="ranking.formula_text || '系统综合评分'">{{ isExternal ? '外部AI分' : '综合评分' }}</th>
             <th class="right" title="形态贡献（权重 35%，读最高相似度）">形态</th>
             <th class="right" title="技术贡献（20%）">技术</th>
             <th class="right" title="量能贡献（15%）">量能</th>
@@ -248,14 +273,18 @@ onActivated(async () => {
           </tr>
         </thead>
         <tbody>
-          <template v-for="row in ranking.items" :key="row.code">
+          <template v-for="row in rows" :key="row.code">
           <tr class="clickable" :class="{ active: expanded === row.code }" @click="toggle(row.code)">
             <td class="rank" :class="{ top: row.rank <= 3 }">{{ String(row.rank).padStart(2, '0') }}</td>
             <td class="stock">
               <div class="stock-name">{{ row.name }}<span v-if="row.checks?.length" class="check-badge" :title="checkTitle(row)">⚠ 核对</span></div>
               <div class="muted small"><span class="code">{{ row.code }}</span> · {{ row.board_name }}<template v-if="row.is_limit_up"> · 已涨停</template></div>
             </td>
-            <td class="right">
+            <td v-if="isExternal" class="right">
+              <b class="ext-score">{{ num(row.model_score) }}</b>
+              <div class="muted small">综合 {{ composite(row) }} · 差 {{ gapText(row.model_gap) }}</div>
+            </td>
+            <td v-else class="right">
               <b>{{ composite(row) }}</b>
               <div class="muted small">{{ levelText(row) }}</div>
             </td>
@@ -314,6 +343,8 @@ onActivated(async () => {
 .ai-table { table-layout: fixed; width: 100%; }
 .ai-table th, .ai-table td { padding: 8px 8px; vertical-align: top; }
 .ai-table td.rank { color: var(--muted); }
+.ext-score { color: var(--gold-2); font-size: 1.1em; }
+.sort-toggle { margin-left: auto; white-space: nowrap; }
 .ai-table td.rank.top { color: var(--gold-2); font-weight: 700; }
 .small { font-size: 12px; }
 .stock-name { white-space: normal; font-weight: 600; }

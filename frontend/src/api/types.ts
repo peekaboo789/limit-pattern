@@ -313,6 +313,8 @@ export interface AiRanking {
   check_count?: number
   outside_candidates?: string[]
   dropped_unknown?: string[]
+  rejected?: { code: string; reason: string }[]
+  order?: 'external' | 'composite'
   skipped_count?: number
   limitup_count?: number
   disclaimer: string

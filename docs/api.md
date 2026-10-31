@@ -91,3 +91,4 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 - `GET /api/snapshot/manual?date=`：最近（或某天）的快照结果：`date, kind(intraday/close/daily), taken_at, label, elapsed_minutes, volume_fraction, volume_estimated, count, superseded, times[], result{items[], pool_size, pool_dates, elapsed_seconds, prediction_for}`。items 字段：`code, name, board_name, max_similarity, avg_similarity, sample_count, is_limit_up, change_percent, best_match, carry_rate, composite_score, level, contributions, risk_penalty, prediction_score, close`。
 - `GET /api/ai-input?snapshot=manual`、`POST /api/ai-ranking/generate {"snapshot":"manual"}`：以快照为输入。
 - `GET /api/backtest/warm`（v0.4.3）：`running, last_seconds, last_error, runs`，档位回测缓存预热状态。
+- `POST /api/ai-ranking/import`（v0.4.5）：返回 `order: "external"`，`items` 按外部分排序，`rejected: [{code, reason}]` 列出未导入的条目。

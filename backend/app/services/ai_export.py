@@ -140,11 +140,18 @@ def parse_external(text: str) -> tuple[dict[str, dict], dict]:
     value = _loads_loose(text)
     raw, meta = _entries(value)
     scores: dict[str, dict] = {}
+    rejected: list[dict] = []
     for entry in raw:
         if not isinstance(entry, dict):
+            rejected.append({"code": str(entry)[:20], "reason": "不是对象"})
             continue
-        found = _CODE.search(str(entry.get("code") or entry.get("代码") or entry.get("symbol") or "").zfill(6))
-        if not found or found.group(1) in scores:
+        raw_code = str(entry.get("code") or entry.get("代码") or entry.get("symbol") or "")
+        found = _CODE.search(raw_code.zfill(6))
+        if not found:
+            rejected.append({"code": raw_code[:20], "reason": "不是 6 位股票代码"})
+            continue
+        if found.group(1) in scores:
+            rejected.append({"code": found.group(1), "reason": "重复，只保留第一次出现"})
             continue
         entry = dict(entry)
         entry.setdefault("score", entry.get("总分") or entry.get("ai_score"))
@@ -158,6 +165,11 @@ def parse_external(text: str) -> tuple[dict[str, dict], dict]:
         parsed = _parse_entry(entry)
         if parsed:
             scores[found.group(1)] = parsed
+        else:
+            rejected.append({"code": found.group(1), "reason": "缺少 score 和 reason"})
+    if not isinstance(meta, dict):
+        meta = {}
+    meta = {**meta, "_rejected": rejected}
     if not scores:
         raise AiFailed("没有解析出任何有效条目：每条需要 6 位 code，以及 score 或 reason")
     return scores, meta if isinstance(meta, dict) else {}
@@ -192,6 +204,7 @@ def import_external(session, text: str, day: date | None = None, model: str = ""
         "imported_count": len(scores),
         "outside_candidates": sorted(code for code in scores if code not in known),
         "dropped_unknown": unknown,
+        "rejected": meta.get("_rejected", []) + [{"code": code, "reason": "本地股票列表里没有这个代码（可能是科创板 / 北交所或外部 AI 编的）"} for code in unknown],
     }
     model = (model or str(meta.get("model") or "") or "外部 AI").strip()[:60]
     return _save_ranking(session, day, pool, market_context(session, day), scores, "external", {"kind": "daily", "taken_at": None, "count": 0}, model, extra, names, select="scores", outside=outside)

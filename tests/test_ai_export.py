@@ -53,9 +53,8 @@ def test_import_external_ranking_is_monitored(client, monkeypatch):
     saved = client.post("/api/ai-ranking/import", json=body).json()
     assert saved["trigger"] == "external" and saved["model"] == "外部模型"
     assert len(saved["items"]) == 20 and saved["items"][0]["rank"] == 1
-    assert {row["code"] for row in saved["items"]} <= {f"{600100 + i}" for i in range(25)}
-    composites = [row["composite_score"] or 0 for row in saved["items"]]
-    assert composites == sorted(composites, reverse=True)  # 外部挑的票按系统综合评分排
+    assert [row["code"] for row in saved["items"]] == [f"{600100 + i}" for i in range(20)]  # v0.4.5：按外部 AI 分排
+    assert {r["code"] for r in saved["rejected"]} == {"688999"} | {f"{600100 + i}" for i in range(20, 25)}
     first = saved["items"][0]
     assert first["model_score"] == 90 - (int(first["code"]) - 600100)
     assert first["model_gap"] == round(first["model_score"] - first["composite_score"], 2)
