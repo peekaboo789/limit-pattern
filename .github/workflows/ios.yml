@@ -93,6 +93,12 @@ jobs:
             xcrun simctl ui "$UDID" appearance dark || true
             xcrun simctl io "$UDID" screenshot shots/1$t-toolbar-share-tab$t.png
           done
+          curl -s -X POST http://127.0.0.1:8000/api/ai/profiles -H 'Content-Type: application/json' -d '{"name":"千问 3.8","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen3.8-2.4t-a95b","activate":true}' || true
+          curl -s -X POST http://127.0.0.1:8000/api/ai/profiles -H 'Content-Type: application/json' -d '{"name":"DeepSeek-V4 Pro","base_url":"https://api.deepseek.com/v1","model":"deepseek-v4-pro"}' || true
+          xcrun simctl launch --terminate-running-process "$UDID" com.peekaboo789.limitpattern -server http://127.0.0.1:8000 -noprompt YES -tab 4 -page models; sleep 12
+          xcrun simctl io "$UDID" screenshot shots/20-model-list.png
+          xcrun simctl launch --terminate-running-process "$UDID" com.peekaboo789.limitpattern -server http://127.0.0.1:8000 -noprompt YES -tab 1; sleep 12
+          xcrun simctl io "$UDID" screenshot shots/21-ranking-model-menu.png
           tail -n 20 /tmp/server.log
 
       - uses: actions/upload-artifact@v4

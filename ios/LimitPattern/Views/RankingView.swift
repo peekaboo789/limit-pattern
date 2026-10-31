@@ -65,6 +65,7 @@ struct RankingView: View {
         .refreshable { await load() }
         .task { await loadDates(); await load() }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { ModelMenu() }
             ToolbarItem(placement: .topBarLeading) {
                 Menu {
                     Picker("日期", selection: $date) { ForEach(dates, id: \.self) { Text($0).tag($0) } }
@@ -88,6 +89,7 @@ struct RankingView: View {
             }
         }
         .onChange(of: date) { _, _ in Task { await load() } }
+        .modelToast()
         .sheet(isPresented: $showImport) { ImportRankingSheet(defaultDate: data["date"].string ?? "") { Task { await loadDates(); await load() } } }
     }
 

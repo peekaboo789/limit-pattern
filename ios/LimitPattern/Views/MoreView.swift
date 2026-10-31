@@ -5,11 +5,15 @@ struct MoreView: View {
     @Environment(AppState.self) private var state
     @AppStorage("local_alerts") private var localAlerts = true
     @State private var openExport = UserDefaults.standard.string(forKey: "page") == "export"
+    @State private var openModels = UserDefaults.standard.string(forKey: "page") == "models"
 
     var body: some View {
         List {
             Section {
                 NavigationLink { ExportCenterView() } label: { Label("数据导出（TXT / MD / JSON / CSV）", systemImage: "square.and.arrow.up.on.square") }
+            }
+            Section {
+                NavigationLink { ModelListView() } label: { Label("AI 模型（一键切换）", systemImage: "cpu") }
             }
             Section("原生页面") {
                 NavigationLink { SimilarityView() } label: { Label("个股相似度 / 前 100", systemImage: "magnifyingglass") }
@@ -45,6 +49,7 @@ struct MoreView: View {
         .screenBackground()
         .navigationTitle("更多")
         .navigationDestination(isPresented: $openExport) { ExportCenterView() }
+        .navigationDestination(isPresented: $openModels) { ModelListView() }
     }
 
     func web(_ title: String, _ icon: String, _ path: String) -> some View {

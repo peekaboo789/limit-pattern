@@ -107,6 +107,9 @@ struct OverviewView: View {
                 Button { Task { await capture.start() } } label: {
                     Label("采集当前行情并选前100", systemImage: "bolt.horizontal.fill").frame(maxWidth: .infinity).bold()
                 }.buttonStyle(.glassProminent).tint(Theme.gold)
+                Button { Task { await captureAndAnalyze() } } label: {
+                    Label(generating ? "AI 分析中…" : "一键采集 + AI 分析", systemImage: "sparkles").frame(maxWidth: .infinity)
+                }.buttonStyle(.glass).disabled(generating)
             }
             if let h = capture.fallbackHint {
                 Text(h).font(.caption)
@@ -174,9 +177,18 @@ struct OverviewView: View {
         }
         await state.refreshHealth()
     }
+    /// 采集当前行情 → 用这份快照生成 AI 榜单。
+    func captureAndAnalyze() async {
+        genMsg = "第 1 步：采集当前行情…"
+        await capture.start()
+        if capture.fallbackHint != nil { genMsg = "现在不能采集，先选「改用上一交易日数据」再点生成 AI 榜单"; return }
+        if capture.error != nil || capture.status["phase"].string == "cancelled" { genMsg = "采集没完成，已停止"; return }
+        genMsg = "第 2 步：AI 分析…"
+        await generate()
+    }
     func generate() async {
         generating = true; defer { generating = false }
-        genMsg = "正在生成，AI 解读可能要几分钟…"
+        genMsg = "正在用 \(ModelStore.shared.activeName.isEmpty ? "当前模型" : ModelStore.shared.activeName) 生成，可能要几分钟…"
         do {
             let r = try await APIClient.shared.post("/api/ai-ranking/generate", ["snapshot": "manual"], timeout: 900)
             genMsg = "已生成 \(r["date"].text) 榜单：\(r["items"].array.count) 只" + ((r["ai_error"].string ?? "").isEmpty ? "" : "（\(r["ai_error"].text)）")
