@@ -74,7 +74,7 @@ async function syncNow() {
   await startSync()
 }
 
-const fullDays = ref(30)
+const fullDays = ref(60)
 const fullNote = ref('')
 async function syncFull() {
   const days = Number(fullDays.value)

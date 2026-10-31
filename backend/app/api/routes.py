@@ -132,12 +132,12 @@ def put_settings(body: dict) -> dict:
 
 @router.post("/sync/full")
 def post_sync_full(body: dict | None = None) -> dict:
-    """补全最近 N 个交易日（5–250，默认 30）：即使今天已有数据也重新下载，并补写缺失日期的统计版总结。
+    """补全最近 N 个交易日（5–250，默认 60）：即使今天已有数据也重新下载，并补写缺失日期的统计版总结。
     N + 8 超过当前保留天数时自动抬高保留天数并在返回里说明。"""
     from backend.app.core.config import public_settings, update_settings
     from backend.app.services.sync_service import start_sync, status as sync_status
 
-    raw = (body or {}).get("days", 30)
+    raw = (body or {}).get("days", 60)
     try:
         days = int(raw)
     except (TypeError, ValueError) as exc:

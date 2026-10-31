@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from backend.app.core.clock import SHANGHAI
-from backend.app.core.config import min_retention_days, retention_days, stamp
+from backend.app.core.config import calc_history_days, min_retention_days, retention_days, stamp
 from backend.app.core.database import session_scope
 from backend.app.models.tables import (
     CalcBar,
@@ -82,12 +82,41 @@ def _delete_codes(session, codes: list[str]) -> dict[str, int]:
     return deleted
 
 
+def _calc_cutoff(last, count: int):
+    """从最新交易日往回数 count 个交易日（含最新），返回最早那天。"""
+    from backend.app.core.calendar import previous_trading_day
+
+    cursor = last
+    for _ in range(count - 1):
+        cursor = previous_trading_day(cursor)
+    return cursor
+
+
+def _archive_for_calc(session, cutoff, calc_cutoff) -> int:
+    """超出明细保留、但还在计算历史内的正式日线转存到 calc_bars（position_60 要用），已有的不覆盖。"""
+    if calc_cutoff >= cutoff:
+        return 0
+    have = {(c, d) for c, d in session.query(CalcBar.stock_code, CalcBar.trade_date).filter(CalcBar.trade_date >= calc_cutoff, CalcBar.trade_date < cutoff)}
+    rows = session.query(DailyQuote).filter(DailyQuote.trade_date >= calc_cutoff, DailyQuote.trade_date < cutoff).all()
+    batch = [
+        dict(stock_code=r.stock_code, trade_date=r.trade_date, open=r.open, high=r.high, low=r.low, close=r.close,
+             pre_close=r.pre_close, volume=r.volume, amount=r.amount, turnover_rate=r.turnover_rate)
+        for r in rows
+        if (r.stock_code, r.trade_date) not in have and None not in (r.open, r.high, r.low, r.close)
+    ]
+    if batch:
+        session.bulk_insert_mappings(CalcBar, batch)
+        session.flush()
+    return len(batch)
+
+
 def purge_expired() -> dict:
     """删掉保留窗口之前的行情和标签。总结表和 summaries/ 文件不动。"""
     excluded = purge_excluded_boards()
     keep = max(retention_days(), min_retention_days())  # 永远不低于历史下限
     with session_scope() as session:
         days = quote_dates(session)
+        calc_cutoff = _calc_cutoff(days[-1], max(keep, calc_history_days())) if days else None
         if not days:
             deleted = {"daily_quotes": 0, "calc_bars": 0}
             kept = []
@@ -97,14 +126,16 @@ def purge_expired() -> dict:
             cutoff = days[0]
             deleted = {
                 "daily_quotes": 0,
-                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < cutoff).delete(synchronize_session=False),
+                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < calc_cutoff).delete(synchronize_session=False),
             }
             kept = [day.isoformat() for day in days]
         else:
             cutoff = days[-keep]
+            archived = _archive_for_calc(session, cutoff, calc_cutoff)
             deleted = {
                 "daily_quotes": session.query(DailyQuote).filter(DailyQuote.trade_date < cutoff).delete(synchronize_session=False),
-                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < cutoff).delete(synchronize_session=False),
+                "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < calc_cutoff).delete(synchronize_session=False),
+                "archived_to_calc_bars": archived,
                 "daily_features": session.query(DailyFeature).filter(DailyFeature.trade_date < cutoff).delete(synchronize_session=False),
                 "limit_up_patterns": session.query(LimitUpPattern).filter(LimitUpPattern.limit_up_date < cutoff).delete(synchronize_session=False),
                 "pattern_matches": session.query(PatternMatch).filter(PatternMatch.target_date < cutoff).delete(synchronize_session=False),

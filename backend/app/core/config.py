@@ -14,6 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from backend.app.core.constants import (
     COMPARE_WINDOW_TRADING_DAYS,
     DEFAULT_SAMPLE_POOL_TRADING_DAYS,
+    FEATURE_WINDOW_TRADING_DAYS,
     POOL_HISTORY_BUFFER,
     SAMPLE_POOL_MAX_TRADING_DAYS,
     SAMPLE_POOL_MIN_TRADING_DAYS,
@@ -167,7 +168,7 @@ def _load_settings_payload(path: Path):
         return None
 
 
-SETTINGS_SCHEMA = 2
+SETTINGS_SCHEMA = 3
 
 
 def migrate_settings() -> bool:
@@ -187,6 +188,16 @@ def migrate_settings() -> bool:
         if schema >= SETTINGS_SCHEMA:
             return False
         current = dict(payload)
+        if schema >= 2:
+            # 2 → 3（v0.4.1）：默认保留改为 60，低于 60 的抬到 60；样本池等其他值原样保留
+            try:
+                old_retention = int(payload.get("retention_trading_days") or 0)
+            except (TypeError, ValueError):
+                old_retention = 0
+            current["retention_trading_days"] = min(RETENTION_MAX_TRADING_DAYS, max(DETAIL_RETENTION_TRADING_DAYS, old_retention))
+            current["settings_schema"] = SETTINGS_SCHEMA
+            write_settings_file(current)
+            return True
         for old in ("compare_window_trading_days", "pool_days", "sample_pool_days"):
             current.pop(old, None)
         current["sample_pool_trading_days"] = max(DEFAULT_SAMPLE_POOL_TRADING_DAYS, _clamp_pool(payload.get("sample_pool_trading_days") or 0))
@@ -320,11 +331,16 @@ def _update_settings(changes: dict) -> dict:
     ):
         raise ValueError("对比窗口固定为 3 个交易日，不能修改")
     if "retention_trading_days" in changes and changes["retention_trading_days"] is not None:
-        days = int(changes["retention_trading_days"])
-        if days < RETENTION_MIN_TRADING_DAYS or days > RETENTION_MAX_TRADING_DAYS:
-            raise ValueError(
-                f"保留天数要在 {RETENTION_MIN_TRADING_DAYS} 到 {RETENTION_MAX_TRADING_DAYS} 之间"
-            )
+        try:
+            days = int(changes["retention_trading_days"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("保留天数要是整数") from exc
+        if days > RETENTION_MAX_TRADING_DAYS:
+            raise ValueError(f"保留天数最多 {RETENTION_MAX_TRADING_DAYS} 个交易日")
+        pool_after = _clamp_pool(changes.get("sample_pool_trading_days") or current.get("sample_pool_trading_days"))
+        need = max(pool_after, HISTORY_FLOOR_POOL) + POOL_HISTORY_BUFFER
+        if days < need:
+            raise ValueError(f"保留天数至少 max(样本池 {pool_after}, 30) + 8 = {need} 个交易日")
         current["retention_trading_days"] = days
     if "sample_pool_trading_days" in changes and changes["sample_pool_trading_days"] is not None:
         pool = int(changes["sample_pool_trading_days"])
@@ -413,6 +429,14 @@ HISTORY_FLOOR_POOL = 30
 def min_retention_days() -> int:
     """历史下限：max(样本池, 30) + 8（3 根特征 + 5 日量比基准）。清理和补全历史都不低于它。"""
     return max(sample_pool_days(), HISTORY_FLOOR_POOL) + POOL_HISTORY_BUFFER
+
+
+def calc_history_days() -> int:
+    """形态计算要用的 K 线天数：样本池最早一天的涨停样本还要往前 3 根窗口 + 60 根（position_60）。
+    只给计算用（存在 calc_bars），不影响「涨停明细保留」。"""
+    from backend.app.core.constants import POSITION_LOOKBACK_TRADING_DAYS
+
+    return max(sample_pool_days(), HISTORY_FLOOR_POOL) + FEATURE_WINDOW_TRADING_DAYS + POSITION_LOOKBACK_TRADING_DAYS
 
 
 def retention_days() -> int:

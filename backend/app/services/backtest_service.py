@@ -102,7 +102,11 @@ def similarity_backtest(session, top: int = 50) -> dict:
     days = [day for day in quote_dates(session)]
     if not days:
         return {"kind": "similarity", "top": top, "disclaimer": BACKTEST_DISCLAIMER, "baseline_rate": None, "days": [], "bands": [_finish(_empty_band(l)) for l in band_labels(band_floors_from_settings())]}
-    key = (days[-1], session.query(func.count(DailyQuote.id)).scalar(), top, band_floors_from_settings())
+    from backend.app.core.config import sample_pool_days, similarity_threshold_high, similarity_weights
+
+    # 设置一改（样本池 / 欧氏余弦权重 / 高度阈值 / 分档）缓存就失效，不用重启
+    key = (days[-1], session.query(func.count(DailyQuote.id)).scalar(), top, band_floors_from_settings(),
+           sample_pool_days(), similarity_weights(), similarity_threshold_high())
     if _CACHE.get("key") == key:
         return _CACHE["value"]
     session.info["lp_no_backfill"] = True

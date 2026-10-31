@@ -9,7 +9,7 @@ const FALLBACK_SOURCES = ['auto', 'eastmoney', 'tencent', 'sina']
 
 const meta = ref<Settings | null>(null)
 const form = reactive({
-  retention_trading_days: 5,
+  retention_trading_days: 60,
   compare_window_trading_days: 3,
   sample_pool_trading_days: 30,
   ai_base_url: '',
@@ -128,7 +128,18 @@ function validate(): string {
   const pool = Number(form.sample_pool_trading_days)
   const keep = Number(form.retention_trading_days)
   if (!Number.isInteger(pool) || pool < 3 || pool > 60) return '涨停样本池要是 3 到 60 的整数'
-  if (!Number.isInteger(keep) || keep < 3 || keep > 250) return '保留天数要是 3 到 250 的整数'
+  const floor = Math.max(pool, 30) + 8
+  if (!Number.isInteger(keep) || keep < floor || keep > 250) return `保留天数要是 ${floor} 到 250 的整数（至少 max(样本池,30)+8）`
+  const eu = Number(form.euclidean_similarity_weight)
+  if (!Number.isFinite(eu) || eu < 0 || eu > 1) return '欧氏分权重要在 0 到 1 之间'
+  const high = Number(form.similarity_threshold_high)
+  if (!Number.isFinite(high) || high < 60 || high > 100) return '高度相似阈值要在 60 到 100 之间'
+  const timeout = Number(form.ai_timeout_seconds)
+  if (!Number.isInteger(timeout) || timeout < 30 || timeout > 600) return 'AI 超时要是 30 到 600 的整数'
+  const batch = Number(form.ai_batch_size)
+  const parallel = Number(form.ai_parallel)
+  if (!Number.isInteger(batch) || batch < 1 || batch > 40) return '每批股票数要是 1 到 40 的整数'
+  if (!Number.isInteger(parallel) || parallel < 1 || parallel > 8) return '并发批数要是 1 到 8 的整数'
   return ''
 }
 
@@ -140,10 +151,6 @@ async function save() {
   }
   saved.value = false
   error.value = ''
-  if (!Number.isInteger(form.retention_trading_days) || form.retention_trading_days < 3 || form.retention_trading_days > 30) {
-    error.value = '保留天数要在 3 到 30 之间'
-    return
-  }
   if (!sourceOptions.value.includes(form.data_source)) {
     error.value = '数据源只能是 auto、eastmoney、tencent、sina'
     return
@@ -216,19 +223,19 @@ onMounted(() => {
       <label class="field">
         <span>涨停明细保留交易日</span>
         <input v-model.number="form.retention_trading_days" type="number" :min="Math.max(form.sample_pool_trading_days || 30, 30) + 8" max="250" step="1" />
-        <span class="hint">默认 40，最多 250，至少 max(样本池, 30) + 8（3 根特征 K 线 + 5 日量比基准），填少了会自动抬高。当前生效：{{ meta?.retention_trading_days ?? '-' }} 个交易日。到期明细会清理，每日总结 JSON 永久保留。</span>
+        <span class="hint">默认 60，最多 250，至少 max(样本池, 30) + 8（3 根特征 K 线 + 5 日量比基准）。形态计算另外保留 max(样本池,30)+63 天 K 线（position_60 用），不受这里影响。当前生效：{{ meta?.retention_trading_days ?? '-' }} 个交易日。到期明细会清理，每日总结 JSON 永久保留。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>涨停样本池（近 N 个交易日）</span>
         <input v-model.number="form.sample_pool_trading_days" type="number" min="3" max="60" step="1" />
         <span class="hint">默认 30，可改 3 到 60。相似度、AI 排名、聚类、次日池和回测只和这段时间里涨停过的股票比。形态特征固定看涨停前 3 根 K 线。当前生效：{{ meta?.sample_pool_trading_days ?? '-' }} 个交易日。</span>
       </label>
-      <label class="field">
+      <label class="field" style="margin-top: 12px">
         <span>相似度：欧氏分权重（余弦分 = 1 − 该值）</span>
         <input v-model.number="form.euclidean_similarity_weight" type="number" min="0" max="1" step="0.05" />
         <span class="hint">默认 0.8 / 0.2。相似度 = 欧氏分 × 该值 + 余弦分 × (1 − 该值)；欧氏分 = 100·exp(−(d/尺度)²)，尺度 = 样本池两两距离中位数。当前：{{ meta?.euclidean_similarity_weight ?? 0.8 }} / {{ meta?.cosine_similarity_weight ?? 0.2 }}</span>
       </label>
-      <label class="field">
+      <label class="field" style="margin-top: 12px">
         <span>高度相似阈值</span>
         <input v-model.number="form.similarity_threshold_high" type="number" min="60" max="100" step="1" />
         <span class="hint">默认 90。相似度 ≥ 该值的样本计入「高度相似数」，也决定历史成功率的取样。</span>

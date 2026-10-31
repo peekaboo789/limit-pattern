@@ -700,9 +700,10 @@ def _refresh_limit_counts() -> None:
 def history_start(end: date) -> date:
     """按交易日历往回数 max(保留天数, max(样本池,30)+8) 个交易日，再留 10 个自然日余量。"""
     from backend.app.core.calendar import previous_trading_day
-    from backend.app.core.config import min_retention_days
+    from backend.app.core.config import calc_history_days, min_retention_days
 
-    need = max(retention_days(), min_retention_days(), int(_FULL_DAYS.get("days") or 0) + 8)
+    # 计算用历史（position_60）也要拉够；超出明细保留的部分清理时转存到 calc_bars
+    need = max(retention_days(), min_retention_days(), calc_history_days(), int(_FULL_DAYS.get("days") or 0) + 8)
     cursor = end
     for _ in range(need):
         cursor = previous_trading_day(cursor)

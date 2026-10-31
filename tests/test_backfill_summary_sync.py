@@ -51,7 +51,12 @@ def test_missing_prior_bars_are_fetched_for_scoring_and_then_purged(client):
 
     purge_expired()
     with session_scope() as session:
-        assert session.query(CalcBar).filter(CalcBar.trade_date < official[0]).count() == 0
+        # 补拉的 K 线在计算历史（max(池,30)+63 个交易日）内保留给 position_60，更早的才删
+        from backend.app.core.config import calc_history_days
+        from backend.app.services.retention import _calc_cutoff
+
+        cut = _calc_cutoff(official[-1], max(60, calc_history_days()))
+        assert session.query(CalcBar).filter(CalcBar.trade_date < cut).count() == 0
 
 
 def test_failed_backfill_is_marked_and_not_scored(client):

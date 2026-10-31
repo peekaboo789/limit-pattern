@@ -108,7 +108,7 @@ def test_health_and_settings_round_trip(client):
     saved = client.put(
         "/api/settings",
         json={
-            "retention_trading_days": 6,
+            "retention_trading_days": 38,
             "ai_base_url": "https://example.invalid/v1",
             "ai_model": "demo-model",
             "ai_api_key": secret,
@@ -117,7 +117,7 @@ def test_health_and_settings_round_trip(client):
     )
     assert saved.status_code == 200
     view = saved.json()
-    assert view["retention_trading_days"] == 38  # 自动抬到 样本池 30 + 3 + 5
+    assert view["retention_trading_days"] == 38  # 下限 = max(样本池 30, 30) + 3 + 5
     assert view["sample_pool_trading_days"] == 30
     assert view["feature_window_trading_days"] == 3
     assert view["ai_enabled"] is True
@@ -133,7 +133,8 @@ def test_health_and_settings_round_trip(client):
     assert too_small.status_code == 422
     assert client.put("/api/settings", json={"sample_pool_trading_days": 61}).status_code == 422
     assert client.put("/api/settings", json={"sample_pool_trading_days": 2}).status_code == 422
-    small = client.put("/api/settings", json={"sample_pool_trading_days": 10, "retention_trading_days": 20}).json()
+    assert client.put("/api/settings", json={"sample_pool_trading_days": 10, "retention_trading_days": 20}).status_code == 422
+    small = client.put("/api/settings", json={"sample_pool_trading_days": 10, "retention_trading_days": 38}).json()
     assert small["sample_pool_trading_days"] == 10 and small["retention_trading_days"] == 38  # 下限 max(池,30)+8
     big = client.put("/api/settings", json={"sample_pool_trading_days": 60}).json()
     assert big["retention_trading_days"] == 68
@@ -404,7 +405,7 @@ def test_multi_day_sync_keeps_history_and_pool_lists_every_day(client):
 
     def kline_fn(code, start, end):
         rows = _series(days, limit_on=limit_days if code == "600519" else set(), start=20 if code == "600519" else 8)
-        return [row for row in rows if start <= row["trade_date"] <= end] or rows
+        return rows  # 合成数据止于 2026-06-12，不按今天推算的起点过滤
 
     set_fetcher(list_fn, kline_fn)
     assert run_sync_now()["progress"] == 100
@@ -435,14 +436,14 @@ def test_old_settings_file_is_migrated_and_full_sync_keeps_30_days(client):
     config.settings_path().write_text(json.dumps(old), encoding="utf-8")
     config._MIGRATED.clear()
     view = client.get("/api/settings").json()
-    assert view["sample_pool_trading_days"] == 30 and view["retention_trading_days"] == 40
+    assert view["sample_pool_trading_days"] == 30 and view["retention_trading_days"] == 60
     saved = json.loads(config.settings_path().read_text(encoding="utf-8"))
     assert saved["settings_schema"] == config.SETTINGS_SCHEMA and "compare_window_trading_days" not in saved
     # 迁移之后用户自己改的值要保留（仍受下限 38 约束）
-    client.put("/api/settings", json={"retention_trading_days": 60})
+    client.put("/api/settings", json={"retention_trading_days": 70})
     config._MIGRATED.clear()
-    assert client.get("/api/settings").json()["retention_trading_days"] == 60
-    client.put("/api/settings", json={"retention_trading_days": 40})
+    assert client.get("/api/settings").json()["retention_trading_days"] == 70
+    assert client.put("/api/settings", json={"retention_trading_days": 40}).status_code == 200
 
     from backend.app.services import sync_service
 
@@ -462,6 +463,7 @@ def test_old_settings_file_is_migrated_and_full_sync_keeps_30_days(client):
     health = client.get("/api/health").json()
     assert health["stored_days"] >= 38
     assert health["sample_pool_days"] == 30 and health["retention_days"] == 40
+    assert (end - start).days >= 93 * 7 // 5  # 计算用历史 30+3+60 个交易日也拉了
 
 
 def test_full_sync_days_validation_and_retention_raise(client, monkeypatch):
@@ -473,7 +475,7 @@ def test_full_sync_days_validation_and_retention_raise(client, monkeypatch):
     assert client.post("/api/sync/full", json={"days": 251}).status_code == 422
     assert client.post("/api/sync/full", json={"days": "abc"}).status_code == 422
     ok = client.post("/api/sync/full", json={"days": 30}).json()
-    assert ok["days"] == 30 and ok["note"] == "" and ok["retention_trading_days"] == 40
+    assert ok["days"] == 30 and ok["note"] == "" and ok["retention_trading_days"] == 60
     big = client.post("/api/sync/full", json={"days": 120}).json()
     assert big["retention_trading_days"] == 128 and "自动调到 128" in big["note"]
     assert calls == [30, 120]
@@ -509,7 +511,7 @@ def test_sina_bars_without_pre_close_feed_pool_scan_and_streaks(client):
     def kline_fn(code, start, end):
         n = int(code[2:])
         limits = {35, 36} if n % 10 == 0 else ({20} if n % 7 == 0 else set())
-        return [b for b in _sina_bars(days, limits, start=8 + n % 5) if start <= b["trade_date"] <= end] or _sina_bars(days, limits)
+        return _sina_bars(days, limits, start=8 + n % 5)  # 合成数据止于 2026-06-12，不按今天推算的起点过滤
 
     set_fetcher(lambda: stocks, kline_fn)
     assert run_sync_now()["progress"] == 100
@@ -539,7 +541,7 @@ def test_scan_ranking_and_pool_use_the_same_sample_pool(client):
     def kline_fn(code, start, end):
         n = int(code[2:])
         limits = {d for d in range(5, 40) if (d + n) % 9 == 0}
-        return [b for b in _sina_bars(days, limits, start=8 + n % 5) if start <= b["trade_date"] <= end] or _sina_bars(days, limits)
+        return _sina_bars(days, limits, start=8 + n % 5)  # 合成数据止于 2026-06-12，不按今天推算的起点过滤
 
     set_fetcher(lambda: stocks, kline_fn)
     assert run_sync_now()["progress"] == 100
