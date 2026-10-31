@@ -23,7 +23,7 @@ final class AppState {
     }
     /// 0.5.1 起用账号 + 密码。旧服务器只要密码。
     var needsUsername: Bool {
-        if authStatus["username_required"].bool || authStatus["has_users"].bool || !authStatus["username"].isNull { return true }
+        if authStatus["setup_needed"].bool || !(authStatus["username"].string ?? "").isEmpty { return true }
         return APIClient.compareVersion(serverVersion.isEmpty ? "0.5.1" : serverVersion, "0.5.1") >= 0
     }
 
@@ -49,7 +49,10 @@ final class AppState {
                 _ = try await api.get("/api/settings", timeout: 12)
                 api.backupCookie()
                 phase = .ready
-            } else { phase = .login }
+            } else {
+                if let u = authStatus["username"].string, !u.isEmpty, username.isEmpty { username = u }
+                phase = .login
+            }
         } catch {
             if loginError == nil { loginError = (error as? APIError)?.isAuth == true ? nil : error.localizedDescription }
             phase = .login
@@ -67,6 +70,10 @@ final class AppState {
         do {
             health = try await api.get("/api/health", timeout: 15)
             authStatus = (try? await api.get("/api/auth/status", timeout: 15)) ?? .null
+            if authStatus["setup_needed"].bool {
+                guard !username.isEmpty, !password.isEmpty else { loginError = "首次使用：请填写要创建的管理员账号和密码"; return }
+                _ = try await api.post("/api/auth/setup", ["username": username, "password": password])
+            }
             if authStatus["required"].bool && !authStatus["logged_in"].bool || !password.isEmpty {
                 try await api.login(username: username, password: password)
             }
@@ -82,6 +89,14 @@ final class AppState {
 
     func logout() async {
         _ = try? await api.post("/api/auth/logout")
+        api.clearSession()
+        phase = .login
+    }
+
+    var setupNeeded: Bool { authStatus["setup_needed"].bool }
+
+    func logoutAll() async {
+        _ = try? await api.post("/api/auth/logout-all")
         api.clearSession()
         phase = .login
     }

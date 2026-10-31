@@ -2,19 +2,17 @@
 
 App 只通过 Docker 版的 `/api/*` 工作；回测、聚类、涨停池、设置用 WKWebView 打开网页版对应路由，共用同一个 cookie。
 
-## 登录（0.5.1 设计，兼容 0.5.0）
+## 登录（服务器 0.5.1，已对照 backend/app/api/wecom_routes.py）
 
 | 方法 | 路径 | App 的用法 |
 | --- | --- | --- |
-| GET | `/api/health` | 不需登录。读 `version`、`data_date`、`stored_days`、`data_source`、`active_source`。`version` < 0.5.0 时提示升级 |
-| GET | `/api/auth/status` | `{required, logged_in, headless}`；0.5.1 预期另有 `username_required` / `has_users` / `username`（任一存在就显示账号框为必填） |
-| POST | `/api/auth/login` | 正文 `{"username", "password", "remember": true}`。0.5.0 只读 `password`，多余字段被忽略，所以同一请求两版都能用。成功后服务器下发 HttpOnly cookie `lp_session` |
-| POST | `/api/auth/logout` | 退出 |
+| GET | `/api/health` | 免登录。读 `version`；低于 0.5.1 提示升级 |
+| GET | `/api/auth/status` | `{required, logged_in, setup_needed, username, from_env, headless}`。`setup_needed` 时登录页变成「创建管理员账号」 |
+| POST | `/api/auth/setup` | `{username, password}`，仅无账号时，然后接着登录 |
+| POST | `/api/auth/login` | `{username, password, remember: true}` → HttpOnly cookie `lp_session`（记住我约 10 年）。5 次失败 429 锁 5 分钟，App 显示服务器的中文 `detail` |
+| POST | `/api/auth/logout`、`/api/auth/logout-all` | 退出 / 退出所有设备 |
 
-约定（0.5.1 需要满足）：
-- 会话 cookie 名仍是 `lp_session`，带 `Max-Age`（长期有效）；改密码或「退出所有设备」后旧 cookie 失效，任意 `/api/*` 返回 **401**，App 收到 401 就回到登录页。
-- 登录失败返回 401/403/429，`detail` 为中文原因（例如锁定 5 分钟），App 原样显示。
-- `/api/health` 继续免登录。
+改密码或改账号名后旧 cookie 失效，任意 `/api/*` 返回 401，App 回到登录页。修改账号密码（`/api/auth/change`）在内嵌的设置网页里做。0.5.0 服务器只读 `password`，多余字段被忽略，仍能登录（App 会提示升级）。
 
 App 把 cookie 存在系统 `HTTPCookieStorage`，并把值备份到钥匙串；系统清掉 cookie 时用备份补回，服务器仍按签名判断是否有效。
 

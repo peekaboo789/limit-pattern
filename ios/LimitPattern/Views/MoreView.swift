@@ -28,9 +28,12 @@ struct MoreView: View {
                 LabeledContent("地址", value: state.serverText)
                 LabeledContent("服务器版本", value: state.serverVersion.isEmpty ? "—" : state.serverVersion)
                 LabeledContent("App 需要", value: "≥ \(APIClient.minServerVersion)")
+                LabeledContent("账号", value: state.authStatus["username"].string ?? "—")
                 LabeledContent("App 版本", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
                 if let w = state.versionWarning { Text(w).font(.caption).foregroundStyle(.orange) }
                 Button("退出登录", role: .destructive) { Task { await state.logout() } }
+                Button("退出所有设备", role: .destructive) { Task { await state.logoutAll() } }
+                Text("修改账号或密码在「设置」网页里，改完所有设备都要重新登录。").font(.caption).foregroundStyle(.secondary)
             }
             Section { Disclaimer().listRowBackground(Color.clear) }
         }

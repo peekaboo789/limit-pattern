@@ -11,7 +11,7 @@ struct APIError: LocalizedError {
 /// 同时把 cookie 值备份到钥匙串，系统清掉 cookie 时自动补回。
 final class APIClient: @unchecked Sendable {
     static let cookieName = "lp_session"
-    static let minServerVersion = "0.5.0"
+    static let minServerVersion = "0.5.1"
     static let shared = APIClient()
 
     var baseURL: URL?
@@ -152,7 +152,7 @@ final class APIClient: @unchecked Sendable {
     }
 
     // MARK: auth
-    /// 0.5.1：{username, password}；0.5.0 只认 password，多传 username 不影响。
+    /// 0.5.1：{username, password, remember}（记住我 = 长期 cookie）；0.5.0 只认 password，多传字段不影响。
     func login(username: String, password: String) async throws {
         var body: [String: Any] = ["password": password, "remember": true]
         if !username.isEmpty { body["username"] = username }

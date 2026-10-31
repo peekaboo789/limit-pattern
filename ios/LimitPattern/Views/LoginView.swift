@@ -13,7 +13,7 @@ struct LoginView: View {
                     .padding(26).glassEffect(.regular.tint(Theme.gold.opacity(0.2)), in: .circle)
                     .padding(.top, 50)
                 Text("涨停形态").font(.largeTitle.bold())
-                Text("连接你的 Docker 版服务器").foregroundStyle(.secondary)
+                Text(state.setupNeeded ? "首次使用：创建管理员账号" : "连接你的 Docker 版服务器").foregroundStyle(state.setupNeeded ? Theme.gold : .secondary)
 
                 GlassEffectContainer(spacing: 14) {
                     VStack(spacing: 12) {
@@ -36,7 +36,7 @@ struct LoginView: View {
                     focus = nil
                     Task { await state.connect(password: password); if state.phase == .ready { password = "" } }
                 } label: {
-                    HStack { if state.busy { ProgressView() }; Text(state.busy ? "连接中…" : "登录").bold() }.frame(maxWidth: .infinity).padding(.vertical, 6)
+                    HStack { if state.busy { ProgressView() }; Text(state.busy ? "连接中…" : (state.setupNeeded ? "创建账号并登录" : "登录")).bold() }.frame(maxWidth: .infinity).padding(.vertical, 6)
                 }
                 .buttonStyle(.glassProminent).tint(Theme.gold).disabled(state.busy)
 
