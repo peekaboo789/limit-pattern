@@ -407,3 +407,13 @@ def test_open_folder_runs_in_background(monkeypatch, tmp_path):
     assert launcher.ExportApi().open_folder(str(target)) is True
     assert done.wait(5) and calls
     assert launcher.ExportApi().open_folder(str(tmp_path / "missing" / "a.txt")) is False
+
+
+def test_save_text_as_bom_except_json(tmp_path):
+    from desktop import launcher
+
+    for name, bom in (("每日总结_2026-10-01_2026-10-30.txt", True), ("a.csv", True), ("a.json", False)):
+        path = launcher.save_text_as(name, "\ufeff中文", lambda d, n: str(tmp_path / n))
+        raw = open(path, "rb").read()
+        assert raw.startswith(b"\xef\xbb\xbf") is bom and raw.count(b"\xef\xbb\xbf") <= 1
+    assert launcher._file_types("x.csv")[0].startswith("CSV")

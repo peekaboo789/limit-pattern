@@ -141,6 +141,34 @@ export const api = {
 
   monitorEvents: (since: number) => request<MonitorEvents>(`/api/monitor/events${query({ since })}`),
 
+  summaryRange: () => request<{ earliest: string | null }>('/api/daily-summary/range'),
+
+  summaryExport: async (start: string, end: string, format: 'txt' | 'md' | 'json' | 'csv') => {
+    const response = await fetch(`/api/daily-summary/export${query({ start, end, format })}`)
+    const text = await response.text()
+    if (!response.ok) {
+      let detail = text.trim() || `导出失败（${response.status}）`
+      try {
+        const parsed = JSON.parse(text) as { detail?: unknown }
+        if (parsed && typeof parsed === 'object' && 'detail' in parsed) detail = formatDetail(parsed.detail)
+      } catch {
+        // 纯文本错误
+      }
+      throw new ApiError(response.status, detail)
+    }
+    const filename = filenameFromDisposition(response.headers.get('Content-Disposition')) ?? `每日总结_${start}_${end}.${format}`
+    const body = text.replace(/^\ufeff/, '')
+    // 浏览器下载：TXT / CSV 带 BOM，记事本和 Excel 直接认中文
+    const withBom = format === 'txt' || format === 'csv' ? '\ufeff' + body : body
+    return {
+      filename,
+      text: body,
+      blob: new Blob([withBom], { type: 'text/plain;charset=utf-8' }),
+      count: Number(response.headers.get('X-Summary-Count') ?? 0),
+      missing: Number(response.headers.get('X-Summary-Missing') ?? 0),
+    }
+  },
+
   aiInput: async (format: 'txt' | 'md', date?: string, snapshot?: 'manual') => {
     const response = await fetch(`/api/ai-input${query({ format, date, top: 100, snapshot })}`)
     const text = await response.text()

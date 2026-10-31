@@ -92,3 +92,4 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 - `GET /api/ai-input?snapshot=manual`、`POST /api/ai-ranking/generate {"snapshot":"manual"}`：以快照为输入。
 - `GET /api/backtest/warm`（v0.4.3）：`running, last_seconds, last_error, runs`，档位回测缓存预热状态。
 - `POST /api/ai-ranking/import`（v0.4.5）：返回 `order: "external"`，`items` 按外部分排序，`rejected: [{code, reason}]` 列出未导入的条目。
+- `GET /api/daily-summary/export?start=&end=&format=txt|md|json|csv`（v0.4.7）：区间导出每日总结；不给 start 用最早一份，不给 end 用今天；start > end、超过 5 年、格式不对返回 422；一份都没有返回 404。响应头 `X-Summary-Count`、`X-Summary-Missing`。`GET /api/daily-summary/range` 返回 `{earliest}`。

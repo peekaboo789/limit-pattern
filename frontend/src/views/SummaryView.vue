@@ -3,6 +3,7 @@ import { api, ApiError, isAbort } from '@/api/client'
 import type { SummaryListItem } from '@/api/types'
 import ExportButton from '@/components/ExportButton.vue'
 import SectorChart from '@/components/SectorChart.vue'
+import SummaryRangeExport from '@/components/SummaryRangeExport.vue'
 import type { ExportParams } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { normalizeSummary, type NormalizedSummary } from '@/utils/summary'
@@ -94,6 +95,8 @@ onMounted(() => {
       <p class="lede">把当天涨停结构整理成板块、连板梯队和要点。这是复盘，不是交易建议。</p>
     </div>
   </header>
+
+  <SummaryRangeExport :dates="list.map((item) => item.date)" />
 
   <p v-if="error" class="alert">{{ error }}</p>
   <div v-if="loadingList && !list.length" class="skeleton" />

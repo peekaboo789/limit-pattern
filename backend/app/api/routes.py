@@ -389,6 +389,47 @@ def summaries() -> dict:
         return list_summaries(session)
 
 
+@router.get("/daily-summary/export")
+def daily_summary_export(start: str | None = None, end: str | None = None, format: str = "txt") -> Response:
+    """区间导出每日总结：format = txt（默认）/ md / json / csv。"""
+    from datetime import date as _date
+
+    from backend.app.services import summary_export
+
+    fmt = (format or "txt").lower()
+    if fmt not in summary_export.FORMATS:
+        raise HTTPException(status_code=422, detail="格式只能是 txt、md、json、csv")
+    try:
+        s = _date.fromisoformat(start) if start else None
+        e = _date.fromisoformat(end) if end else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="日期格式应为 YYYY-MM-DD") from exc
+    with session_scope() as session:
+        if s is None:
+            s = summary_export.earliest(session)
+        if e is None:
+            e = __import__("backend.app.core.clock", fromlist=["now"]).now().date()
+        if s is None:
+            raise HTTPException(status_code=404, detail="还没有任何每日总结")
+        try:
+            data = summary_export.collect(session, s, e)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    body, media, name = summary_export.render(data, fmt)
+    headers = {"Content-Disposition": content_disposition(name), "X-Summary-Count": str(len(data["summaries"])),
+               "X-Summary-Missing": str(len(data["missing"]))}
+    return Response(content=body.encode("utf-8"), media_type=media, headers=headers)
+
+
+@router.get("/daily-summary/range")
+def daily_summary_range() -> dict:
+    from backend.app.services import summary_export
+
+    with session_scope() as session:
+        first = summary_export.earliest(session)
+    return {"earliest": first.isoformat() if first else None}
+
+
 @router.get("/summaries/{day}")
 def summary_detail(day: str) -> dict:
     parsed = _parse_day(day, default_latest=False)

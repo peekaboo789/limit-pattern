@@ -287,4 +287,8 @@ def save_copy(filename: str, content: bytes) -> None:
 
 def content_disposition(filename: str) -> str:
     encoded = quote(filename, safe="")
-    return f"attachment; filename=\"{filename}\"; filename*=UTF-8''{encoded}"
+    # filename= 只能放 ASCII（HTTP 头是 latin-1），中文名放在 filename* 里
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii").strip("_") or "export"
+    if ascii_name.startswith("."):
+        ascii_name = "export" + ascii_name
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"

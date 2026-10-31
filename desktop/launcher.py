@@ -738,6 +738,12 @@ def default_save_directory(home: Path | None = None) -> Path:
     return root
 
 
+def _file_types(name: str) -> tuple[str, ...]:
+    suffix = Path(name).suffix.lower()
+    label = {".md": "Markdown (*.md)", ".json": "JSON (*.json)", ".csv": "CSV 表格 (*.csv)"}.get(suffix, "文本文件 (*.txt)")
+    return (label, "所有文件 (*.*)")
+
+
 def save_text_as(filename: str, text: str, ask_path) -> str | None:
     """弹出另存为并写入 UTF-8 BOM。取消时返回 None，成功返回保存路径。"""
     name = sanitize_export_filename(filename)
@@ -750,7 +756,10 @@ def save_text_as(filename: str, text: str, ask_path) -> str | None:
     if path.suffix == "":
         path = path.with_suffix(".txt")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("" if text is None else str(text), encoding="utf-8-sig", newline="\n")
+    # JSON 不加 BOM（很多解析器不认）；TXT / CSV / MD 加 BOM，记事本和 Excel 直接显示中文
+    encoding = "utf-8" if path.suffix.lower() == ".json" else "utf-8-sig"
+    body = "" if text is None else str(text).lstrip("\ufeff")
+    path.write_text(body, encoding=encoding, newline="\n")
     logger.info("已导出 %s", path)
     return str(path)
 
@@ -997,7 +1006,7 @@ class ExportApi:
                 webview.FileDialog.SAVE,
                 directory=str(directory),
                 save_filename=name,
-                file_types=(("Markdown (*.md)", "所有文件 (*.*)") if name.lower().endswith(".md") else ("文本文件 (*.txt)", "所有文件 (*.*)")),
+                file_types=_file_types(name),
             )
             if not selected:
                 return None
