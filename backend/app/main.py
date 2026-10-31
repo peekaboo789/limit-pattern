@@ -74,7 +74,10 @@ def create_app() -> FastAPI:
         started = backups.on_start()
         from backend.app.core import auth as _auth
 
-        _auth.migrate()  # 0.5.0 只有密码 → admin 账号  # 新版本第一次启动：先备份设置和数据库（保留 3 份），再迁移
+        _auth.migrate()  # 0.5.0 只有密码 → admin 账号
+        from backend.app.core import ai_profiles as _aip
+
+        _aip.public()  # 0.5.2：旧的单个 AI 配置迁移为第一个模型配置  # 新版本第一次启动：先备份设置和数据库（保留 3 份），再迁移
         if started["changed"]:
             from backend.app.services.wecom.menu import autosync_in_background
 

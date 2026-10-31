@@ -224,11 +224,12 @@ def chat(
     for _attempt in range(3):
         body: dict = {
             "model": model,
-            "temperature": 0.2,
+            "temperature": _temperature(settings),
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         }
-        if max_tokens:
-            body["max_tokens"] = max_tokens
+        cap = max_tokens or _int_or_none(settings.get("ai_max_tokens"))
+        if cap:
+            body["max_tokens"] = cap
         if thinking is not None:
             body["enable_thinking"] = thinking
         if stream:
@@ -300,6 +301,21 @@ def chat(
         except Exception as exc:
             raise AiFailed(f"AI 接口返回的内容看不懂：{scrub(text or '', key)[:300]}") from exc
     raise AiFailed(f"AI 接口参数反复不兼容（调用地址 {endpoint}）")
+
+
+def _temperature(settings: dict) -> float:
+    try:
+        value = settings.get("ai_temperature")
+        return 0.2 if value in (None, "") else max(0.0, min(2.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.2
+
+
+def _int_or_none(value):
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def test_ai(settings: dict) -> dict:

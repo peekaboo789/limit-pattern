@@ -133,6 +133,10 @@ def default_settings() -> dict:
         "watchlist_alerts": True,
         **WECOM_DEFAULTS,
         "access_password": "",
+        "ai_profiles": [],
+        "ai_active_profile": None,
+        "ai_temperature": None,
+        "ai_max_tokens": None,
         "ai_batch_size": 10,
         "ai_parallel": 3,
         "excluded_boards": ["star"],
@@ -482,6 +486,10 @@ def _update_settings(changes: dict) -> dict:
             current[name] = value
     if changes.get("ai_api_key"):
         current["ai_api_key"] = str(changes["ai_api_key"]).strip()
+    if any(k in changes for k in ("ai_base_url", "ai_model", "ai_api_key")):
+        from backend.app.core.ai_profiles import sync_from_flat
+
+        sync_from_flat(current)
     _update_wecom(current, changes)
     if "data_source" in changes and changes["data_source"] is not None:
         from backend.app.providers.router import normalize_source

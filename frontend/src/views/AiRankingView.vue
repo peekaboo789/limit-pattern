@@ -4,6 +4,7 @@ import type { AiRankingItem, AiRanking, ExportParams } from '@/api/types'
 import Disclaimer from '@/components/Disclaimer.vue'
 import AiInputExport from '@/components/AiInputExport.vue'
 import ExportButton from '@/components/ExportButton.vue'
+import ModelSwitcher from '@/components/ModelSwitcher.vue'
 import { computed, onActivated, onMounted, ref, watch } from 'vue'
 
 const dates = ref<string[]>([])
@@ -203,6 +204,7 @@ onActivated(async () => {
       <p class="lede">从当前最相似的前 100 只里，由 AI 按形态和量能打分，留前 20 名。交易日 14:50、15:10 自动生成。</p>
     </div>
     <div class="toolbar">
+      <ModelSwitcher />
       <select v-if="dates.length" v-model="selected" @change="open(selected)">
         <option v-for="day in dates" :key="day" :value="day">{{ day }}</option>
       </select>
