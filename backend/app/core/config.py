@@ -233,9 +233,16 @@ WECOM_DEFAULTS = {
     "wecom_admins": "",
     "wecom_events": ["alert", "ranking", "summary", "sync_failed"],
     "wecom_webhook": "",
+    # v0.5.1：个人微信（微信插件）只显示 text / textcard / news，markdown 会显示「暂不支持此消息类型」
+    "wecom_msg_format": "text",
+    "wecom_card_url": "",
+    "wecom_menu_autosync": True,
+    "update_mirror": "",
 }
+WECOM_FORMATS = ("text", "textcard", "markdown")
 WECOM_SECRET_FIELDS = ("wecom_secret", "wecom_token", "wecom_aes_key", "wecom_webhook")
-WECOM_TEXT_FIELDS = ("wecom_corpid", "wecom_agentid", "wecom_proxy", "wecom_touser", "wecom_toparty", "wecom_totag", "wecom_admins")
+WECOM_TEXT_FIELDS = ("wecom_corpid", "wecom_agentid", "wecom_proxy", "wecom_touser", "wecom_toparty", "wecom_totag", "wecom_admins",
+                     "wecom_card_url", "update_mirror")
 
 
 def wecom_public(raw: dict) -> dict:
@@ -244,6 +251,9 @@ def wecom_public(raw: dict) -> dict:
     for k in WECOM_SECRET_FIELDS:
         out[f"{k}_set"] = bool(raw.get(k))
     out["wecom_event_options"] = list(WECOM_EVENTS)
+    out["wecom_menu_autosync"] = raw.get("wecom_menu_autosync") is not False
+    if out.get("wecom_msg_format") not in WECOM_FORMATS:
+        out["wecom_msg_format"] = "text"
     return out
 
 
@@ -259,6 +269,8 @@ def _update_wecom(current: dict, changes: dict) -> None:
                 value = (value or WECOM_DEFAULTS["wecom_proxy"]).rstrip("/")
                 if not value.startswith(("http://", "https://")):
                     raise ValueError("代理地址要以 http:// 或 https:// 开头")
+            if k in ("wecom_card_url", "update_mirror") and value and not value.startswith(("http://", "https://")):
+                raise ValueError("地址要以 http:// 或 https:// 开头")
             if k == "wecom_agentid" and value and not value.isdigit():
                 raise ValueError("AgentId 是数字")
             current[k] = value
@@ -271,20 +283,19 @@ def _update_wecom(current: dict, changes: dict) -> None:
             current[k] = value
         if changes.get(f"{k}_clear") is True:
             current[k] = ""
+    if changes.get("wecom_msg_format") is not None:
+        if changes["wecom_msg_format"] not in WECOM_FORMATS:
+            raise ValueError("消息格式只能是 文本 / 卡片 / Markdown")
+        current["wecom_msg_format"] = changes["wecom_msg_format"]
+    if "wecom_menu_autosync" in changes and isinstance(changes["wecom_menu_autosync"], bool):
+        current["wecom_menu_autosync"] = changes["wecom_menu_autosync"]
     if "wecom_events" in changes and changes["wecom_events"] is not None:
         events = changes["wecom_events"]
         if not isinstance(events, list) or any(e not in WECOM_EVENTS for e in events):
             raise ValueError("推送事件只能是 " + "、".join(WECOM_EVENTS))
         current["wecom_events"] = list(dict.fromkeys(events))
-    if changes.get("access_password"):
-        pw = str(changes["access_password"])
-        if len(pw) < 4:
-            raise ValueError("访问密码至少 4 位")
-        from backend.app.core.auth import hash_password
-
-        current["access_password"] = hash_password(pw[:200])  # 只存 PBKDF2 哈希
-    if changes.get("access_password_clear") is True:
-        current["access_password"] = ""
+    if changes.get("access_password") or changes.get("access_password_clear"):
+        raise ValueError("访问密码改到了 设置 → 账号与登录（用户名 + 密码）")
 
 
 def read_settings_file() -> dict:
@@ -378,9 +389,7 @@ def public_settings() -> dict:
         "last_sync_at": raw.get("last_sync_at"),
         "last_cleanup_at": raw.get("last_cleanup_at"),
         **wecom_public(raw),
-        "access_password_set": bool(raw.get("access_password") or os.environ.get("LP_PASSWORD")),
         "access_password_from_env": bool(os.environ.get("LP_PASSWORD")),
-        "access_password_effective": bool(os.environ.get("LP_PASSWORD")) or (bool(raw.get("access_password")) and os.environ.get("LP_HEADLESS", "0") == "1"),
     }
 
 

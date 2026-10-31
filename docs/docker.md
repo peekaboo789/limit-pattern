@@ -22,8 +22,8 @@
 ```bash
 mkdir limit-pattern && cd limit-pattern
 curl -O https://raw.githubusercontent.com/peekaboo789/limit-pattern/cursor/limit-pattern-system-8abb/docker-compose.yml
-# 可选：网页访问密码，写进同目录 .env（不要提交到 git）
-echo 'LP_PASSWORD=换成你自己的密码' > .env
+# 可选：用环境变量固定登录账号（不设则第一次打开网页时创建管理员账号）
+# printf 'LP_USER=admin\nLP_PASSWORD=换成你自己的密码\n' > .env
 docker compose up -d
 docker compose logs -f   # 首次启动库是空的，会自动拉一次日线
 ```
@@ -42,6 +42,7 @@ services:
       - ./data:/data
     environment:
       TZ: Asia/Shanghai
+      LP_USER: ${LP_USER:-}
       LP_PASSWORD: ${LP_PASSWORD:-}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
@@ -51,15 +52,32 @@ services:
       start_period: 30s
 ```
 
-访问密码：设置 `LP_PASSWORD` 环境变量，或在 设置 → 网页访问密码 里设（只存 PBKDF2 哈希）。设置后除 `/api/health` 和 `/api/wecom/callback` 外的接口都要先登录（HttpOnly 会话 cookie，30 天；改密码后旧会话失效）。
+登录（v0.5.1）：网页版必须登录。第一次打开显示「创建管理员账号」；或用 `LP_USER` / `LP_PASSWORD` 环境变量指定（v0.5.0 的 LP_PASSWORD 照常可用，用户名默认 admin；
+v0.5.0 在设置里设过的访问密码会自动迁移为 admin 账号）。勾选「记住我」后 cookie 长期有效（HttpOnly、SameSite=Lax，HTTPS 下 Secure），
+直到改用户名/密码或点「退出所有设备」。账号（加盐 PBKDF2 哈希）和签名密钥都在 `/data`（auth.json、.session_secret），重启和升级都不会掉线。
+连续输错 5 次锁定该 IP 5 分钟。只有 `/api/health`、登录相关接口和 `/api/wecom/callback` 免登录。
 暴露到公网时请在前面加 HTTPS 反向代理（Nginx / Caddy），企业微信回调也必须是 HTTPS。
 
 ## 升级
+
+设置 → 在线更新 → 检查更新 会显示新版本和更新内容。容器没法安全地替换自己的镜像（需要挂载 docker.sock，等于把宿主机 root 权限交给容器），所以本系统**不做**容器内一键升级，请在 compose 目录执行：
 
 ```bash
 docker compose pull && docker compose up -d
 ```
 
+想全自动，用 Watchtower（它自己挂 docker.sock，权限隔离在这个专用容器里），在 docker-compose.yml 里加：
+
+```yaml
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --cleanup --schedule "0 0 20 * * *" limit-pattern   # 每天 20:00 检查，只更新本容器
+```
+
+新版本第一次启动会自动把设置、数据库、自选股、账号备份到 `data/backups/`（保留最近 3 份），再做数据迁移。
 数据都在 `./data`（SQLite 数据库、settings.json、导出、总结、自选股），升级不会丢。
 
 ## 备份 / 恢复

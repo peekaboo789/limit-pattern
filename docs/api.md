@@ -111,3 +111,9 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 - 设置字段：`wecom_enabled, wecom_corpid, wecom_agentid, wecom_proxy, wecom_touser, wecom_toparty, wecom_totag, wecom_admins, wecom_events[]`；只写字段 `wecom_secret, wecom_token, wecom_aes_key, wecom_webhook, access_password`（空 = 不变，`<字段>_clear: true` 清除；读取只返回 `<字段>_set`）。
 - `POST /api/wecom/test {channel?: all|app|webhook}` → `{ok, errcode, message}`。
 - `GET /api/wecom/callback?msg_signature&timestamp&nonce&echostr` URL 验证；`POST` 同参数 + 加密 XML，回 `success`，指令结果用应用消息异步回给发送者。
+
+## v0.5.1
+
+- 账号：`GET /api/auth/status` → `{required, logged_in, setup_needed, username, from_env, headless}`；`POST /api/auth/setup {username,password}`（仅无账号时）；`POST /api/auth/login {username,password,remember}`（5 次失败 → 429 锁 5 分钟）；`POST /api/auth/logout`、`/api/auth/logout-all`；`GET /api/auth/sessions`；`POST /api/auth/change {current_password, username?, new_password?}`。设置里的 `access_password` 已废弃（自动迁移为 admin 账号）。
+- 企业微信：设置 `wecom_msg_format`（text 默认 / textcard / markdown）、`wecom_card_url`、`wecom_menu_autosync`；`POST /api/wecom/menu` 同步底部菜单，`GET /api/wecom/menu` 预览菜单 JSON；`POST /api/wecom/test {format?}`。回调支持 `MsgType=event, Event=click, EventKey`。
+- 更新：`GET /api/update/check?force=`、`POST /api/update/download`、`GET /api/update/status`、`POST /api/update/apply`（仅 Windows 桌面版）；`GET /api/backups`；设置 `update_mirror`。

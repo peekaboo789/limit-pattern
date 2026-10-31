@@ -69,6 +69,16 @@ def create_app() -> FastAPI:
         from backend.app.core.config import migrate_settings
 
         migrate_settings()
+        from backend.app.services import backups
+
+        started = backups.on_start()
+        from backend.app.core import auth as _auth
+
+        _auth.migrate()  # 0.5.0 只有密码 → admin 账号  # 新版本第一次启动：先备份设置和数据库（保留 3 份），再迁移
+        if started["changed"]:
+            from backend.app.services.wecom.menu import autosync_in_background
+
+            autosync_in_background()
         from backend.app.services.retention import purge_excluded_boards
 
         purge_excluded_boards()

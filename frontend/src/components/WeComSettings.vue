@@ -17,7 +17,8 @@ const view = ref<View | null>(null)
 const form = reactive({
   wecom_enabled: false, wecom_corpid: '', wecom_agentid: '', wecom_proxy: 'https://qyapi.weixin.qq.com',
   wecom_touser: '@all', wecom_toparty: '', wecom_totag: '', wecom_admins: '', wecom_events: [] as string[],
-  wecom_secret: '', wecom_token: '', wecom_aes_key: '', wecom_webhook: '', access_password: '',
+  wecom_msg_format: 'text', wecom_card_url: '', wecom_menu_autosync: true,
+  wecom_secret: '', wecom_token: '', wecom_aes_key: '', wecom_webhook: '',
 })
 const saving = ref(false)
 const testing = ref(false)
@@ -28,7 +29,7 @@ const callbackUrl = `${window.location.origin}/api/wecom/callback`
 function fill(v: View) {
   view.value = v
   for (const k of Object.keys(form) as (keyof typeof form)[]) {
-    if ((SECRETS as readonly string[]).includes(k) || k === 'access_password') (form as Record<string, unknown>)[k] = ''
+    if ((SECRETS as readonly string[]).includes(k)) (form as Record<string, unknown>)[k] = ''
     else if (k in v) (form as Record<string, unknown>)[k] = k === 'wecom_events' ? [...((v[k] as string[]) || [])] : v[k]
   }
 }
@@ -43,7 +44,7 @@ async function save() {
   try {
     const body: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(form)) {
-      if ((SECRETS as readonly string[]).includes(k) || k === 'access_password') {
+      if ((SECRETS as readonly string[]).includes(k)) {
         if (String(v).trim()) body[k] = String(v).trim() // 留空 = 不修改
       } else body[k] = typeof v === 'string' ? v.trim() : v
     }
@@ -70,6 +71,20 @@ async function test() {
     msg.value = { ok: false, text: e instanceof Error ? e.message : '发送失败' }
   } finally {
     testing.value = false
+  }
+}
+
+const menuing = ref(false)
+async function syncMenu() {
+  menuing.value = true
+  msg.value = null
+  try {
+    const r = await request<{ ok: boolean; message: string }>('/api/wecom/menu', { method: 'POST', body: '{}' }, 40000)
+    msg.value = { ok: r.ok, text: r.message }
+  } catch (e) {
+    msg.value = { ok: false, text: e instanceof Error ? e.message : '同步失败' }
+  } finally {
+    menuing.value = false
   }
 }
 
@@ -101,6 +116,17 @@ onMounted(load)
       <label class="field"><span>部门 toparty / 标签 totag</span>
         <span style="display: flex; gap: 8px"><input v-model="form.wecom_toparty" placeholder="部门ID，可空" /><input v-model="form.wecom_totag" placeholder="标签ID，可空" /></span></label>
     </div>
+    <div class="grid">
+      <label class="field"><span>消息格式</span>
+        <select v-model="form.wecom_msg_format">
+          <option value="text">文本（兼容微信，默认）</option>
+          <option value="textcard">卡片（微信可显示，正文最多约 170 字）</option>
+          <option value="markdown">Markdown（仅企业微信客户端，微信里显示「暂不支持此消息类型」）</option>
+        </select>
+        <span class="hint">推送和指令回复都用这个格式。用个人微信（微信插件）接收请选文本或卡片。</span></label>
+      <label v-if="form.wecom_msg_format === 'textcard'" class="field"><span>卡片点击打开的地址</span>
+        <input v-model="form.wecom_card_url" placeholder="例如 https://你的域名/ ；留空打开项目主页" /></label>
+    </div>
     <h3>接收消息（回调）</h3>
     <p class="hint">需要公网 HTTPS 地址。在应用 → 接收消息 → 设置API接收 中填 URL：<code>{{ callbackUrl }}</code>，再把那里生成的 Token 和 EncodingAESKey 填到下面。桌面版一般没有公网地址，只能推送不能收消息。</p>
     <div class="grid">
@@ -118,16 +144,14 @@ onMounted(load)
         <input v-model="form.wecom_webhook" type="password" autocomplete="new-password" placeholder="更简单的推送通道，不需要可信IP；不能收指令" />
       </label>
     </div>
+    <h3>底部菜单</h3>
+    <p class="hint">三组快捷菜单：榜单（今日AI榜单 / 实时监控 / 相似前10 / 次日观察池 / 重新生成榜单）、自选（自选行情 / 自选异动≥3% / 添加说明 / 删除说明 / 导出自选）、
+      工具（采集当前行情 / 同步行情 / 今日总结 / 系统状态 / 检查更新）。点击要靠上面的「接收消息」回调才能响应。</p>
+    <label class="check"><input v-model="form.wecom_menu_autosync" type="checkbox" /> 新版本第一次启动时自动同步菜单</label>
+    <div class="actions"><button class="btn btn-ghost" type="button" :disabled="menuing" @click="syncMenu">{{ menuing ? '同步中…' : '同步底部菜单到企业微信' }}</button></div>
     <h3>推送哪些事件</h3>
     <label v-for="e in (view?.wecom_event_options as string[]) || Object.keys(EVENT_LABELS)" :key="e" class="check">
       <input v-model="form.wecom_events" type="checkbox" :value="e" /> {{ EVENT_LABELS[e] || e }}
-    </label>
-    <h3>网页访问密码（Docker）</h3>
-    <label class="field">
-      <span>访问密码 <em class="set" v-if="view?.access_password_set">已设置{{ view?.access_password_from_env ? '（来自环境变量 LP_PASSWORD）' : '' }}
-        <a v-if="!view?.access_password_from_env" href="#" @click.prevent="clearSecret('access_password')">清除</a></em></span>
-      <input v-model="form.access_password" type="password" autocomplete="new-password" placeholder="留空不修改；至少 4 位" />
-      <span class="hint">只在 Docker / 网页版生效（桌面版只监听本机，不需要）。设置后打开页面要先登录。</span>
     </label>
     <div class="actions">
       <button class="btn" type="button" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存企业微信设置' }}</button>

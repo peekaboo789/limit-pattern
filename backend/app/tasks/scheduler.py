@@ -87,6 +87,21 @@ def scheduled_job_ids() -> list[str]:
     return [job.id for job in _SCHEDULER.get_jobs()]
 
 
+JOB_NAMES = {"daily-sync": "日线同步", "daily-purge": "清理明细", "daily-summary": "补写总结", "morning-freeze": "午间冻结",
+             "ai-ranking-1450": "AI 榜单", "ai-ranking-1510": "AI 榜单"}
+
+
+def next_runs() -> list[tuple[str, str]]:
+    """[(任务名, "MM-DD HH:MM")]，按时间排序；监控循环不列。"""
+    if _SCHEDULER is None:
+        return []
+    out = []
+    for job in _SCHEDULER.get_jobs():
+        if job.id in JOB_NAMES and job.next_run_time:
+            out.append((job.next_run_time, JOB_NAMES[job.id]))
+    return [(name, t.strftime("%m-%d %H:%M")) for t, name in sorted(out)]
+
+
 def stop_scheduler() -> None:
     global _SCHEDULER
     if _SCHEDULER is not None:

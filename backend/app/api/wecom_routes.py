@@ -14,25 +14,91 @@ router = APIRouter()
 logger = get_logger("limit_pattern.wecom")
 
 
-# ---------- 访问密码 ----------
+# ---------- 账号登录 ----------
+def _ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    return (fwd.split(",")[0].strip() if fwd else "") or (request.client.host if request.client else "")
+
+
+def _secure(request: Request) -> bool:
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+
+
+def _set_cookie(request: Request, response: Response, token: str, remember: bool) -> None:
+    response.set_cookie(auth.COOKIE, token, max_age=auth.REMEMBER_AGE if remember else None, httponly=True, samesite="lax", secure=_secure(request))
+
+
 @router.get("/auth/status")
 def auth_status(request: Request) -> dict:
     need = auth.required()
-    return {"required": need, "logged_in": (not need) or auth.valid(request.cookies.get(auth.COOKIE)), "headless": auth.headless()}
+    acc = auth.account() if need else None
+    logged = (not need) or (acc is not None and auth.valid(request.cookies.get(auth.COOKIE)))
+    return {"required": need, "logged_in": logged, "setup_needed": need and acc is None, "headless": auth.headless(),
+            "username": acc["username"] if acc and logged else None, "from_env": bool(acc and acc["from_env"])}
+
+
+@router.post("/auth/setup")
+def auth_setup(body: dict, request: Request, response: Response) -> dict:
+    if not auth.setup_needed():
+        raise HTTPException(status_code=409, detail="已经有账号了，请直接登录")
+    try:
+        auth.create_account(str(body.get("username") or ""), str(body.get("password") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _set_cookie(request, response, auth.issue(request.headers.get("user-agent", ""), _ip(request)), True)
+    return {"ok": True}
 
 
 @router.post("/auth/login")
 def auth_login(body: dict, request: Request, response: Response) -> dict:
-    if not auth.check_password(str((body or {}).get("password") or "")):
-        raise HTTPException(status_code=401, detail="密码不对")
-    response.set_cookie(auth.COOKIE, auth.issue(), max_age=auth.MAX_AGE, httponly=True, samesite="lax",
-                        secure=request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https")
+    ip = _ip(request)
+    wait = auth.locked_for(ip)
+    if wait:
+        raise HTTPException(status_code=429, detail=f"失败次数太多，请 {wait // 60 + 1} 分钟后再试")
+    body = body or {}
+    if not auth.check_credentials(str(body.get("username") or ""), str(body.get("password") or "")):
+        left = auth.record_failure(ip)
+        if auth.locked_for(ip):
+            raise HTTPException(status_code=429, detail=f"连续失败 {auth.MAX_FAILS} 次，已锁定 {auth.LOCK_SECONDS // 60} 分钟")
+        raise HTTPException(status_code=401, detail=f"用户名或密码不对（再错 {left} 次将锁定 {auth.LOCK_SECONDS // 60} 分钟）")
+    auth.record_success(ip)
+    remember = body.get("remember") is not False
+    _set_cookie(request, response, auth.issue(request.headers.get("user-agent", ""), ip, remember), remember)
     return {"ok": True}
 
 
 @router.post("/auth/logout")
-def auth_logout(response: Response) -> dict:
+def auth_logout(request: Request, response: Response) -> dict:
+    auth.logout(request.cookies.get(auth.COOKIE))
     response.delete_cookie(auth.COOKIE)
+    return {"ok": True}
+
+
+@router.post("/auth/logout-all")
+def auth_logout_all(response: Response) -> dict:
+    auth.logout_all()
+    response.delete_cookie(auth.COOKIE)
+    return {"ok": True}
+
+
+@router.get("/auth/sessions")
+def auth_sessions(request: Request) -> dict:
+    acc = auth.account()
+    return {"username": acc["username"] if acc else None, "from_env": bool(acc and acc["from_env"]),
+            "items": auth.sessions(request.cookies.get(auth.COOKIE))}
+
+
+@router.post("/auth/change")
+def auth_change(body: dict, request: Request, response: Response) -> dict:
+    body = body or {}
+    try:
+        auth.change(str(body.get("current_password") or ""), body.get("username") or None, body.get("new_password") or None)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # 本设备换发新 cookie，其他设备的旧 cookie 已失效
+    _set_cookie(request, response, auth.issue(request.headers.get("user-agent", ""), _ip(request)), True)
     return {"ok": True}
 
 
@@ -52,12 +118,34 @@ def wecom_test(body: dict | None = None) -> dict:
     elif channel == "app":
         cfg = dict(cfg, webhook="")
     stamp = now().strftime("%Y-%m-%d %H:%M:%S")
-    msg = client.markdown(f"**涨停形态系统 测试消息**\n> 时间：{stamp}\n> 版本：v{__version__}\n收到这条说明推送配置正确。")
+    fmt = (body or {}).get("format") or cfg["format"]
     try:
-        used = client.send(*msg, cfg=cfg)
+        used = client.deliver("✅ 涨停形态系统 测试消息", f"时间：{stamp}\n版本：v{__version__}\n格式：{FORMAT_NAMES.get(fmt, fmt)}\n收到这条说明推送配置正确。",
+                              cfg=cfg, fmt=fmt)
     except client.WeComError as exc:
         return {"ok": False, "errcode": exc.code, "message": str(exc)}
-    return {"ok": True, "errcode": 0, "channels": used, "message": "已发送：" + "、".join({"app": "应用消息", "webhook": "群机器人"}[u] for u in used)}
+    return {"ok": True, "errcode": 0, "channels": used, "message": "已发送：" + "、".join({"app": "应用消息", "webhook": "群机器人"}[u] for u in used) + f"（{FORMAT_NAMES.get(fmt, fmt)}）"}
+
+
+FORMAT_NAMES = {"text": "文本", "textcard": "卡片", "markdown": "Markdown"}
+
+
+@router.post("/wecom/menu")
+def wecom_menu() -> dict:
+    from backend.app.services.wecom import client, menu
+
+    try:
+        menu.sync_menu()
+    except client.WeComError as exc:
+        return {"ok": False, "errcode": exc.code, "message": str(exc)}
+    return {"ok": True, "errcode": 0, "message": "底部菜单已同步到企业微信（客户端重新进入应用对话即可看到）", "menu": menu.menu_json()}
+
+
+@router.get("/wecom/menu")
+def wecom_menu_preview() -> dict:
+    from backend.app.services.wecom import menu
+
+    return menu.menu_json()
 
 
 def _crypt():
@@ -88,32 +176,49 @@ def wecom_verify(msg_signature: str = Query(""), timestamp: str = Query(""), non
 
 
 def handle_message(cfg: dict, xml_text: str) -> dict:
-    """解析解密后的消息，返回 {user, cmd, reply}；reply 通过应用消息异步发回。"""
+    """解析解密后的消息（文字指令或菜单点击），返回 {user, cmd, arg} 或 {user, reply}。"""
     from backend.app.services.wecom import commands
     from backend.app.services.wecom.crypto import extract
 
     user = extract(xml_text, "FromUserName")
-    if extract(xml_text, "MsgType") != "text":
+    kind = extract(xml_text, "MsgType")
+    if kind == "event":
+        if extract(xml_text, "Event").lower() != "click":
+            return {"user": user, "cmd": None, "reply": None}  # 进入应用 / 查看菜单等事件不回复
+        key = extract(xml_text, "EventKey")
+        cmd, arg = commands.MENU.get(key, ""), ""
+        if not cmd:
+            return {"user": user, "cmd": None, "reply": None}
+    elif kind == "text":
+        cmd, arg = commands.parse(extract(xml_text, "Content"))
+    else:
         return {"user": user, "cmd": None, "reply": None}
-    content = extract(xml_text, "Content")
     if not commands.allowed(user, cfg["admins"]):
-        return {"user": user, "cmd": None, "reply": "你不在本系统的指令白名单里，请让管理员在 设置 → 企业微信 → 指令白名单 里添加你的账号。"}
-    cmd, arg = commands.parse(content)
+        return {"user": user, "cmd": None, "reply": ("🔒 没有权限", "你不在本系统的指令白名单里，请让管理员在 设置 → 企业微信 → 指令白名单 里添加你的账号。")}
     return {"user": user, "cmd": cmd or "unknown", "arg": arg}
 
 
 def _reply_async(cfg: dict, info: dict) -> None:
     from backend.app.services.wecom import client, commands
 
+    user = info["user"]
+
+    def reply(title: str, body: str) -> None:
+        client.deliver(title, body, cfg=cfg, touser=user)
+
     def run():
         try:
-            reply = info.get("reply")
-            if reply is None and info.get("cmd"):
-                reply = commands.run("" if info["cmd"] == "unknown" else info["cmd"], info.get("arg", ""))
-            if reply:
-                client.send_app(cfg, *client.text(reply), touser=info["user"])
+            msg = info.get("reply")
+            if msg is None and info.get("cmd"):
+                msg = commands.run("" if info["cmd"] == "unknown" else info["cmd"], info.get("arg", ""), reply=reply)
+            if msg:
+                reply(*msg)
         except Exception as exc:  # noqa: BLE001
             logger.warning("企业微信指令回复失败：%s", exc)
+            try:
+                reply("❌ 出错了", str(exc)[:300])
+            except Exception:  # noqa: BLE001
+                pass
 
     threading.Thread(target=run, name="wecom-reply", daemon=True).start()
 
@@ -133,3 +238,51 @@ async def wecom_receive(request: Request, msg_signature: str = Query(""), timest
     if info.get("user") and (info.get("reply") or info.get("cmd")) and cfg["agentid"] and cfg["secret"]:
         _reply_async(cfg, info)
     return PlainTextResponse("success")  # 5 秒内必须应答；结果用应用消息异步回给发送者
+
+
+# ---------- 在线更新 ----------
+@router.get("/update/check")
+def update_check(force: bool = False) -> dict:
+    from backend.app.services import update_service
+
+    return update_service.check(force=force)
+
+
+@router.get("/update/status")
+def update_status() -> dict:
+    from backend.app.services import update_service
+
+    st = update_service.status()
+    st.pop("program", None)
+    return st
+
+
+@router.post("/update/download")
+def update_download() -> dict:
+    from backend.app.services import update_service
+
+    try:
+        st = update_service.start_download()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    st.pop("program", None)
+    return st
+
+
+@router.post("/update/apply")
+def update_apply() -> dict:
+    from backend.app.services import update_service
+
+    try:
+        st = update_service.apply()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    st.pop("program", None)
+    return st
+
+
+@router.get("/backups")
+def backups_list() -> dict:
+    from backend.app.services import backups
+
+    return {"dir": str(backups.backups_dir()), "items": [p.name for p in reversed(backups.list_backups())], "keep": backups.KEEP}

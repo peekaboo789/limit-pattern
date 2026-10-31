@@ -458,3 +458,10 @@ logs/launcher.log
 
 - Docker 镜像（amd64/arm64，GHCR）、`docker-compose.yml`、可选网页访问密码（`LP_PASSWORD` 或设置里设，PBKDF2 哈希 + 会话 cookie）；容器内跑全部定时任务和每 15 秒的盘中监控循环；网页版用浏览器通知。见 docs/docker.md。
 - 企业微信自建应用：access_token 缓存与自动刷新、文本/markdown 推送、超时重试、限流、去重；errcode 中文说明（60020 可信IP / 代理）；回调 URL 验证与 AES 解密（WXBizMsgCrypt），白名单成员可发指令；可选群机器人 webhook。见 docs/wecom.md。
+
+## v0.5.1 微信能看的消息 + 底部菜单 + 在线更新 + 账号登录
+
+- 修复：个人微信（微信插件）里消息显示「暂不支持此消息类型」——原因是默认发 markdown。现在默认文本（带 emoji、对齐、超过 2048 字节自动分段），设置里可选 文本 / 卡片 / Markdown；旧设置自动迁移为文本；群机器人也默认文本。
+- 企业微信底部菜单：榜单 / 自选 / 工具 三组 15 个快捷命令（点击走回调，白名单限制），设置里一键同步，新版本首次启动自动同步；慢操作先回「已开始」再推结果。
+- 在线更新：设置 → 在线更新 查 GitHub Releases；桌面版一键下载（进度、可选镜像、sha256 校验）→ 备份数据 → 替换程序（失败自动还原）→ 重启；Docker 版显示 `docker compose pull && docker compose up -d`（或 Watchtower）。新版本首次启动自动备份到 data/backups（保留 3 份）。
+- 账号登录（网页 / Docker）：用户名 + 密码，首次创建管理员；「记住我」长期 cookie，改密码或「退出所有设备」后失效；5 次失败锁 5 分钟；兼容 LP_PASSWORD 并迁移 0.5.0 的访问密码。桌面版本机窗口仍免登录。

@@ -173,7 +173,7 @@ def test_alert_dedupe_and_gating(mock, monkeypatch):
     assert notify.push_alerts([dict(items[0], level="alert", pct=6.2)], "ranking", t) == 1  # 升档再推
     assert notify.push_alerts(items, "watchlist", t) == 1  # 自选和榜单分开计
     assert notify.push_alerts(items, "ranking", datetime(2026, 11, 2, 10, 0)) == 1  # 第二天重新计
-    assert len(mock.sent) == 4 and "贵州茅台" in mock.sent[0]["markdown"]["content"]
+    assert len(mock.sent) == 4 and "贵州茅台" in mock.sent[0]["text"]["content"]
     monkeypatch.setattr(notify.client, "config", lambda raw=None: cfg(wecom_events=["ranking"]))
     assert notify.push_alerts([dict(items[0], code="000001")], "ranking", t) == 0  # 没勾选报警事件
 
@@ -197,9 +197,12 @@ def test_command_parsing_and_whitelist():
     assert commands.parse("榜单") == ("榜单", "")
     assert commands.parse("自选") == ("自选", "")
     assert commands.parse("help") == ("帮助", "")
+    assert commands.parse("添加自选 茅台") == ("加自选", "茅台")
+    assert commands.parse("系统状态") == ("状态", "")
+    assert commands.parse("自选异动") == ("异动", "")
     assert commands.parse("随便说说")[0] == ""
     assert commands.allowed("LISI", ["zhangsan", "LiSi"]) and not commands.allowed("wangwu", ["zhangsan"]) and not commands.allowed("", [])
-    assert "加自选" in commands.run("帮助", "")
+    assert "加自选" in commands.run("帮助", "")[1]
 
 
 # ---------- 设置脱敏 ----------
@@ -223,7 +226,7 @@ def test_settings_masked(client):
 def test_test_button_end_to_end(client, mock):
     write_settings(client)
     r = client.post("/api/wecom/test").json()
-    assert r["ok"] and r["errcode"] == 0 and "测试消息" in mock.sent[-1]["markdown"]["content"]
+    assert r["ok"] and r["errcode"] == 0 and "测试消息" in mock.sent[-1]["text"]["content"]
     mock.send_codes = [60020]
     r = client.post("/api/wecom/test").json()
     assert r["ok"] is False and r["errcode"] == 60020 and "可信IP" in r["message"]
@@ -253,7 +256,7 @@ def test_callback_verify_and_commands(client, mock, monkeypatch):
     assert post("zhangsan", "加自选 600519").text == "success"
     assert replies[-1]["cmd"] == "加自选" and replies[-1]["arg"] == "600519"
     post("wangwu", "榜单")
-    assert replies[-1]["cmd"] is None and "白名单" in replies[-1]["reply"]
+    assert replies[-1]["cmd"] is None and "白名单" in replies[-1]["reply"][1]
 
 
 def test_commands_run_watchlist(client, mock):
@@ -261,44 +264,14 @@ def test_commands_run_watchlist(client, mock):
     from backend.app.services.wecom import commands
 
     ws.add([{"code": "600519", "name": "贵州茅台"}])
-    assert "已在自选里" in commands.run("加自选", "600519")
-    assert "已删除自选" in commands.run("删自选", "600519")
-    assert "不在自选里" in commands.run("删自选", "600519")
-    assert "还没有 AI 榜单" in commands.run("榜单", "")
-    assert "还没有每日总结" in commands.run("总结", "")
+    assert "已在自选里" in commands.run("加自选", "600519")[1]
+    assert "已删除自选" in commands.run("删自选", "600519")[1]
+    assert "不在自选里" in commands.run("删自选", "600519")[1]
+    assert "还没有 AI 榜单" in commands.run("榜单", "")[1]
+    assert "还没有每日总结" in commands.run("总结", "")[1]
 
 
 def test_callback_disabled_returns_404(client):
     assert client.get("/api/wecom/callback").status_code == 404
 
 
-# ---------- 访问密码 ----------
-def test_auth_env_password(client, monkeypatch):
-    monkeypatch.setenv("LP_PASSWORD", "pa55word")
-    assert client.get("/api/health").status_code == 200
-    assert client.get("/api/settings").status_code == 401
-    assert client.get("/api/auth/status").json() == {"required": True, "logged_in": False, "headless": False}
-    assert client.post("/api/auth/login", json={"password": "nope"}).status_code == 401
-    assert client.post("/api/auth/login", json={"password": "pa55word"}).status_code == 200
-    assert client.get("/api/settings").status_code == 200
-    client.post("/api/auth/logout")
-    client.cookies.clear()
-    assert client.get("/api/settings").status_code == 401
-
-
-def test_auth_settings_password_headless_only(client, monkeypatch):
-    monkeypatch.delenv("LP_PASSWORD", raising=False)
-    assert client.put("/api/settings", json={"access_password": "abc"}).status_code == 422
-    view = client.put("/api/settings", json={"access_password": "secret-pw"}).json()
-    assert view["access_password_set"] and "secret-pw" not in json.dumps(view)
-    from backend.app.core.config import read_settings_file
-
-    assert read_settings_file()["access_password"].startswith("pbkdf2$")
-    assert client.get("/api/settings").status_code == 200  # 桌面（非 headless）不挡
-    monkeypatch.setenv("LP_HEADLESS", "1")
-    assert client.get("/api/settings").status_code == 401
-    assert client.post("/api/auth/login", json={"password": "secret-pw"}).status_code == 200
-    assert client.get("/api/settings").status_code == 200
-    # 改密码后旧会话作废
-    client.put("/api/settings", json={"access_password": "another-pw"})
-    assert client.get("/api/settings").status_code == 401
