@@ -2,7 +2,7 @@
 import { api, ApiError, isAbort } from '@/api/client'
 import type { CalendarInfo, MonitorSnapshot } from '@/api/types'
 import { monitorState, setSound, testAlerts } from '@/stores/monitor'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 
 const snap = ref<MonitorSnapshot | null>(null)
 const calendar = ref<CalendarInfo | null>(null)
@@ -34,6 +34,16 @@ onMounted(() => {
   void api.calendar().then((value) => (calendar.value = value)).catch(() => undefined)
   void load()
   timer = window.setInterval(load, 5000)
+})
+onActivated(() => {
+  if (timer === undefined) {
+    void load()
+    timer = window.setInterval(load, 5000)
+  }
+})
+onDeactivated(() => {
+  if (timer !== undefined) window.clearInterval(timer)
+  timer = undefined
 })
 onUnmounted(() => {
   if (timer !== undefined) window.clearInterval(timer)

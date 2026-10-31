@@ -325,7 +325,7 @@ def test_js_api_exposes_only_methods():
     api = launcher.ExportApi(launcher.Notifier(launcher.AppState()))
     api._attach(object())
     public = {name: value for name, value in inspect.getmembers(api) if not name.startswith("_")}
-    assert set(public) == {"notify", "notify_test", "save_file"}
+    assert set(public) == {"notify", "notify_test", "save_file", "open_folder"}
     assert all(callable(value) for value in public.values())
 
 
@@ -386,3 +386,24 @@ def test_monitor_watcher_persists_cursor_and_idles(tmp_path):
     closed = make([{"date": "2026-06-15", "alerts_active": False, "last_id": 7, "items": []}])
     closed.poll_once()
     assert closed.active is False
+
+
+def test_open_folder_runs_in_background(monkeypatch, tmp_path):
+    import subprocess
+    import threading
+
+    from desktop import launcher
+
+    target = tmp_path / "ai_input.txt"
+    target.write_text("x", encoding="utf-8")
+    calls = []
+    done = threading.Event()
+
+    def fake_popen(args, *a, **k):
+        calls.append(args)
+        done.set()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    assert launcher.ExportApi().open_folder(str(target)) is True
+    assert done.wait(5) and calls
+    assert launcher.ExportApi().open_folder(str(tmp_path / "missing" / "a.txt")) is False

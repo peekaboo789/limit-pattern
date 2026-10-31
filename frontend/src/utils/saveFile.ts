@@ -41,13 +41,27 @@ function triggerBlobDownload(filename: string, blob: Blob): void {
 }
 
 /** 桌面壳优先走保存对话框；浏览器则用 Blob 触发下载。 */
+export const lastSaved: { path: string | null } = { path: null }
+
 export async function saveExportedText(filename: string, text: string, blob?: Blob): Promise<SaveMode> {
   const saveFile = window.pywebview?.api?.save_file
+  lastSaved.path = null
   if (typeof saveFile === 'function') {
     const result = await saveFile(filename, text)
-    if (result === false) return 'cancel'
+    if (result === false || result === null || result === undefined) return 'cancel'
+    if (typeof result === 'string') lastSaved.path = result
     return 'dialog'
   }
   triggerBlobDownload(filename, blob ?? new Blob([text], { type: 'text/plain;charset=utf-8' }))
   return 'download'
+}
+
+/** 桌面程序里打开导出文件所在文件夹；浏览器里没有这个能力。 */
+export function canOpenFolder(): boolean {
+  return typeof (window.pywebview?.api as { open_folder?: unknown } | undefined)?.open_folder === 'function'
+}
+
+export async function openFolder(path: string): Promise<boolean> {
+  const api = window.pywebview?.api as { open_folder?: (p: string) => Promise<boolean> } | undefined
+  return api?.open_folder ? Boolean(await api.open_folder(path)) : false
 }

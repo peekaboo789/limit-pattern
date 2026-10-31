@@ -4,7 +4,7 @@ import type { AiRankingItem, AiRanking, ExportParams } from '@/api/types'
 import Disclaimer from '@/components/Disclaimer.vue'
 import AiInputExport from '@/components/AiInputExport.vue'
 import ExportButton from '@/components/ExportButton.vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, onMounted, ref } from 'vue'
 
 const dates = ref<string[]>([])
 const selected = ref('')
@@ -130,9 +130,40 @@ async function generate(snapshot?: 'morning') {
   }
 }
 
+// 后台已在生成（别的页面点的、或者重启前开始的）：接上进度，不重新开始
+let resumeTimer: number | undefined
+async function resume() {
+  if (generating.value || resumeTimer) return
+  const p = await api.aiRankingProgress().catch(() => null)
+  if (!p?.running) return
+  generating.value = true
+  resumeTimer = window.setInterval(async () => {
+    const q = await api.aiRankingProgress().catch(() => null)
+    if (q?.running) {
+      if (q.total) progressText.value = `AI 打分 ${q.done}/${q.total} 批（已评 ${q.scored ?? 0} 只）`
+      return
+    }
+    window.clearInterval(resumeTimer)
+    resumeTimer = undefined
+    generating.value = false
+    progressText.value = ''
+    await loadDates()
+    await open()
+  }, 2000)
+}
+
+let mounted = false
 onMounted(async () => {
   await loadDates()
   await open()
+  await resume()
+  mounted = true
+})
+onActivated(async () => {
+  if (!mounted || generating.value) return
+  await loadDates()  // 别处生成了新榜单也能看到
+  if (!ranking.value || (dates.value[0] && dates.value[0] !== ranking.value.date && selected.value === ranking.value.date)) await open()
+  await resume()
 })
 </script>
 

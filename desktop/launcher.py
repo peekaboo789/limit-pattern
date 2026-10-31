@@ -997,13 +997,39 @@ class ExportApi:
                 webview.FileDialog.SAVE,
                 directory=str(directory),
                 save_filename=name,
-                file_types=("文本文件 (*.txt)", "所有文件 (*.*)"),
+                file_types=(("Markdown (*.md)", "所有文件 (*.*)") if name.lower().endswith(".md") else ("文本文件 (*.txt)", "所有文件 (*.*)")),
             )
             if not selected:
                 return None
             return str(selected[0])
 
         return save_text_as(filename, text, ask_path)
+
+    def open_folder(self, path: str) -> bool:
+        """导出后「打开所在文件夹」。后台线程启动资源管理器，不占 GUI 线程。"""
+        target = Path(path)
+        folder = target.parent if target.suffix else target
+        if not folder.exists():
+            return False
+
+        def run() -> None:
+            try:
+                if sys.platform == "win32":
+                    import subprocess
+
+                    if target.is_file():
+                        subprocess.Popen(["explorer", "/select,", str(target)])
+                    else:
+                        os.startfile(str(folder))  # type: ignore[attr-defined]
+                else:
+                    import subprocess
+
+                    subprocess.Popen(["xdg-open", str(folder)])
+            except Exception:
+                logger.exception("打开文件夹失败")
+
+        threading.Thread(target=run, name="limitpattern-open-folder", daemon=True).start()
+        return True
 
 
 def enable_webview_downloads(settings: dict | None = None) -> dict:

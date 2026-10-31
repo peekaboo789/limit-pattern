@@ -112,3 +112,13 @@ def test_api_flow(seeded, client, monkeypatch):
     text = client.get("/api/ai-input", params={"snapshot": "manual", "format": "txt"})
     assert text.status_code == 200 and "盘中快照 截至 14:00" in text.text
     assert client.post("/api/snapshot/capture/cancel").status_code == 200
+
+
+def test_latest_snapshot_survives_restart(seeded, client):
+    """重启后（新进程只读文件）仍能读回最近快照，md 导出也可用。"""
+    manual_capture.capture(at(14, 0))
+    manual_capture.reset_state()
+    r = client.get("/api/snapshot/manual")
+    assert r.status_code == 200 and r.json()["label"] == "盘中快照 截至 14:00" and len(r.json()["result"]["items"]) > 0
+    md = client.get("/api/ai-input", params={"snapshot": "manual", "format": "md"})
+    assert md.status_code == 200 and "盘中快照 截至 14:00" in md.text
