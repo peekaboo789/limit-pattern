@@ -328,6 +328,9 @@ export interface AiRanking {
 export type MonitorLevel = 'normal' | 'warn' | 'alert'
 
 export interface MonitorItem {
+  raw_level?: string
+  model_score?: number | null
+  composite_score?: number | null
   rank: number | null
   code: string
   name: string
@@ -353,6 +356,8 @@ export interface MonitorSnapshot {
   items: MonitorItem[]
   alert_count?: number
   warn_count?: number
+  price_label?: string
+  order?: 'external' | 'composite'
 }
 
 export interface MonitorEvent {

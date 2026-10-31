@@ -476,6 +476,18 @@ def _write_file(session, day: date) -> None:
     path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def display_order(payload: dict) -> dict:
+    """榜单的展示顺序：外部导入按外部 AI 分（同分保持存储顺序），系统生成保持原顺序。
+    兼容 0.4.5 之前导入、按综合分存储的外部榜。"""
+    if not payload or payload.get("trigger") != "external" or payload.get("order") == "external":
+        return payload
+    items = sorted(enumerate(payload.get("items") or []), key=lambda pair: (-(pair[1].get("model_score") if pair[1].get("model_score") is not None else -1e9), pair[0]))
+    out = dict(payload)
+    out["items"] = [dict(item, rank=index) for index, (_i, item) in enumerate(items, start=1)]
+    out["order"] = "external"
+    return out
+
+
 def get_ranking(session, day: date | None = None) -> dict | None:
     query = session.query(AiRanking)
     if day is not None:
@@ -483,7 +495,7 @@ def get_ranking(session, day: date | None = None) -> dict | None:
     row = query.order_by(AiRanking.trade_date.desc(), AiRanking.id.desc()).first()
     if row is None:
         return None
-    payload = dict(row.payload)
+    payload = display_order(dict(row.payload))
     payload["runs"] = [item.run_at for item in _runs(session, row.trade_date)]
     return payload
 

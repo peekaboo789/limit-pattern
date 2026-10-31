@@ -125,6 +125,11 @@ async function poll() {
     monitorState.alertsActive = payload.alerts_active !== false
     monitorState.statusText = payload.status_text ?? ''
     if (monitorState.alertsActive) for (const event of payload.items) show(payload.date, event)
+    else {
+      // 收盘 / 午休 / 休市：清掉之前留下的提醒弹窗和红框演示，不再弹
+      // 「测试提醒」是用户主动点的（id 为负），保留演示
+      monitorState.toasts = monitorState.toasts.filter((toast) => toast.id < 0)
+    }
     monitorState.lastId = Math.max(monitorState.lastId, payload.last_id)
   } catch {
     // 后端暂时不通，下一轮再试

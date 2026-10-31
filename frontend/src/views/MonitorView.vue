@@ -73,7 +73,7 @@ onUnmounted(() => {
     <div class="card-head">
       <h2>{{ snap?.ranking_date ? `${snap.ranking_date} 的 AI 前 20 名` : '上一交易日 AI 前 20 名' }}</h2>
       <span class="muted" v-if="snap">
-        <template v-if="!alertsActive">{{ snap.status_text }} · 显示最后行情 · </template>
+        <template v-if="!alertsActive">{{ snap.status_text }} · {{ snap.price_label ?? '显示最后行情' }} · </template>
         <template v-if="snap.source">行情 {{ snap.source }} · </template>
         更新 {{ snap.updated_at.slice(11, 19) }}
       </span>

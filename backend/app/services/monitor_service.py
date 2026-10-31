@@ -201,7 +201,9 @@ def snapshot(session, moment: datetime | None = None) -> dict:
         base["error"] = "还没有上一交易日的 AI 榜单"
         return base
     base["ranking_date"] = board.get("date")
-    entries = board["items"]
+    from backend.app.services.ranking_service import display_order
+
+    entries = display_order(board)["items"]  # 和榜单页同一顺序（外部导入按外部 AI 分）
     cache = _quotes([entry["code"] for entry in entries], is_open or active)
     base["source"] = cache["source"]
     base["error"] = cache["error"]
@@ -214,18 +216,35 @@ def snapshot(session, moment: datetime | None = None) -> dict:
             "code": entry["code"],
             "name": entry.get("name") or quote.get("name") or "",
             "ai_score": entry.get("ai_score"),
+            "composite_score": entry.get("composite_score"),
+            "model_score": entry.get("model_score"),
             "reason": entry.get("reason") or "",
             "price": quote.get("close"),
             "pre_close": quote.get("pre_close"),
             "pct": pct,
             "level": level_for(pct),
         }
-        items.append(item)
         if active and item["level"] != "normal":  # 非报警时段只显示最后的数字，不记报警
             _record(session, day, item)
+        if not active:
+            # 休市 / 午休 / 收盘后：只给静态数字，任何地方都不该按报警样式显示
+            item["raw_level"] = item["level"]
+            item["level"] = "normal"
+        items.append(item)
     base["items"] = items
-    base["alert_count"] = sum(1 for item in items if item["level"] == "alert") if active else 0
+    base["alert_count"] = sum(1 for item in items if item["level"] == "alert")
     base["warn_count"] = sum(1 for item in items if item["level"] == "warn")
+    base["order"] = board.get("order") or ("external" if board.get("trigger") == "external" else "composite")
+    if not active:
+        quote_day = next((q.get("trade_date") for q in cache["quotes"].values() if q.get("trade_date")), None)
+        label_day = str(quote_day)[:10] if quote_day else None
+        if phase["phase"] == "lunch":
+            base["price_label"] = "午休前最后行情（报警暂停）"
+        elif label_day and label_day == day.isoformat():
+            base["price_label"] = f"今日 {label_day[5:]} 收盘（报警暂停）" if phase["phase"] == "closed" else f"{label_day[5:]} 最后行情（报警暂停）"
+        else:
+            last = label_day or board.get("date") or ""
+            base["price_label"] = f"上一交易日 {last[5:10]} 收盘（报警暂停）"
     return base
 
 
