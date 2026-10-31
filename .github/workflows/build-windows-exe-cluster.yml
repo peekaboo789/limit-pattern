@@ -51,3 +51,36 @@ jobs:
           path: desktop/dist/LimitPattern-cluster-win64.zip
           if-no-files-found: error
           compression-level: 0
+
+  release:
+    # 每个新版本号第一次在分支上打包成功后，自动建 GitHub Release（v<版本>），附 zip 和 sha256，供程序内「在线更新」使用。
+    needs: package
+    if: github.event_name == 'push' && github.ref == 'refs/heads/cursor/limit-pattern-system-8abb'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: LimitPattern-cluster-win64.zip
+          path: dist
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V=$(python3 -c "import re;print(re.search(r'__version__ = \"(.+?)\"', open('backend/app/__init__.py').read()).group(1))")
+          if gh release view "v$V" >/dev/null 2>&1; then echo "v$V already released"; exit 0; fi
+          cd dist
+          sha256sum LimitPattern-cluster-win64.zip > LimitPattern-cluster-win64.zip.sha256
+          cat LimitPattern-cluster-win64.zip.sha256
+          cd ..
+          python3 - "$V" > notes.md <<'PY'
+          import re, sys
+          v = sys.argv[1]
+          text = open("README.md", encoding="utf-8").read()
+          m = re.search(rf"^## v{re.escape(v)}[^\n]*\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+          print((m.group(1).strip() if m else f"v{v}") + "\n\n数据目录不在程序目录里，更新不会动数据；更新前程序会自动备份到 数据目录/backups/。\nDocker：`docker compose pull && docker compose up -d`")
+          PY
+          gh release create "v$V" dist/LimitPattern-cluster-win64.zip dist/LimitPattern-cluster-win64.zip.sha256 \
+            --target "$GITHUB_SHA" --title "v$V" --notes-file notes.md

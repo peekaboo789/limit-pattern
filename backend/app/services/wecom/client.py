@@ -40,6 +40,7 @@ ERRORS = {
     82001: "指定的接收人都不在应用可见范围",
     301002: "无权限操作指定的应用（AgentId 与 Secret 不是同一个应用？）",
     48002: "API 接口无权限调用（应用没开通对应权限）",
+    60011: "应用没有这个权限（菜单：在管理后台确认应用可见范围包含你自己，且有管理应用的权限；或 Secret 不是这个应用的）",
     60020: "服务器 IP 不在应用的「企业可信IP」里：在管理后台 应用管理 → 本应用 → 企业可信IP 添加本机公网 IP，"
            "或在设置里填「代理地址」，让请求经由已加白名单的服务器转发",
     45009: "接口调用超过频率限制，稍后再试",
@@ -82,6 +83,8 @@ def config(raw: dict | None = None) -> dict:
         "admins": [a.strip() for a in str(raw.get("wecom_admins") or "").replace("，", ",").replace("|", ",").split(",") if a.strip()],
         "events": list(raw.get("wecom_events") or []),
         "webhook": str(raw.get("wecom_webhook") or "").strip(),
+        "format": raw.get("wecom_msg_format") if raw.get("wecom_msg_format") in ("text", "textcard", "markdown") else "text",
+        "card_url": str(raw.get("wecom_card_url") or "").strip(),
     }
 
 
@@ -174,8 +177,8 @@ def send_app(cfg: dict, msgtype: str, body: dict, touser: str | None = None) -> 
 
 def send_webhook(cfg: dict, msgtype: str, body: dict) -> dict:
     _throttle()
-    kind = "markdown" if msgtype in ("markdown", "textcard") else "text"
-    content = body.get("content") or f"**{body.get('title', '')}**\n{body.get('description', '')}"
+    kind = "markdown" if msgtype == "markdown" else "text"  # 群机器人默认文本，微信里也能看
+    content = body.get("content") or f"{body.get('title', '')}\n{body.get('description', '')}"
     resp = _request("POST", cfg["webhook"], content=json.dumps({"msgtype": kind, kind: {"content": content[:4000]}}, ensure_ascii=False).encode("utf-8"),
                     headers={"Content-Type": "application/json; charset=utf-8"})
     if int(resp.get("errcode", 0) or 0) != 0:
@@ -231,3 +234,78 @@ def once(key: str, day: date | None = None) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         return True
+
+
+# ---------- v0.5.1：按设置的消息格式发送（默认文本，个人微信能显示） ----------
+TEXT_LIMIT = 2048  # 企业微信 text.content 上限（字节）
+CARD_DESC_LIMIT = 512
+DEFAULT_CARD_URL = "https://github.com/peekaboo789/limit-pattern"
+
+
+def _cut_bytes(s: str, limit: int) -> str:
+    raw = s.encode("utf-8")
+    if len(raw) <= limit:
+        return s
+    return raw[: limit - 3].decode("utf-8", "ignore") + "…"
+
+
+def split_text(content: str, limit: int = TEXT_LIMIT) -> list[str]:
+    """按行切成每段 ≤ limit 字节；多段时加「(1/3)」页码。超长单行硬切。"""
+    budget = limit - 16  # 留给页码
+    parts: list[str] = []
+    cur = ""
+    for line in content.split("\n"):
+        while len(line.encode("utf-8")) > budget:
+            head = _cut_bytes(line, budget)[:-1]
+            line = line[len(head):]
+            if cur:
+                parts.append(cur)
+                cur = ""
+            parts.append(head)
+        cand = f"{cur}\n{line}" if cur else line
+        if len(cand.encode("utf-8")) > budget and cur:
+            parts.append(cur)
+            cur = line
+        else:
+            cur = cand
+    if cur or not parts:
+        parts.append(cur)
+    if len(parts) > 1:
+        parts = [f"{p}\n（{i}/{len(parts)}）" for i, p in enumerate(parts, 1)]
+    return parts
+
+
+def render(title: str, body: str, fmt: str, card_url: str = "") -> list[tuple[str, dict]]:
+    """(title, body 纯文本) → 一条或多条 (msgtype, payload)。"""
+    if fmt == "markdown":
+        return [("markdown", {"content": _cut_bytes(f"**{title}**\n{body}" if title else body, 4096)})]
+    if fmt == "textcard":
+        desc = body.replace("\n", "<br>")
+        return [("textcard", {"title": _cut_bytes(title or "涨停形态系统", 128), "description": _cut_bytes(desc, CARD_DESC_LIMIT),
+                              "url": card_url or DEFAULT_CARD_URL, "btntxt": "详情"})]
+    return [("text", {"content": part}) for part in split_text(f"{title}\n{body}" if title else body)]
+
+
+def deliver(title: str, body: str, *, touser: str | None = None, cfg: dict | None = None, fmt: str | None = None) -> list[str]:
+    """推送 / 指令回复统一入口：按设置的格式（默认文本）发，长文本自动分段。"""
+    cfg = cfg or config()
+    used: list[str] = []
+    for msgtype, payload in render(title, body, fmt or cfg["format"], cfg["card_url"]):
+        used = send(msgtype, payload, touser=touser, cfg=cfg)
+    return used
+
+
+def create_menu(cfg: dict, menu: dict) -> dict:
+    """POST /cgi-bin/menu/create?agentid=…（经配置的代理地址）。"""
+    for attempt in range(2):
+        token = access_token(cfg, force=attempt > 0)
+        resp = _request("POST", f"{cfg['base']}/cgi-bin/menu/create", params={"access_token": token, "agentid": cfg["agentid"]},
+                        content=json.dumps(menu, ensure_ascii=False).encode("utf-8"),
+                        headers={"Content-Type": "application/json; charset=utf-8"})
+        code = int(resp.get("errcode", 0) or 0)
+        if code in TOKEN_ERRORS and attempt == 0:
+            continue
+        if code != 0:
+            raise WeComError(code, str(resp.get("errmsg") or ""))
+        return resp
+    raise WeComError(42001, "access_token 刷新后仍无效")

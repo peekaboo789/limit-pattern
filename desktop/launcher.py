@@ -1242,6 +1242,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="首选端口，被占用时自动 +1")
     parser.add_argument("--open-browser", action="store_true", help="不使用内嵌窗口，直接打开系统浏览器")
     parser.add_argument("--check-gui", action="store_true", help="额外导入 WebView2 / pythonnet（Windows 打包自检）")
+    parser.add_argument("--apply-update", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--target", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--pid", type=int, default=0, help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -1263,6 +1266,11 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"无法创建日志：{exc}", file=sys.stderr)
         return 1
+    if args.apply_update:
+        from desktop.updater import apply_update
+
+        source = Path(sys.executable).resolve().parent
+        return apply_update(Path(args.target), source, args.pid)
     try:
         return _run(args, data_dir)
     except Exception:

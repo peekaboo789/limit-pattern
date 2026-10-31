@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 SENT = []
+MENUS = []
 
 
 class H(BaseHTTPRequestHandler):
@@ -41,6 +42,9 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        if urlparse(self.path).path == "/cgi-bin/menu/create":
+            MENUS.append(body)
+            return self._json({"errcode": 0, "errmsg": "ok"})
         if urlparse(self.path).path in ("/cgi-bin/message/send", "/cgi-bin/webhook/send"):
             SENT.append(body)
             return self._json({"errcode": 0, "errmsg": "ok"})

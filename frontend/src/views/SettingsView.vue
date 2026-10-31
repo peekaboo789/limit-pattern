@@ -3,6 +3,8 @@ import { api, ApiError } from '@/api/client'
 import type { Settings, SourceTestResult } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { sourceLabel } from '@/utils/labels'
+import AccountPanel from '@/components/AccountPanel.vue'
+import UpdatePanel from '@/components/UpdatePanel.vue'
 import WeComSettings from '@/components/WeComSettings.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
@@ -362,4 +364,6 @@ onMounted(() => {
     </section>
   </form>
   <WeComSettings />
+  <UpdatePanel />
+  <AccountPanel />
 </template>
