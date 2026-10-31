@@ -9,7 +9,7 @@ struct MoreView: View {
     var body: some View {
         List {
             Section {
-                NavigationLink(isActive: $openExport) { ExportCenterView() } label: { Label("数据导出（TXT / MD / JSON / CSV）", systemImage: "square.and.arrow.up.on.square") }
+                NavigationLink { ExportCenterView() } label: { Label("数据导出（TXT / MD / JSON / CSV）", systemImage: "square.and.arrow.up.on.square") }
             }
             Section("原生页面") {
                 NavigationLink { SimilarityView() } label: { Label("个股相似度 / 前 100", systemImage: "magnifyingglass") }
@@ -44,6 +44,7 @@ struct MoreView: View {
         .scrollContentBackground(.hidden)
         .screenBackground()
         .navigationTitle("更多")
+        .navigationDestination(isPresented: $openExport) { ExportCenterView() }
     }
 
     func web(_ title: String, _ icon: String, _ path: String) -> some View {

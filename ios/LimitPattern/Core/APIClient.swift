@@ -11,7 +11,7 @@ struct APIError: LocalizedError {
 /// 同时把 cookie 值备份到钥匙串，系统清掉 cookie 时自动补回。
 final class APIClient: @unchecked Sendable {
     static let cookieName = "lp_session"
-    static let minServerVersion = "0.5.1"
+    static let minServerVersion = "0.5.2"
     static let shared = APIClient()
 
     var baseURL: URL?

@@ -8,6 +8,7 @@ struct ExportCenterView: View {
     @State private var end = Date()
     @State private var sumFormat = "txt"
     @State private var includeSecrets = false
+    @State private var includeWatchlist = true
     @State private var simCode = ""
     @State private var share: ShareFile?
     @State private var error: String?
@@ -60,7 +61,8 @@ struct ExportCenterView: View {
             }
             Section {
                 Toggle("包含密钥（AI Key、企业微信 Secret 等）", isOn: $includeSecrets)
-                row("导出设置配置 · JSON", "/api/settings/export", ["include_secrets": includeSecrets ? "true" : "false"], "limit-pattern-settings.json")
+                Toggle("包含自选股", isOn: $includeWatchlist)
+                row("导出设置配置 · JSON", "/api/config/export", ["secrets": includeSecrets ? "true" : "false", "watchlist": includeWatchlist ? "true" : "false"], "limit-pattern-config.json")
             } header: { Text("设置") } footer: {
                 Text("包含密钥的文件请妥善保管，不要发到群里。需要服务器 0.5.2 以上。")
             }
@@ -94,7 +96,7 @@ struct ExportCenterView: View {
         busy = name; defer { busy = nil }
         error = nil
         do { share = ShareFile(url: try await APIClient.shared.download(path, query: q, fallbackName: name)) }
-        catch let e as APIError where e.status == 404 && path.contains("settings/export") { error = "服务器还不支持导出设置，请升级到 0.5.2 以上" }
+        catch let e as APIError where e.status == 404 && path.contains("config/export") { error = "服务器还不支持导出设置，请升级到 0.5.2 以上" }
         catch { self.error = error.localizedDescription }
     }
 }

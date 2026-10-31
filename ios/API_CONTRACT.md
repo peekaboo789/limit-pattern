@@ -34,4 +34,4 @@ App 把 cookie 存在系统 `HTTPCookieStorage`，并把值备份到钥匙串；
 
 `/api/ai-input?format=txt|md[&snapshot=manual][&date=]`、`/api/export?type=ai_ranking|scan|similarity|next_day_pool|pool|backtest|cluster|summary`、`/api/watchlist/export?format=txt|csv`、`/api/daily-summary/export?start&end&format=txt|md|json|csv`。
 
-设置配置（0.5.2，**预期**接口，后端落地前按此编码）：`GET /api/settings/export?include_secrets=true|false` → JSON 文件（带 `Content-Disposition`）。404 时 App 提示升级服务器。
+设置配置（0.5.2）：`GET /api/config/export?secrets=false|true&watchlist=false|true` → JSON 附件（App 里有「包含密钥」「包含自选股」两个开关）。导入（`POST /api/config/import/preview {file}`、`POST /api/config/import {file, watchlist?, account?}`）在内嵌设置网页里做。404 时 App 提示升级服务器。App 要求服务器 ≥ 0.5.2。
