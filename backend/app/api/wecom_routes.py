@@ -190,7 +190,11 @@ def handle_message(cfg: dict, xml_text: str) -> dict:
         if not cmd:
             return {"user": user, "cmd": None, "reply": None}
     elif kind == "text":
-        cmd, arg = commands.parse(extract(xml_text, "Content"))
+        content = extract(xml_text, "Content").strip()
+        if content.isdigit() and len(content) <= 3 and commands.pending_pick(user):
+            cmd, arg = "选AI", content
+        else:
+            cmd, arg = commands.parse(content)
     else:
         return {"user": user, "cmd": None, "reply": None}
     if not commands.allowed(user, cfg["admins"]):
@@ -210,7 +214,7 @@ def _reply_async(cfg: dict, info: dict) -> None:
         try:
             msg = info.get("reply")
             if msg is None and info.get("cmd"):
-                msg = commands.run("" if info["cmd"] == "unknown" else info["cmd"], info.get("arg", ""), reply=reply)
+                msg = commands.run("" if info["cmd"] == "unknown" else info["cmd"], info.get("arg", ""), reply=reply, user=user)
             if msg:
                 reply(*msg)
         except Exception as exc:  # noqa: BLE001
@@ -380,3 +384,36 @@ def ai_profiles_test(body: dict | None = None) -> dict:
     body = dict(body or {})
     settings = _profiles_call(ai_profiles.settings_for, body.pop("id", None) or "", body)
     return test_ai(settings)
+
+
+# ---------- v0.5.4 手机端：模型列表 + 一键切换 ----------
+@router.get("/ai/models")
+def ai_models() -> dict:
+    """精简的模型列表（手机切换列表用）：{active, items:[{index,id,name,model,api_key_set,active}]}。"""
+    from backend.app.core import ai_profiles
+
+    pub = ai_profiles.public()
+    return {"active": pub["active"], "active_name": pub["active_name"],
+            "items": [{"index": n, "id": p["id"], "name": p["name"], "model": p["model"], "api_key_set": p["api_key_set"], "active": p["active"]}
+                      for n, p in enumerate(pub["items"], 1)]}
+
+
+@router.post("/ai/models/active")
+def ai_models_switch(body: dict) -> dict:
+    """切换当前模型：body {id} 或 {index}（从 1 开始）。"""
+    from backend.app.core import ai_profiles
+
+    body = body or {}
+    pid = str(body.get("id") or "")
+    if not pid and body.get("index") is not None:
+        items = ai_profiles.public()["items"]
+        try:
+            pid = items[int(body["index"]) - 1]["id"] if int(body["index"]) >= 1 else ""
+        except (IndexError, ValueError, TypeError):
+            pid = ""
+        if not pid:
+            raise HTTPException(status_code=422, detail=f"序号要在 1~{len(items)} 之间")
+    if not pid:
+        raise HTTPException(status_code=422, detail="需要 id 或 index")
+    _profiles_call(ai_profiles.activate, pid)
+    return ai_models()

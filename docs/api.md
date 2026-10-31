@@ -129,3 +129,11 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 - `POST /api/update/download` → 开始下载（桌面：Windows zip；Docker：`limit-pattern-app-<ver>.tar.gz`），返回状态。
 - `GET /api/update/status` → `{phase: idle|download|verify|extract|ready|applying|done|error, message, downloaded, total, version, mode, supervised, current}`；Docker 重启后从 `data/updates/` 恢复，装完显示 done 或失败原因。
 - `POST /api/update/apply {confirm: true}` → Docker 必须带 `confirm: true`（二次确认），否则 400；先备份再重启安装。都需要登录。
+
+## v0.5.4 手机端模型切换（需登录）
+
+- `GET /api/ai/models` → `{active, active_name, items:[{index, id, name, model, api_key_set, active}]}`（不含密钥，index 从 1 开始，和企业微信「切换AI」列表编号一致）。
+- `POST /api/ai/models/active` body `{id}` 或 `{index}` → 切换当前模型，返回同上；序号越界 422，id 不存在 404。
+- 完整增删改仍用 `/api/ai/profiles`（v0.5.2）。
+- `GET /api/ai-ranking/progress` 新增 `model, partial, retried, errors{原因:次数}, last_error`；榜单里 `batches` 同样带这些字段，另有 `error_summary`。`failed` 只数完全没拿到结果的原始批次。
+- `POST /api/ai/test`、`/api/ai/profiles/test` 返回新增 `provider, scoring_ok, scoring_ms, scoring_count, scoring_error`（2 只虚构股票的真实打分）。

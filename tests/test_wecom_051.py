@@ -101,7 +101,7 @@ def test_menu_json_limits():
     for b in m:
         for sub in b["sub_button"]:
             assert sub["type"] == "click" and len(sub["name"].encode()) <= 40 and sub["key"] in commands.MENU
-    assert set(commands.MENU) == menu.KEYS
+    assert menu.KEYS <= set(commands.MENU)  # 旧菜单的 key（添加说明等）仍能用
 
 
 def test_menu_create_against_mock(client, mock):

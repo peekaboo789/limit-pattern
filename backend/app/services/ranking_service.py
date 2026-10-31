@@ -102,66 +102,101 @@ def _prompt(day: date, items: list[dict], market: str = "") -> str:
     return "\n".join(lines)
 
 
-def _score_batches(day: date, items: list[dict], chat, market: str = "") -> dict[str, dict]:
-    """默认每批 10 只、3 批并发；某批超时就对半拆开各重试一次；失败的批不影响其他批，已评出的结果保留。"""
+TOKENS_PER_STOCK = 220  # 每只股票的 JSON 输出大约多少 token（含理由），用来保证 max_tokens 够用
+
+
+def _score_batches(day: date, items: list[dict], chat, market: str = "", settings: dict | None = None) -> dict[str, dict]:
+    """每批 N 只、并发 M 批（默认 10 只 × 3 批）。
+    - 一次运行只读一次设置，所有批次用同一个模型（中途切换模型不影响这次）；
+    - 单次调用内部已对 429 / 5xx / 超时做退避重试；
+    - 某批只回了一部分（截断 / 漏股）先保留，缺的代码再拆小批补一次；
+    - 失败按「原始批次」计数，原因按类别汇总（超时 / 429 限流 / JSON 解析失败 / HTTP 401 …）。"""
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    from backend.app.core.ai_client import AiTimeout
+    from backend.app.core.ai_client import AiTruncated
     from backend.app.core.config import ai_int
 
+    settings = settings if settings is not None else read_settings_file()
     size = ai_int(None, "ai_batch_size")
     parallel = ai_int(None, "ai_parallel")
     batches = [items[i : i + size] for i in range(0, len(items), size)]
     lock = threading.Lock()
     scores: dict[str, dict] = {}
     errors: list[str] = []
-    PROGRESS.update(running=True, done=0, total=len(batches), failed=0, split=0, scored=0, batch_size=size)
+    kinds: dict[str, int] = {}
+    PROGRESS.update(running=True, done=0, total=len(batches), failed=0, partial=0, split=0, retried=0, scored=0, batch_size=size,
+                    errors={}, last_error="", model=str(settings.get("ai_model") or ""))
 
     def ask(batch: list[dict]) -> dict[str, dict]:
         prompt = _prompt(day, batch, market)
-        text = chat(prompt) if chat is not None else call_chat(prompt, system=SYSTEM_PROMPT)
-        return _parse_scores(text)
+        try:
+            if chat is not None:
+                text = chat(prompt)
+            else:
+                text = call_chat(prompt, system=SYSTEM_PROMPT, settings=settings, thinking_default=False,
+                                 min_tokens=TOKENS_PER_STOCK * len(batch) + 400)
+        except AiTruncated as exc:
+            got = _parse_scores(exc.partial, partial=True)
+            if not got:
+                raise
+            return got
+        return _parse_scores(text, partial=True)
+
+    def note(exc: Exception) -> None:
+        kind = getattr(exc, "kind", "调用失败")
+        with lock:
+            errors.append(str(exc))
+            kinds[kind] = kinds.get(kind, 0) + 1
+            PROGRESS["errors"] = dict(kinds)
+            PROGRESS["last_error"] = f"{kind}：{str(exc)[:160]}"
 
     def keep(result: dict[str, dict]) -> None:
         with lock:
             scores.update(result)
             PROGRESS["scored"] = len(scores)
 
-    def fail(exc: Exception) -> None:
-        with lock:
-            errors.append(str(exc))
-            PROGRESS["failed"] += 1
-
     def run(batch: list[dict]) -> None:
         try:
-            keep(ask(batch))
-        except AiTimeout as exc:
-            if len(batch) < 2:
-                fail(exc)
-            else:
+            try:
+                keep(ask(batch))
+            except (AiFailed, AiNotConfigured) as exc:
+                note(exc)
+            missing = [i for i in batch if i["code"] not in scores]
+            if missing and len(missing) < len(batch):
                 with lock:
-                    PROGRESS["split"] += 1
-                half = (len(batch) + 1) // 2
-                for part in (batch[:half], batch[half:]):  # 拆半只重试一次，不再继续拆
+                    PROGRESS["partial"] += 1
+            if missing:  # 只补缺的代码，拆成小批各试一次
+                with lock:
+                    PROGRESS["retried"] += 1
+                    if len(missing) > 1:
+                        PROGRESS["split"] += 1
+                step = max(1, (len(missing) + 1) // 2) if len(missing) > 3 else len(missing)
+                for part in (missing[i : i + step] for i in range(0, len(missing), step)):
                     try:
                         keep(ask(part))
-                    except (AiFailed, AiNotConfigured) as inner:
-                        fail(inner)
-        except (AiFailed, AiNotConfigured) as exc:
-            fail(exc)
+                    except (AiFailed, AiNotConfigured) as exc:
+                        note(exc)
+            if all(i["code"] not in scores for i in batch):
+                with lock:
+                    PROGRESS["failed"] += 1
         finally:
             with lock:
                 PROGRESS["done"] += 1
 
     try:
-        with ThreadPoolExecutor(max_workers=parallel) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
             list(pool.map(run, batches))
     finally:
         PROGRESS["running"] = False
     if not scores:
-        raise AiFailed(errors[0] if errors else "AI 没有给出有效评分")
+        kind = max(kinds, key=kinds.get) if kinds else ""
+        raise AiFailed((f"{kind}：" if kind else "") + (errors[0] if errors else "AI 没有给出有效评分"), kind or None)
     return scores
+
+
+def error_summary(kinds: dict | None) -> str:
+    return "、".join(f"{k} {v} 次" for k, v in sorted((kinds or {}).items(), key=lambda kv: -kv[1]))
 
 
 def _num(value) -> float | None:
@@ -194,11 +229,20 @@ def _parse_entry(entry: dict) -> dict | None:
     }
 
 
-def _parse_scores(text: str) -> dict[str, dict]:
-    payload = _extract_json(text)
-    raw = payload.get("items")
-    if not isinstance(raw, list):
-        raise AiFailed("AI 没有返回 items 列表")
+def _parse_scores(text: str, partial: bool = False) -> dict[str, dict]:
+    from backend.app.services.summary_service import salvage_objects
+
+    try:
+        payload = _extract_json(text)
+        raw = payload.get("items")
+        if not isinstance(raw, list):
+            raise AiFailed("AI 没有返回 items 列表", "JSON 格式不对")
+    except AiFailed:
+        if not partial:
+            raise
+        raw = salvage_objects(text)  # 截断 / 夹杂文字：捞出完整的单只结果
+        if not raw:
+            raise
     scores: dict[str, dict] = {}
     for entry in raw:
         if not isinstance(entry, dict):
@@ -208,7 +252,7 @@ def _parse_scores(text: str) -> dict[str, dict]:
         if code and parsed and code not in scores:
             scores[code] = parsed
     if not scores:
-        raise AiFailed("AI 没有给出有效评分")
+        raise AiFailed("AI 没有给出有效评分", "JSON 格式不对")
     return scores
 
 
@@ -256,17 +300,19 @@ def _rank(session, day: date, chat, trigger: str, snapshot: dict, use_ai: bool =
     market = market_context(session, day)
     scores: dict[str, dict] = {}
     ai_error = "" if use_ai else "没有配置 AI 接口：只按系统综合评分出榜，没有模型依据"
+    settings = read_settings_file()  # 整次运行固定用开始时的模型，标签和实际调用一致
     if use_ai:
         try:
-            scores = _score_batches(day, feed_order(items), chat, market_line(market))
+            scores = _score_batches(day, feed_order(items), chat, market_line(market), settings=settings)
         except (AiFailed, AiNotConfigured) as exc:
             ai_error = f"AI 解读失败（{exc}）：只按系统综合评分出榜"
     extra = {
-        "batches": {k: PROGRESS.get(k) for k in ("total", "failed", "split", "batch_size")} if use_ai else None,
+        "batches": {k: PROGRESS.get(k) for k in ("total", "failed", "partial", "split", "retried", "batch_size", "errors", "last_error")} if use_ai else None,
         "unscored_count": sum(1 for item in items if item["code"] not in scores) if use_ai else 0,
         "ai_error": ai_error,
+        "error_summary": error_summary(PROGRESS.get("errors")) if use_ai else "",
     }
-    model = "" if chat is not None or not use_ai else str(read_settings_file().get("ai_model") or "")
+    model = "" if chat is not None or not use_ai else str(settings.get("ai_model") or "")
     return _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, extra, select="composite")
 
 

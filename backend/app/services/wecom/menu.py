@@ -7,10 +7,10 @@ from backend.app.services.wecom import client
 LAYOUT = [
     ("榜单", [("今日AI榜单", "RANK_TODAY"), ("实时监控", "RANK_LIVE"), ("相似前10", "SIM_TOP"),
               ("次日观察池", "NEXT_POOL"), ("重新生成榜单", "RANK_REGEN")]),
-    ("自选", [("自选行情", "WL_QUOTE"), ("自选异动≥3%", "WL_MOVERS"), ("添加说明", "WL_ADD_HELP"),
-              ("删除说明", "WL_DEL_HELP"), ("导出自选", "WL_EXPORT")]),
-    ("工具", [("采集当前行情", "CAPTURE"), ("同步行情", "SYNC"), ("今日总结", "SUMMARY"),
-              ("系统状态", "STATUS"), ("检查更新", "UPDATE")]),
+    ("工具", [("一键采集+AI分析", "CAPTURE_AI"), ("切换AI", "AI_SWITCH"), ("采集当前行情", "CAPTURE"),
+              ("同步行情", "SYNC"), ("今日总结", "SUMMARY")]),
+    ("自选", [("自选行情", "WL_QUOTE"), ("自选异动≥3%", "WL_MOVERS"), ("导出自选", "WL_EXPORT"),
+              ("系统状态", "STATUS"), ("帮助", "HELP")]),
 ]
 KEYS = {key for _name, subs in LAYOUT for _n, key in subs}
 

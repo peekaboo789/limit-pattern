@@ -307,9 +307,10 @@ export interface AiRanking {
   pool_dates: string[]
   pool_size: number
   pool_days?: number
-  batches?: { total: number; failed: number; split: number; batch_size: number }
+  batches?: { total: number; failed: number; split: number; batch_size: number; partial?: number; retried?: number; errors?: Record<string, number>; last_error?: string }
   unscored_count?: number
   ai_error?: string
+  error_summary?: string
   formula_text?: string
   formula_version?: number
   app_version?: string

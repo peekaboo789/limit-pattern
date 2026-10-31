@@ -179,8 +179,25 @@ def _extract_json(text: str) -> dict:
                 return payload
             raise AiFailed("模型返回的不是对象")
     if last_error is not None:
-        raise AiFailed("模型返回的 JSON 无法解析") from last_error
-    raise AiFailed("模型没有返回 JSON")
+        raise AiFailed("模型返回的 JSON 无法解析", "JSON 解析失败") from last_error
+    raise AiFailed("模型没有返回 JSON", "JSON 解析失败")
+
+
+def salvage_objects(text: str) -> list[dict]:
+    """JSON 整体坏掉（被截断 / 夹杂文字）时，逐个捞出完整的 {"code": ...} 对象。"""
+    import re
+
+    text = re.sub(r"(?s)<think>.*?</think>", "", text or "")
+    dec = json.JSONDecoder()
+    out: list[dict] = []
+    for m in re.finditer(r"\{\s*\"code\"", text):
+        try:
+            obj, _end = dec.raw_decode(text, m.start())
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
 
 
 SUMMARY_SYSTEM = (
@@ -194,14 +211,15 @@ SUMMARY_SYSTEM = (
 )
 
 
-def call_chat(prompt: str, system: str | None = None, timeout: float | None = None) -> str:
+def call_chat(prompt: str, system: str | None = None, timeout: float | None = None, settings: dict | None = None, **extra) -> str:
     from backend.app.core.ai_client import chat
 
     return chat(
         system or SUMMARY_SYSTEM,
         prompt,
-        settings=read_settings_file(),
+        settings=settings if settings is not None else read_settings_file(),
         read_timeout=timeout,
+        **extra,
     )
 
 

@@ -145,8 +145,8 @@ onMounted(load)
       </label>
     </div>
     <h3>底部菜单</h3>
-    <p class="hint">三组快捷菜单：榜单（今日AI榜单 / 实时监控 / 相似前10 / 次日观察池 / 重新生成榜单）、自选（自选行情 / 自选异动≥3% / 添加说明 / 删除说明 / 导出自选）、
-      工具（采集当前行情 / 同步行情 / 今日总结 / 系统状态 / 检查更新）。点击要靠上面的「接收消息」回调才能响应。</p>
+    <p class="hint">三组快捷菜单：榜单（今日AI榜单 / 实时监控 / 相似前10 / 次日观察池 / 重新生成榜单）、工具（一键采集+AI分析 / 切换AI / 采集当前行情 / 同步行情 / 今日总结）、
+      自选（自选行情 / 自选异动≥3% / 导出自选 / 系统状态 / 帮助）。切换AI 后直接回复数字即可换模型。点击要靠上面的「接收消息」回调才能响应。</p>
     <label class="check"><input v-model="form.wecom_menu_autosync" type="checkbox" /> 新版本第一次启动时自动同步菜单</label>
     <div class="actions"><button class="btn btn-ghost" type="button" :disabled="menuing" @click="syncMenu">{{ menuing ? '同步中…' : '同步底部菜单到企业微信' }}</button></div>
     <h3>推送哪些事件</h3>

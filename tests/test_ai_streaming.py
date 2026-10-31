@@ -137,9 +137,11 @@ def test_batch_timeout_splits_in_half_and_keeps_partial(monkeypatch):
     scores = ranking_service._score_batches(date(2026, 10, 30), items, chat)
     progress = ranking_service.progress()
     assert progress["total"] == 3 and progress["batch_size"] == 10
-    assert progress["split"] == 2  # 两个 10 只的批拆半；最后 5 只那批没超时
-    assert progress["failed"] == 1 and progress["done"] == 3
-    assert len(scores) == 20 and "600024" not in scores and "600000" in scores
+    # v0.5.4：只补缺的代码、拆小批；失败按原始批次计数（不会出现失败批数 > 总批数）
+    assert progress["split"] == 3 and progress["retried"] == 3
+    assert progress["failed"] == 0 and progress["done"] == 3
+    assert len(scores) == 23 and "600024" not in scores and "600022" in scores and "600000" in scores
+    assert progress["errors"] == {"超时": 2, "调用失败": 2}
 
 
 def test_ai_settings_validated(client):

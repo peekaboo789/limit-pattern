@@ -80,7 +80,7 @@ async function testAi() {
     })
     const note = result.note ? `（${result.note}）` : ''
     aiResult.value = result.ok
-      ? { ok: true, text: `连接成功，用时 ${result.latency_ms} 毫秒，深度思考：${result.thinking ?? ''}，模型回复：${result.reply}。调用地址 ${result.endpoint}${note}` }
+      ? { ok: true, text: `连接成功，用时 ${result.latency_ms} 毫秒，深度思考：${result.thinking ?? ''}，模型回复：${result.reply}；试打分 2 只：${(result as any).scoring_ok ? '成功 ' + (result as any).scoring_ms + ' ms' : '失败（' + ((result as any).scoring_error || '') + '）'}。调用地址 ${result.endpoint}${note}` }
       : { ok: false, text: `${result.error}${note}` }
   } catch (reason) {
     aiResult.value = { ok: false, text: reason instanceof ApiError ? reason.detail : '测试请求没有返回' }

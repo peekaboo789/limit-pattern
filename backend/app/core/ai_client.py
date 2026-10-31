@@ -21,11 +21,63 @@ class AiNotConfigured(RuntimeError):
 
 
 class AiFailed(RuntimeError):
-    pass
+    """kind：给界面看的失败原因分类（超时 / 429 限流 / HTTP 401 / JSON 解析失败 / 输出被截断 …）。"""
+
+    kind = "调用失败"
+
+    def __init__(self, message: str = "", kind: str | None = None):
+        super().__init__(message)
+        if kind:
+            self.kind = kind
 
 
 class AiTimeout(AiFailed):
     """读取超时（流式时是连续多少秒没有任何数据块，或整批超过总上限）。"""
+
+    kind = "超时"
+
+
+class AiTruncated(AiFailed):
+    """输出到 max_tokens 被截断（finish_reason=length）；partial 里是已经收到的正文。"""
+
+    kind = "输出被截断"
+
+    def __init__(self, message: str, partial: str = ""):
+        super().__init__(message)
+        self.partial = partial
+
+
+RETRY_STATUS = {429, 500, 502, 503, 504}
+RETRIES = 2  # 429 / 5xx / 超时 / 断线 最多再试 2 次（指数退避）
+_sleep = time.sleep  # 测试里替换
+
+
+def provider(endpoint: str, model: str = "") -> str:
+    """按地址 / 模型名识别服务商，用来套兼容规则。"""
+    host = (urlparse(endpoint).hostname or "").lower()
+    m = (model or "").lower()
+    if host.endswith("aliyuncs.com") or "dashscope" in host:
+        return "dashscope"
+    if "deepseek" in host:
+        return "deepseek"
+    if "moonshot" in host:
+        return "moonshot"
+    if "bigmodel" in host:
+        return "zhipu"
+    if "siliconflow" in host:
+        return "siliconflow"
+    if m.startswith(("qwen", "qwq")):
+        return "qwen-compatible"
+    return "openai"
+
+
+def _backoff(attempt: int, retry_after: str | None = None) -> float:
+    try:
+        if retry_after:
+            return max(0.5, min(20.0, float(retry_after)))
+    except ValueError:
+        pass
+    return min(20.0, 1.5 * (2 ** attempt))
 
 
 def normalize_endpoint(base_url: str) -> tuple[str, str]:
@@ -151,6 +203,7 @@ def parse_stream(lines, deadline: float | None = None, total: float = TOTAL_CAP)
     import time as _time
 
     parts: list[str] = []
+    finish = None
     for raw in lines:
         if deadline is not None and _time.monotonic() > deadline:
             raise AiTimeout(f"总时长超时：{int(total)} 秒内模型还没写完，已自动拆小批次重试；仍失败可换更快的模型或调小每批股票数")
@@ -169,7 +222,11 @@ def parse_stream(lines, deadline: float | None = None, total: float = TOTAL_CAP)
             content = (choice.get("delta") or {}).get("content")
             if content:
                 parts.append(str(content))
-    return "".join(parts)
+            finish = choice.get("finish_reason") or finish
+    text = "".join(parts)
+    if finish == "length":
+        raise AiTruncated("模型输出达到长度上限被截断（max_tokens 太小），已保留截断前能解析的结果", text)
+    return text
 
 
 def _no_content_type(response) -> bool:
@@ -178,8 +235,11 @@ def _no_content_type(response) -> bool:
 
 
 def _content(payload: dict) -> str:
-    message = payload["choices"][0]["message"]
-    return str(message.get("content") or "")
+    choice = payload["choices"][0]
+    text = str((choice.get("message") or {}).get("content") or "")
+    if choice.get("finish_reason") == "length":
+        raise AiTruncated("模型输出达到长度上限被截断（max_tokens 太小），已保留截断前能解析的结果", text)
+    return text
 
 
 def chat(
@@ -190,6 +250,8 @@ def chat(
     read_timeout: float | None = None,
     max_tokens: int | None = None,
     total_timeout: float | None = None,
+    thinking_default: bool | None = None,
+    min_tokens: int | None = None,
 ) -> str:
     """唯一的 AI 调用入口：测试按钮、每日总结、AI 排名都走这里。"""
     url = str(settings.get("ai_base_url") or "")
@@ -207,6 +269,10 @@ def chat(
         thinking = False
     else:
         thinking = learned.get("thinking")  # None = 不发送该参数
+        kind = provider(endpoint, model)
+        if thinking is None and thinking_default is not None and kind in ("dashscope", "qwen-compatible"):
+            # 阿里云百炼的 qwen3 / qwen3.5 默认开思考：打分这种结构化任务关掉，快几倍，也不会把 JSON 挤掉
+            thinking = thinking_default
     from backend.app.core.config import ai_int
 
     idle = float(read_timeout or ai_int(settings, "ai_timeout_seconds"))
@@ -221,13 +287,16 @@ def chat(
     proxy = None if env_proxy or _TRANSPORT is not None else system_proxy(endpoint)
 
     adjusted = False
-    for _attempt in range(3):
+    retries = 0
+    for _attempt in range(3 + RETRIES):
         body: dict = {
             "model": model,
             "temperature": _temperature(settings),
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         }
         cap = max_tokens or _int_or_none(settings.get("ai_max_tokens"))
+        if cap and min_tokens and cap < min_tokens:
+            cap = min_tokens  # 用户设得太小会把 JSON 截断：打分时至少给够
         if cap:
             body["max_tokens"] = cap
         if thinking is not None:
@@ -242,10 +311,12 @@ def chat(
         else:
             kwargs.update(verify=_ssl_context(), proxy=proxy)
         headers = {"Authorization": f"Bearer {key}"}
+        _retry_after = None
         try:
             with httpx.Client(**kwargs) as client:
                 if stream:
                     with client.stream("POST", endpoint, headers=headers, json=body) as response:
+                        _retry_after = response.headers.get("retry-after")
                         if response.status_code >= 400:
                             response.read()
                             status, text = response.status_code, response.text
@@ -258,15 +329,34 @@ def chat(
                             status, text = 200, None
                 else:
                     response = client.post(endpoint, headers=headers, json=body)
+                    _retry_after = response.headers.get("retry-after")
                     status, text = response.status_code, response.text
                     content = None
         except httpx.TimeoutException as exc:
             message = describe_error(exc, endpoint, effective_read, proxy)
             if stream and isinstance(exc, httpx.ReadTimeout):
                 message = f"读取超时：连续 {int(effective_read)} 秒没有收到任何数据（含思考过程），可换更快的模型、调大 AI 超时或调小每批股票数（调用地址 {endpoint}）"
+            if retries < RETRIES and not isinstance(exc, httpx.ConnectTimeout):
+                retries += 1
+                _log_retry(endpoint, model, "超时", retries)
+                _sleep(_backoff(retries))
+                continue
             raise AiTimeout(message) from exc
+        except (httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            if retries < RETRIES:
+                retries += 1
+                _log_retry(endpoint, model, "连接中断", retries)
+                _sleep(_backoff(retries))
+                continue
+            raise AiFailed(describe_error(exc, endpoint, effective_read, proxy), "连接中断") from exc
         except (httpx.HTTPError, ssl.SSLError) as exc:
-            raise AiFailed(describe_error(exc, endpoint, effective_read, proxy)) from exc
+            raise AiFailed(describe_error(exc, endpoint, effective_read, proxy), "网络错误") from exc
+
+        if status in RETRY_STATUS and retries < RETRIES:
+            retries += 1
+            _log_retry(endpoint, model, f"HTTP {status}", retries)
+            _sleep(_backoff(retries, _retry_after))
+            continue
 
         if status == 400 and text:
             lower = text.lower()
@@ -289,18 +379,26 @@ def chat(
         if status >= 400:
             detail = scrub(text or "", key)[:300]
             hint = {401: "（密钥无效，或密钥和地址不属于同一地域/业务空间）", 404: "（地址路径不对，或模型名不存在）", 429: "（请求太频繁或额度用完）"}.get(status, "")
-            raise AiFailed(f"AI 接口返回 HTTP {status}{hint}：{detail}（调用地址 {endpoint}）")
+            raise AiFailed(f"AI 接口返回 HTTP {status}{hint}：{detail}（调用地址 {endpoint}）", "429 限流" if status == 429 else f"HTTP {status}")
         if adjusted and mode == "auto":
             _save_learned(url, model, thinking, stream)
         if stream:
             if not content:
-                raise AiFailed("AI 接口流式返回里没有正文内容")
+                raise AiFailed("AI 接口流式返回里没有正文内容（可能全部是思考过程）", "空回复")
             return content
         try:
             return _content(response.json())
+        except AiTruncated:
+            raise
         except Exception as exc:
             raise AiFailed(f"AI 接口返回的内容看不懂：{scrub(text or '', key)[:300]}") from exc
     raise AiFailed(f"AI 接口参数反复不兼容（调用地址 {endpoint}）")
+
+
+def _log_retry(endpoint: str, model: str, why: str, n: int) -> None:
+    import logging
+
+    logging.getLogger("limit_pattern.ai").warning("AI 调用%s，第 %d 次重试（%s，模型 %s）", why, n, endpoint, model)  # 不带密钥
 
 
 def _temperature(settings: dict) -> float:
@@ -327,8 +425,11 @@ def test_ai(settings: dict) -> dict:
         return {"ok": False, "error": str(exc), "endpoint": endpoint, "note": note, "latency_ms": 0}
     except AiFailed as exc:
         return {"ok": False, "error": str(exc), "endpoint": endpoint, "note": note, "latency_ms": int((time.monotonic() - began) * 1000)}
+    probe = scoring_probe(settings)
     return {
         "ok": True,
+        **probe,
+        "provider": provider(endpoint, str(settings.get("ai_model") or "")),
         "reply": reply.strip()[:200],
         "endpoint": endpoint,
         "note": note,
@@ -347,3 +448,30 @@ def _thinking_note(settings: dict) -> str:
     learned = _learned(read_settings_file(), str(settings.get("ai_base_url") or ""), str(settings.get("ai_model") or ""))
     value = learned.get("thinking")
     return "自动（未发送该参数）" if value is None else f"自动（已记住：{'开' if value else '关'}）"
+
+
+PROBE_PROMPT = (
+    "评估日 2026-01-05（连接测试，用虚构数据），候选 2 只。\n市场环境：-\n"
+    "600000 测试股A 相似度 0.82 高相似样本 3 个 当日涨跌 +2.1% 量比 1.6\n"
+    "000001 测试股B 相似度 0.55 高相似样本 0 个 当日涨跌 -0.8% 量比 0.9"
+)
+
+
+def scoring_probe(settings: dict) -> dict:
+    """用 2 只虚构股票跑一次真实的打分请求（同样的系统提示、关思考、同样的 JSON 解析）。"""
+    from backend.app.services.ranking_service import SYSTEM_PROMPT, TOKENS_PER_STOCK, _parse_scores
+
+    began = time.monotonic()
+    try:
+        text = chat(SYSTEM_PROMPT, PROBE_PROMPT, settings=settings, thinking_default=False, min_tokens=TOKENS_PER_STOCK * 2 + 400)
+        got = _parse_scores(text, partial=True)
+        return {"scoring_ok": True, "scoring_ms": int((time.monotonic() - began) * 1000), "scoring_count": len(got), "scoring_error": ""}
+    except AiTruncated as exc:
+        try:
+            got = _parse_scores(exc.partial, partial=True)
+            return {"scoring_ok": True, "scoring_ms": int((time.monotonic() - began) * 1000), "scoring_count": len(got), "scoring_error": "输出被截断（部分可用）：调大 max_tokens"}
+        except AiFailed:
+            pass
+        return {"scoring_ok": False, "scoring_ms": int((time.monotonic() - began) * 1000), "scoring_error": f"{exc.kind}：{exc}"}
+    except AiFailed as exc:
+        return {"scoring_ok": False, "scoring_ms": int((time.monotonic() - began) * 1000), "scoring_error": f"{exc.kind}：{exc}"}

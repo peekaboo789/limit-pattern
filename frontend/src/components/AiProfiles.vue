@@ -52,8 +52,8 @@ async function test(p?: Prof) {
   msg.value = null
   try {
     const payload = p ? { id } : { id, ...body() }
-    const r = await request<{ ok: boolean; reply?: string; error?: string; latency_ms: number; endpoint: string }>('/api/ai/profiles/test', { method: 'POST', body: JSON.stringify(payload) }, 200000)
-    msg.value = r.ok ? { ok: true, text: `连接成功（${r.latency_ms} ms）：${r.reply}` } : { ok: false, text: `${r.error}（${r.endpoint}）` }
+    const r = await request<{ ok: boolean; reply?: string; error?: string; latency_ms: number; endpoint: string; scoring_ok?: boolean; scoring_ms?: number; scoring_error?: string; scoring_count?: number }>('/api/ai/profiles/test', { method: 'POST', body: JSON.stringify(payload) }, 200000)
+    msg.value = r.ok ? { ok: r.scoring_ok !== false, text: `连接成功（${r.latency_ms} ms）：${r.reply}；试打分 2 只：` + (r.scoring_ok ? `成功（${r.scoring_ms} ms，解析出 ${r.scoring_count} 只${r.scoring_error ? '，' + r.scoring_error : ''}）` : `失败（${r.scoring_error}）`) } : { ok: false, text: `${r.error}（${r.endpoint}）` }
   } catch (e) {
     msg.value = { ok: false, text: e instanceof Error ? e.message : '测试失败' }
   } finally {

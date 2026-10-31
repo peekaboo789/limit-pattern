@@ -138,9 +138,10 @@ async function generate(snapshot?: 'morning') {
       const p = await api.aiRankingProgress()
       if (p.total)
         progressText.value =
-          `AI 打分 ${p.done}/${p.total} 批（每批 ${p.batch_size ?? 10} 只，已评 ${p.scored ?? 0} 只）` +
-          (p.split ? `，${p.split} 批超时已拆半重试` : '') +
-          (p.failed ? `，${p.failed} 批失败` : '')
+          `AI 打分 ${p.done}/${p.total} 批（${(p as any).model ? (p as any).model + '，' : ''}每批 ${p.batch_size ?? 10} 只，已评 ${p.scored ?? 0} 只）` +
+          ((p as any).retried ? `，${(p as any).retried} 批补打缺的股票` : '') +
+          (p.failed ? `，${p.failed} 批失败` : '') +
+          ((p as any).last_error ? `；最近错误：${(p as any).last_error}` : '')
     } catch {
       /* 忽略 */
     }
@@ -253,7 +254,8 @@ onActivated(async () => {
     </div>
     <p v-if="ranking?.name_warnings?.length" class="hint">⚠ {{ ranking.name_warnings.length }} 只名称与本地不一致（{{ ranking.name_warnings.map((w) => `${w.code} 写成「${w.claimed}」，本地「${w.local}」`).join('；') }}），已按代码导入。</p>
     <p v-if="ranking?.unscored_count" class="alert">
-      有 {{ ranking.unscored_count }} 只没拿到 AI 解读（{{ ranking.batches?.failed ?? 0 }} 批失败）；排名按系统综合评分，不受影响。
+      有 {{ ranking.unscored_count }} 只没拿到 AI 解读（{{ ranking.batches?.failed ?? 0 }}/{{ ranking.batches?.total ?? 0 }} 批失败<template v-if="ranking.error_summary">，原因：{{ ranking.error_summary }}</template>）；排名按系统综合评分，不受影响。
+      <span v-if="ranking.batches?.last_error" class="hint" style="display: block">{{ ranking.batches.last_error }}</span>
       <button class="btn btn-ghost" type="button" :disabled="generating" @click="generate()">重新生成</button>
     </p>
     <p v-if="ranking?.ai_error" class="hint">{{ ranking.ai_error }}</p>

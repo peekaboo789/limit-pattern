@@ -16,8 +16,11 @@ Reply = Callable[[str, str], None]
 
 HELP_BODY = "\n".join([
     "📊 榜单：榜单 / 实时监控 / 相似前10 / 观察池 / 重新生成",
-    "⭐ 自选：自选 / 异动 / 加自选 代码或名称 / 删自选 代码或名称 / 导出自选",
-    "🛠 工具：采集 / 同步 / 总结 / 状态 / 检查更新",
+    "🛠 工具：采集分析（一键采集+AI分析）/ 切换AI（回复数字换模型）/ 采集 / 同步 / 总结",
+    "⭐ 自选：自选 / 异动 / 导出自选",
+    "  加自选 代码或名称（如 加自选 600519、加自选 茅台、加自选 gzmt）",
+    "  删自选 代码或名称（如 删自选 600519）",
+    "🖥 其他：状态 / 检查更新",
     "也可以直接点对话框底部的菜单。",
 ])
 
@@ -25,7 +28,7 @@ HELP_BODY = "\n".join([
 MENU = {
     "RANK_TODAY": "榜单", "RANK_LIVE": "实时监控", "SIM_TOP": "相似前10", "NEXT_POOL": "观察池", "RANK_REGEN": "重新生成",
     "WL_QUOTE": "自选", "WL_MOVERS": "异动", "WL_ADD_HELP": "添加说明", "WL_DEL_HELP": "删除说明", "WL_EXPORT": "导出自选",
-    "CAPTURE": "采集", "SYNC": "同步", "SUMMARY": "总结", "STATUS": "状态", "UPDATE": "检查更新",
+    "CAPTURE": "采集", "CAPTURE_AI": "采集分析", "AI_SWITCH": "切换AI", "HELP": "帮助", "SYNC": "同步", "SUMMARY": "总结", "STATUS": "状态", "UPDATE": "检查更新",
 }
 # 文字指令（含别名），长的放前面先匹配
 ALIASES = [
@@ -34,6 +37,8 @@ ALIASES = [
     ("今日AI榜单", "榜单"), ("AI榜单", "榜单"), ("重新生成榜单", "重新生成"), ("重新生成", "重新生成"), ("榜单", "榜单"),
     ("实时监控", "实时监控"), ("监控", "实时监控"), ("相似前10", "相似前10"), ("相似", "相似前10"),
     ("次日观察池", "观察池"), ("观察池", "观察池"),
+    ("一键采集+AI分析", "采集分析"), ("一键采集", "采集分析"), ("采集+AI分析", "采集分析"), ("采集分析", "采集分析"), ("采集AI", "采集分析"),
+    ("切换AI", "切换AI"), ("切换模型", "切换AI"), ("AI列表", "切换AI"), ("模型列表", "切换AI"), ("模型", "切换AI"),
     ("采集当前行情", "采集"), ("采集", "采集"), ("同步行情", "同步"), ("同步", "同步"),
     ("今日总结", "总结"), ("总结", "总结"), ("系统状态", "状态"), ("状态", "状态"),
     ("检查更新", "检查更新"), ("更新", "检查更新"), ("帮助", "帮助"), ("菜单", "帮助"),
@@ -86,8 +91,143 @@ def _scan_lines(items: list[dict], key: str = "max_similarity") -> str:
                      for n, i in enumerate(items[:10], 1)) or "（空）"
 
 
-def run(cmd: str, arg: str = "", reply: Reply | None = None) -> tuple[str, str]:
+# ---------- v0.5.4 切换 AI：发列表，回复数字切换（每人 5 分钟内有效） ----------
+PICK_TTL = 300
+_PICK: dict[str, tuple[float, list[str]]] = {}
+_PICK_LOCK = threading.Lock()
+
+
+def pending_pick(user: str) -> bool:
+    with _PICK_LOCK:
+        hit = _PICK.get((user or "").lower())
+        if hit and hit[0] < _time.monotonic():
+            _PICK.pop((user or "").lower(), None)
+            hit = None
+    return bool(hit)
+
+
+def ai_list(user: str = "") -> tuple[str, str]:
+    from backend.app.core import ai_profiles
+
+    pub = ai_profiles.public()
+    items = pub["items"]
+    if not items:
+        return "🤖 切换AI", "还没有配置 AI 模型，请在网页 设置 → AI 模型 里添加"
+    lines = [f"{n}. {'✅' if p['active'] else '▫️'} {p['name'] or p['model']}（{p['model'] or '未填模型'}）{'' if p['api_key_set'] else ' ⚠️缺密钥'}"
+             for n, p in enumerate(items, 1)]
+    with _PICK_LOCK:
+        _PICK[(user or "").lower()] = (_time.monotonic() + PICK_TTL, [p["id"] for p in items])
+    return "🤖 切换AI（✅=当前）", "\n".join(lines) + "\n\n回复数字切换（5 分钟内有效）"
+
+
+def pick(user: str, text: str) -> tuple[str, str]:
+    from backend.app.core import ai_profiles
+
+    key = (user or "").lower()
+    with _PICK_LOCK:
+        hit = _PICK.get(key)
+        if not hit or hit[0] < _time.monotonic():
+            _PICK.pop(key, None)
+            return "🤖 切换AI", "列表已过期，请重新发「切换AI」"
+        ids = hit[1]
+    n = int(text)
+    if not 1 <= n <= len(ids):
+        return "🤖 切换AI", f"没有第 {n} 个，请回复 1~{len(ids)} 之间的数字"
+    try:
+        pub = ai_profiles.activate(ids[n - 1])
+    except LookupError:
+        return "🤖 切换AI", "这个模型配置已被删除，请重新发「切换AI」"
+    with _PICK_LOCK:
+        _PICK.pop(key, None)
+    cur = next(p for p in pub["items"] if p["active"])
+    return "✅ 已切换AI", f"当前模型：{cur['name'] or cur['model']}（{cur['model']}）" + ("" if cur["api_key_set"] else "\n⚠️ 这个配置还没填密钥，AI 分析会失败")
+
+
+# ---------- v0.5.4 一键采集 + AI 分析 ----------
+_CAP_AI = threading.Lock()
+
+
+def capture_ai_job() -> list[tuple[str, str]]:
+    """采集当前行情 → 前 100 → 当前 AI 模型打分 → 出 AI 榜单（和网页里「生成 AI 榜单」同一套逻辑）。"""
+    from backend.app.services import manual_capture
+    from backend.app.services.ai_context import market_line
+    from backend.app.services.ranking_service import _rank, display_order, generate_ranking
+    from backend.app.services.summary_service import ai_ready
+
+    if not ai_ready():
+        return [("❌ 采集分析没开始", "当前 AI 模型没有配置好（缺接口地址 / 模型 / 密钥）。发「切换AI」换一个，或到网页 设置 → AI 模型 里填写")]
+    note = ""
+    try:
+        cap = manual_capture.capture()
+        data_label = cap.get("label") or cap.get("date") or ""
+        with session_scope() as s:
+            payload = manual_capture.load_snapshot()
+            with manual_capture.snapshot_day(s, payload) as (day, info):
+                board = _rank(s, day, None, "manual", info, True)
+    except manual_capture.NoDataYet as exc:
+        note = f"（{exc}）"
+        with session_scope() as s:
+            board = generate_ranking(s, None, trigger="manual", prefer="auto")
+        snap = board.get("snapshot") or {}
+        data_label = f"{board.get('date', '')} " + ("收盘日线（非交易时段，用最近一个交易日的数据）" if snap.get("kind") in (None, "daily", "close") else (snap.get("label") or ""))
+    board = display_order(dict(board))
+    items = board.get("items") or []
+    lines = [f"数据时间：{data_label}{note}"]
+    if isinstance(board.get("market"), dict):
+        try:
+            lines.append(market_line(board["market"]))
+        except Exception:  # noqa: BLE001
+            pass
+    if board.get("ai_error"):
+        lines.append("⚠️ " + board["ai_error"])
+    lines.append("")
+    for it in items[:20]:
+        ms, cs = it.get("model_score"), it.get("composite_score")
+        row = f"{it.get('rank'):>2}. {notify.stock(it.get('name'), it['code'])} 综合 {'—' if cs is None else round(float(cs), 1)} AI {'—' if ms is None else round(float(ms), 1)}"
+        if it.get("reason"):
+            row += f"\n    {str(it['reason'])[:60]}"
+        lines.append(row)
+    lines.append("\n注：相似度只是形态接近程度，不是上涨概率；只用评估日及以前的数据，不构成投资建议。")
+    return [(f"🤖 采集+AI分析 前20（共{len(items)}只）", "\n".join(lines))]
+
+
+def start_capture_ai(reply: Reply | None):
+    if not _CAP_AI.acquire(blocking=False):
+        return "⏳ 正在分析", "上一次「一键采集+AI分析」还没做完，完成后会推给你"
+
+    def job():
+        try:
+            return capture_ai_job()
+        finally:
+            _CAP_AI.release()
+
+    if reply is None:
+        out = job()
+        return out[0]
+
+    def run():
+        try:
+            for msg in job():
+                reply(*msg)
+        except Exception as exc:  # noqa: BLE001
+            reply("❌ 采集分析失败", str(exc)[:300])
+
+    try:  # 先回「已开始」再开工，保证顺序
+        reply("⏳ 已开始", "已开始一键采集+AI分析：采集全市场行情 → 选前100 → 当前AI模型打分（几分钟），完成后推前20给你")
+    finally:
+        threading.Thread(target=run, name="wecom-capture-ai", daemon=True).start()
+    return None
+
+
+def run(cmd: str, arg: str = "", reply: Reply | None = None, user: str = "") -> tuple[str, str]:
     from backend.app.services import watchlist_service as ws
+
+    if cmd == "采集分析":
+        return start_capture_ai(reply)
+    if cmd == "切换AI":
+        return ai_list(user)
+    if cmd == "选AI":
+        return pick(user, arg)
 
     if cmd == "帮助":
         return "📖 可用指令", HELP_BODY
