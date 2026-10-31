@@ -151,6 +151,7 @@ struct StockDetailView: View {
 /// 导出按钮：下载后弹预览（分享 / 存到「文件」/ 拷贝全文）。
 struct ExportMenu: View {
     let title: String
+    var toolbar = false
     let options: [(String, String, [String: String?], String)] // (label, path, query, fallback filename)
     @State private var share: ShareFile?
     @State private var error: String?
@@ -160,8 +161,12 @@ struct ExportMenu: View {
             ForEach(options.indices, id: \.self) { i in
                 Button(options[i].0) { Task { await run(options[i]) } }
             }
-        } label: { Label(busy ? "导出中…" : title, systemImage: "square.and.arrow.up") }
-        .buttonStyle(.glass)
+        } label: {
+            if toolbar { if busy { ProgressView() } else { Label(title, systemImage: "square.and.arrow.up").labelStyle(.iconOnly) } }
+            else { Label(busy ? "导出中…" : title, systemImage: "square.and.arrow.up") }
+        }
+        .modifier(GlassIfInline(inline: !toolbar))
+        .accessibilityLabel(title)
         .exportPreview($share)
         .alert("导出失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("好") { error = nil } } message: { Text(error ?? "") }
     }
@@ -223,5 +228,12 @@ struct ExportPreviewSheet: View {
 extension View {
     func exportPreview(_ item: Binding<ShareFile?>) -> some View {
         sheet(item: item) { f in ExportPreviewSheet(url: f.url) }
+    }
+}
+
+struct GlassIfInline: ViewModifier {
+    let inline: Bool
+    func body(content: Content) -> some View {
+        if inline { content.buttonStyle(.glass) } else { content }
     }
 }

@@ -38,7 +38,7 @@ struct SimilarityView: View {
         .refreshable { await load() }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                ExportMenu(title: "导出", options: [("前100 TXT", "/api/export", ["type": "scan", "date": scan["date"].string], "scan.txt"),
+                ExportMenu(title: "导出", toolbar: true, options: [("前100 TXT", "/api/export", ["type": "scan", "date": scan["date"].string], "scan.txt"),
                                                    ("给 AI（TXT）", "/api/ai-input", ["format": "txt"], "ai_input.txt")])
             }
         }
@@ -73,7 +73,7 @@ struct NextDayPoolView: View {
         .scrollContentBackground(.hidden).screenBackground()
         .navigationTitle("次日观察池")
         .task { await load() }.refreshable { await load() }
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { ExportMenu(title: "导出", options: [("TXT", "/api/export", ["type": "next_day_pool"], "next_day_pool.txt")]) } }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { ExportMenu(title: "导出", toolbar: true, options: [("TXT", "/api/export", ["type": "next_day_pool"], "next_day_pool.txt")]) } }
     }
     func load() async {
         do { data = try await APIClient.shared.get("/api/next-day-pool", ["top": "30"], timeout: 300); error = nil } catch { self.error = error.localizedDescription }

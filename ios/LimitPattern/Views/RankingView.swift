@@ -79,8 +79,8 @@ struct RankingView: View {
                 } label: { Label("生成", systemImage: "sparkles") }
                 .disabled(generating)
             }
-            ToolbarItem(placement: .bottomBar) {
-                ExportMenu(title: "导出", options: [
+            ToolbarItem(placement: .topBarTrailing) {
+                ExportMenu(title: "导出", toolbar: true, options: [
                     ("榜单 TXT", "/api/export", ["type": "ai_ranking", "date": data["date"].string], "ai_ranking.txt"),
                     ("前100给 AI（TXT）", "/api/ai-input", ["format": "txt"], "ai_input.txt"),
                     ("前100给 AI（MD）", "/api/ai-input", ["format": "md"], "ai_input.md"),

@@ -70,8 +70,8 @@ struct WatchlistView: View {
                     Button("清空自选", systemImage: "trash", role: .destructive) { Task { await clearAll() } }
                 } label: { Label("更多", systemImage: "ellipsis") }
             }
-            ToolbarItem(placement: .bottomBar) {
-                ExportMenu(title: "导出自选", options: [
+            ToolbarItem(placement: .topBarTrailing) {
+                ExportMenu(title: "导出自选", toolbar: true, options: [
                     ("TXT", "/api/watchlist/export", ["format": "txt"], "watchlist.txt"),
                     ("CSV", "/api/watchlist/export", ["format": "csv"], "watchlist.csv"),
                 ])

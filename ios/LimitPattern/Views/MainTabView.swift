@@ -12,7 +12,7 @@ struct MainTabView: View {
             Tab("自选", systemImage: "star", value: 3) { NavigationStack { WatchlistView() } }
             Tab("更多", systemImage: "ellipsis.circle", value: 4) { NavigationStack { MoreView() } }
         }
-        .tabBarMinimizeBehavior(.onScrollDown)
+        .tabBarMinimizeBehavior(.never)
         .overlay(alignment: .top) {
             if let w = state.versionWarning { ErrorBanner(message: w).padding(.horizontal) }
         }
