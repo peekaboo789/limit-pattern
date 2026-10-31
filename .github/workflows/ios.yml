@@ -1,0 +1,89 @@
+name: Build iOS (unsigned IPA)
+
+on:
+  push:
+    branches: [cursor/limit-pattern-ios]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+jobs:
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app || sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i ios
+
+      - name: Generate project (XcodeGen)
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Pick simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys;d=json.load(sys.stdin)['devices'];c=[x for k,v in d.items() if 'iOS-26' in k for x in v if x['name'].startswith('iPhone')];c.sort(key=lambda x:('Pro' not in x['name'],x['name']),reverse=False);print(c[0]['udid'])")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices available | grep "$UDID"
+
+      - name: Unit tests (simulator)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild test -project LimitPattern.xcodeproj -scheme LimitPattern \
+            -destination "id=${{ steps.sim.outputs.udid }}" -derivedDataPath build/sim \
+            CODE_SIGNING_ALLOWED=NO | tail -n 80
+
+      - name: Build unsigned IPA
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild build -project LimitPattern.xcodeproj -scheme LimitPattern -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/device \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tail -n 60
+          APP=build/device/Build/Products/Release-iphoneos/LimitPattern.app
+          rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
+          zip -qry LimitPattern-unsigned.ipa Payload
+          ls -la LimitPattern-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LimitPattern-unsigned-ipa
+          path: ios/LimitPattern-unsigned.ipa
+
+      - name: Simulator screenshots (real backend, empty data)
+        continue-on-error: true
+        run: |
+          python3 -m venv /tmp/venv && /tmp/venv/bin/pip -q install -r requirements.txt
+          mkdir -p /tmp/lpdata shots
+          (LP_DATA_DIR=/tmp/lpdata LP_HOST=127.0.0.1 LP_PORT=8000 /tmp/venv/bin/python -m backend.app.main > /tmp/server.log 2>&1 &)
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 2; done
+          UDID=${{ steps.sim.outputs.udid }}
+          APP=ios/build/sim/Build/Products/Debug-iphonesimulator/LimitPattern.app
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl privacy "$UDID" grant notifications com.peekaboo789.limitpattern || true
+          xcrun simctl launch "$UDID" com.peekaboo789.limitpattern; sleep 8
+          xcrun simctl io "$UDID" screenshot shots/01-login.png
+          xcrun simctl terminate "$UDID" com.peekaboo789.limitpattern
+          xcrun simctl launch "$UDID" com.peekaboo789.limitpattern -server http://127.0.0.1:8000; sleep 12
+          xcrun simctl io "$UDID" screenshot shots/02-overview.png
+          for t in 1 2 3 4; do
+            xcrun simctl launch --terminate-running-process "$UDID" com.peekaboo789.limitpattern -server http://127.0.0.1:8000 -tab $t; sleep 8
+            xcrun simctl io "$UDID" screenshot shots/0$((t+2))-tab$t.png
+          done
+          tail -n 20 /tmp/server.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-screenshots
+          path: shots/
+          if-no-files-found: ignore

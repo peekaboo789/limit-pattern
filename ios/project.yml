@@ -1,0 +1,47 @@
+name: LimitPattern
+options:
+  bundleIdPrefix: com.peekaboo789
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+targets:
+  LimitPattern:
+    type: application
+    platform: iOS
+    sources: [LimitPattern]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.peekaboo789.limitpattern
+        PRODUCT_NAME: LimitPattern
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: LimitPattern/Info.plist
+  LimitPatternTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [LimitPatternTests]
+    dependencies:
+      - target: LimitPattern
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.peekaboo789.limitpattern.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/LimitPattern.app/LimitPattern"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  LimitPattern:
+    build:
+      targets:
+        LimitPattern: all
+        LimitPatternTests: [test]
+    test:
+      targets: [LimitPatternTests]
