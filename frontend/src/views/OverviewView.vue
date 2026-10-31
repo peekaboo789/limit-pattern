@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import WatchlistTable from '@/components/WatchlistTable.vue'
 import ManualCapture from '@/components/ManualCapture.vue'
 import { api, ApiError, isAbort } from '@/api/client'
 import AiOverviewCard from '@/components/AiOverviewCard.vue'
@@ -164,6 +165,7 @@ watch(
   </section>
 
   <AiOverviewCard />
+  <WatchlistTable compact :limit="8" />
 
   <section class="stats">
     <article class="card stat">

@@ -101,7 +101,9 @@ def _loads_loose(text: str):
     fence = re.search(r"```(?:json|JSON)?\s*(.*?)```", raw, re.S)
     if fence:
         raw = fence.group(1).strip()
-    raw = raw.replace("“", '"').replace("”", '"').replace("，\"", ',"')
+    raw = raw.replace("“", '"').replace("”", '"').replace("＂", '"').replace("，\"", ',"').replace("\"，", '",')
+    raw = re.sub(r"([}\]\d])\s*，", r"\1,", raw)  # 全角逗号作分隔符
+    raw = re.sub(r'"\s*：\s*', '":', raw)  # 全角冒号作键值分隔
     decoder = json.JSONDecoder()
     for start, ch in sorted(((i, c) for c in "{[" if (i := raw.find(c)) >= 0)):
         chunk = raw[start:]
@@ -164,6 +166,14 @@ def parse_external(text: str) -> tuple[dict[str, dict], dict]:
             entry["reason"] = entry.get("理由") or ""
         parsed = _parse_entry(entry)
         if parsed:
+            # v0.4.8：priority（优先级，越小越靠前）、name（只用来核对）、其他 *_score（如 deepseek_score）都留着
+            priority = _to_number(entry.get("priority") if entry.get("priority") is not None else entry.get("rank"))
+            parsed["priority"] = priority if isinstance(priority, (int, float)) else None
+            parsed["claimed_name"] = str(entry.get("name") or entry.get("名称") or "").strip()
+            parsed["extra_scores"] = {
+                k: _to_number(v) for k, v in entry.items()
+                if k.endswith("_score") and k not in {"score", "ai_score", "model_score", "composite_score"} and isinstance(_to_number(v), (int, float))
+            }
             scores[found.group(1)] = parsed
         else:
             rejected.append({"code": found.group(1), "reason": "缺少 score 和 reason"})
@@ -206,5 +216,21 @@ def import_external(session, text: str, day: date | None = None, model: str = ""
         "dropped_unknown": unknown,
         "rejected": meta.get("_rejected", []) + [{"code": code, "reason": "本地股票列表里没有这个代码（可能是科创板 / 北交所或外部 AI 编的）"} for code in unknown],
     }
+    # 名称只用来核对：和本地不一致就提醒，仍按代码
+    name_warnings = []
+    for code, got in scores.items():
+        claimed = got.get("claimed_name") or ""
+        local = names.get(code) or next((i.get("name") for i in pool["items"] if i["code"] == code), "")
+        if claimed and local and claimed.replace(" ", "") != local.replace(" ", ""):
+            got["name_warning"] = f"JSON 里写的是「{claimed}」，本地 {code} 是「{local}」，按代码导入"
+            name_warnings.append({"code": code, "claimed": claimed, "local": local})
+    extra["name_warnings"] = name_warnings
+    known_meta = {k: meta.get(k) for k in ("title", "market_sentiment", "market_risk", "disclaimer") if meta.get(k) not in (None, "", [], {})}
+    if known_meta:
+        extra["external_meta"] = known_meta
+    other = {k: v for k, v in meta.items() if not k.startswith("_") and k not in {"items", "stocks", "date", "model", "title", "market_sentiment", "market_risk", "disclaimer"}
+             and not isinstance(v, list)}
+    if other:
+        extra["external_extra"] = other  # 不认识的字段原样保留，不参与计算
     model = (model or str(meta.get("model") or "") or "外部 AI").strip()[:60]
     return _save_ranking(session, day, pool, market_context(session, day), scores, "external", {"kind": "daily", "taken_at": None, "count": 0}, model, extra, names, select="scores", outside=outside)

@@ -74,13 +74,13 @@ export function dismiss(id: number) {
   monitorState.toasts = monitorState.toasts.filter((toast) => toast.id !== id)
 }
 
-function show(date: string, event: MonitorEvent) {
-  const key = `${date}:${event.code}:${event.level}`
+export function show(date: string, event: MonitorEvent, titlePrefix = '') {
+  const key = `${titlePrefix ? 'wl:' : ''}${date}:${event.code}:${event.level}`
   if (seen.has(key)) return
   seen.add(key)
   persistSeen(date)
   const pct = event.pct == null ? '' : `${event.pct >= 0 ? '+' : ''}${event.pct.toFixed(2)}%`
-  const title = event.level === 'alert' ? '涨幅超 6% 报警' : '涨幅超 3% 提醒'
+  const title = titlePrefix + (event.level === 'alert' ? '涨幅超 6% 报警' : '涨幅超 3% 提醒')
   const text = `${event.code} ${event.name} ${pct}${event.rank ? `（昨日第 ${event.rank} 名）` : ''}`
   monitorState.toasts = [...monitorState.toasts, { id: event.id, level: event.level, title, text }].slice(-6)
   beep(event.level)

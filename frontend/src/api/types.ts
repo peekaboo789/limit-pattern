@@ -26,6 +26,7 @@ export interface Settings {
   ai_thinking?: string
   ai_timeout_seconds?: number
   alert_trading_hours_only?: boolean
+  watchlist_alerts?: boolean
   alert_include_auction?: boolean
   ai_batch_size?: number
   ai_parallel?: number
@@ -260,6 +261,9 @@ export interface PickHistory {
 
 export interface AiRankingItem {
   rank: number
+  priority?: number | null
+  extra_scores?: Record<string, number>
+  name_warning?: string | null
   code: string
   name: string
   board_name: string
@@ -314,6 +318,8 @@ export interface AiRanking {
   outside_candidates?: string[]
   dropped_unknown?: string[]
   rejected?: { code: string; reason: string }[]
+  name_warnings?: { code: string; claimed: string; local: string }[]
+  external_meta?: { title?: string; market_sentiment?: string; market_risk?: Record<string, unknown>; disclaimer?: string }
   order?: 'external' | 'composite'
   skipped_count?: number
   limitup_count?: number
@@ -548,4 +554,24 @@ export interface ManualResult {
   superseded?: boolean
   times?: { taken_at: string; label: string; count: number }[]
   result: { items: ManualItem[]; pool_size: number; elapsed_seconds?: number; prediction_for?: string | null }
+}
+
+export interface WatchItem { code: string; name: string; note?: string; added_at?: string }
+export interface WatchCandidate { code: string; name: string; board: string; star: boolean }
+export interface WatchPreview {
+  matched: (WatchCandidate & { token: string })[]
+  ambiguous: { token: string; candidates: WatchCandidate[] }[]
+  not_found: { token: string; reason: string }[]
+  duplicates: { token: string; code: string; name: string; reason: string }[]
+  token_count: number
+}
+export interface WatchRow {
+  code: string; name: string; note: string; board: string; star: boolean
+  price: number | null; pre_close: number | null; pct: number | null; high: number | null; low: number | null
+  volume_ratio: number | null; is_limit_up: boolean; max_similarity: number | null; composite_score: number | null
+  score_from?: string | null; level: 'normal' | 'warn' | 'alert'; raw_level?: string
+}
+export interface WatchMonitor {
+  date: string; phase: string; alerts_active: boolean; alerts_enabled: boolean; status_text: string; market_open: boolean
+  source: string; error: string; updated_at: string; items: WatchRow[]; alert_count: number; warn_count: number; price_label?: string
 }

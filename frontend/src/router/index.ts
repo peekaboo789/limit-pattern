@@ -8,6 +8,7 @@ import PoolView from '@/views/PoolView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import SimilarityView from '@/views/SimilarityView.vue'
 import SummaryView from '@/views/SummaryView.vue'
+import WatchlistView from '@/views/WatchlistView.vue'
 import { createRouter, createWebHistory } from 'vue-router'
 
 const scrollMemory = new Map<string, number>()
@@ -27,6 +28,7 @@ export const router = createRouter({
     { path: '/similarity', name: 'similarity', component: SimilarityView, meta: { title: '个股相似度' } },
     { path: '/ai-ranking', name: 'ai-ranking', component: AiRankingView, meta: { title: 'AI 榜单' } },
     { path: '/monitor', name: 'monitor', component: MonitorView, meta: { title: '实时监控' } },
+    { path: '/watchlist', name: 'watchlist', component: WatchlistView, meta: { title: '自选股' } },
     { path: '/next-day', name: 'next-day', component: NextDayPoolView, meta: { title: '次日观察池' } },
     { path: '/cluster', name: 'cluster', component: ClusterView, meta: { title: '聚类分析' } },
     { path: '/backtest', name: 'backtest', component: BacktestView, meta: { title: '回测' } },

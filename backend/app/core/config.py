@@ -130,6 +130,7 @@ def default_settings() -> dict:
         "cosine_similarity_weight": 0.2,
         "similarity_threshold_high": 90.0,
         "alert_include_auction": False,
+        "watchlist_alerts": True,
         "ai_batch_size": 10,
         "ai_parallel": 3,
         "excluded_boards": ["star"],
@@ -293,6 +294,7 @@ def public_settings() -> dict:
         "cosine_similarity_weight": similarity_weights(raw)[1],
         "similarity_threshold_high": similarity_threshold_high(raw),
         "alert_include_auction": raw.get("alert_include_auction") is True,
+        "watchlist_alerts": raw.get("watchlist_alerts") is not False,
         "ai_batch_size": ai_int(raw, "ai_batch_size"),
         "ai_parallel": ai_int(raw, "ai_parallel"),
         "data_source": str(raw.get("data_source") or "auto"),
@@ -379,7 +381,7 @@ def _update_settings(changes: dict) -> dict:
         if not 60 <= high <= 100:
             raise ValueError("高度相似阈值只能在 60–100 之间")
         current["similarity_threshold_high"] = high
-    for name in ("alert_trading_hours_only", "alert_include_auction"):
+    for name in ("alert_trading_hours_only", "alert_include_auction", "watchlist_alerts"):
         if changes.get(name) is not None:
             if not isinstance(changes[name], bool):
                 raise ValueError("报警时段开关只能是 true / false")

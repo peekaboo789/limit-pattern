@@ -389,6 +389,91 @@ def summaries() -> dict:
         return list_summaries(session)
 
 
+# ---------------- 自选股（v0.4.8） ----------------
+@router.get("/watchlist")
+def get_watchlist() -> dict:
+    from backend.app.services import watchlist_service as wl
+
+    return {"items": wl.load()}
+
+
+@router.get("/watchlist/search")
+def watchlist_search(q: str = "", limit: int = 10) -> dict:
+    from backend.app.services import watchlist_service as wl
+
+    with session_scope() as session:
+        return {"items": wl.search(session, q, max(1, min(limit, 30)))}
+
+
+@router.post("/watchlist")
+def watchlist_add(body: dict) -> dict:
+    """正文 {"items":[{"code","name"?,"note"?}]} 或 {"codes":[...]}。"""
+    from backend.app.services import watchlist_service as wl
+
+    entries = list((body or {}).get("items") or []) + [{"code": c} for c in (body or {}).get("codes") or []]
+    if not entries:
+        raise HTTPException(status_code=422, detail="没有要加入的股票")
+    with session_scope() as session:
+        names = {s["code"]: s["name"] for s in wl._stocks(session)}
+    for e in entries:
+        code = wl.normalize_code(e.get("code"))
+        if code and not e.get("name"):
+            e["name"] = names.get(code, "")
+    bad = [str(e.get("code")) for e in entries if not wl.normalize_code(e.get("code"))]
+    out = wl.add(entries)
+    out["invalid"] = bad
+    return out
+
+
+@router.post("/watchlist/delete")
+def watchlist_delete(body: dict) -> dict:
+    from backend.app.services import watchlist_service as wl
+
+    body = body or {}
+    return {"items": wl.remove(body.get("codes") or [], clear=body.get("all") is True)}
+
+
+@router.post("/watchlist/note")
+def watchlist_note(body: dict) -> dict:
+    from backend.app.services import watchlist_service as wl
+
+    return {"items": wl.update(str((body or {}).get("code") or ""), (body or {}).get("note"))}
+
+
+@router.post("/watchlist/reorder")
+def watchlist_reorder(body: dict) -> dict:
+    from backend.app.services import watchlist_service as wl
+
+    return {"items": wl.reorder([str(c) for c in (body or {}).get("codes") or []])}
+
+
+@router.post("/watchlist/import/preview")
+def watchlist_import_preview(body: dict) -> dict:
+    from backend.app.services import watchlist_service as wl
+
+    text = str((body or {}).get("text") or "")
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="没有内容")
+    with session_scope() as session:
+        return wl.parse_import(session, text)
+
+
+@router.get("/watchlist/export")
+def watchlist_export(format: str = "txt") -> Response:
+    from backend.app.services import watchlist_service as wl
+
+    body, media, name = wl.export_text("csv" if format == "csv" else "txt")
+    return Response(content=body.encode("utf-8"), media_type=media, headers={"Content-Disposition": content_disposition(name)})
+
+
+@router.get("/watchlist/monitor")
+def watchlist_monitor() -> dict:
+    from backend.app.services import watchlist_service as wl
+
+    with session_scope() as session:
+        return wl.snapshot(session)
+
+
 @router.get("/daily-summary/export")
 def daily_summary_export(start: str | None = None, end: str | None = None, format: str = "txt") -> Response:
     """区间导出每日总结：format = txt（默认）/ md / json / csv。"""

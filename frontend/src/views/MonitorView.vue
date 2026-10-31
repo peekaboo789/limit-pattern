@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import WatchlistTable from '@/components/WatchlistTable.vue'
 import { api, ApiError, isAbort } from '@/api/client'
 import type { CalendarInfo, MonitorSnapshot } from '@/api/types'
 import { monitorState, setSound, testAlerts } from '@/stores/monitor'
@@ -93,4 +94,5 @@ onUnmounted(() => {
       </article>
     </div>
   </section>
+  <WatchlistTable />
 </template>

@@ -93,3 +93,14 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 - `GET /api/backtest/warm`（v0.4.3）：`running, last_seconds, last_error, runs`，档位回测缓存预热状态。
 - `POST /api/ai-ranking/import`（v0.4.5）：返回 `order: "external"`，`items` 按外部分排序，`rejected: [{code, reason}]` 列出未导入的条目。
 - `GET /api/daily-summary/export?start=&end=&format=txt|md|json|csv`（v0.4.7）：区间导出每日总结；不给 start 用最早一份，不给 end 用今天；start > end、超过 5 年、格式不对返回 422；一份都没有返回 404。响应头 `X-Summary-Count`、`X-Summary-Missing`。`GET /api/daily-summary/range` 返回 `{earliest}`。
+
+## 自选股（v0.4.8）
+
+- `GET /api/watchlist` → `{items:[{code,name,note,added_at}]}`；`POST /api/watchlist` `{items:[{code,name?,note?}]}` 或 `{codes:[...]}` → `{added, duplicates, invalid, items}`。
+- `POST /api/watchlist/delete` `{codes:[...]}` 或 `{all:true}`；`POST /api/watchlist/note` `{code,note}`；`POST /api/watchlist/reorder` `{codes:[...]}`。
+- `GET /api/watchlist/search?q=`：代码 / 前缀 / 名称（含部分）/ 拼音首字母。
+- `POST /api/watchlist/import/preview` `{text}` → `{matched, ambiguous:[{token,candidates}], not_found, duplicates, token_count}`。
+- `GET /api/watchlist/export?format=txt|csv`（UTF-8 BOM）。
+- `GET /api/watchlist/monitor`：`alerts_active, alerts_enabled, phase, status_text, price_label, items:[{code,name,price,pct,high,low,volume_ratio,is_limit_up,max_similarity,composite_score,level,raw_level,star}]`。
+- 设置新增 `watchlist_alerts`（默认 true）。
+- `POST /api/ai-ranking/import` 另返回 `external_meta {title, market_sentiment, market_risk, disclaimer}`、`name_warnings`，条目带 `priority`、`extra_scores`、`name_warning`。

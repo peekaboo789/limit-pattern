@@ -30,7 +30,7 @@ def _num(value) -> float | None:
         return None
 
 
-def parse_spot(text: str) -> list[dict]:
+def parse_spot(text: str, allow_star: bool = False) -> list[dict]:
     rows: list[dict] = []
     for match in _ROW.finditer(text or ""):
         symbol, body = match.group(1), match.group(2)
@@ -38,6 +38,8 @@ def parse_spot(text: str) -> list[dict]:
         if len(parts) < 10:
             continue
         accepted = accept_instrument(symbol, "", parts[0])
+        if accepted is None and allow_star and symbol[-6:].startswith(("688", "689")):
+            accepted = (symbol[-6:], "SSE")  # 自选股允许科创板（只看行情，不进样本池）
         if accepted is None:
             continue
         code, _exchange = accepted
@@ -191,7 +193,7 @@ def fetch_kline(code: str, start: date, end: date) -> list[dict]:
     return [bar for bar in parse_kline(payload) if start <= bar["trade_date"] <= end]
 
 
-def fetch_spot(codes: list[str] | None = None) -> list[dict]:
+def fetch_spot(codes: list[str] | None = None, allow_star: bool = False) -> list[dict]:
     symbols = [symbol_of(code) for code in (codes or [])]
     if not symbols:
         return []
@@ -199,4 +201,4 @@ def fetch_spot(codes: list[str] | None = None) -> list[dict]:
         response = client.get(SPOT_URL + ",".join(symbols))
     if response.status_code != 200:
         raise ProviderError(f"新浪行情请求失败（HTTP {response.status_code}）")
-    return parse_spot(response.text)
+    return parse_spot(response.text, allow_star=allow_star)

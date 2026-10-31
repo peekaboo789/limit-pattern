@@ -31,9 +31,10 @@ async function doImport() {
     await loadDates()
     ranking.value = await api.aiRanking(saved.date).catch(() => saved)
     sortMode.value = 'external'
+    const warned = saved.name_warnings?.length ? `；${saved.name_warnings.length} 只名称与本地不一致，已按代码导入` : ''
     const outside = saved.outside_candidates?.length ? `；${saved.outside_candidates.join('、')} 不在前 100 候选里，已单独计算综合分` : ''
     const rejected = saved.rejected?.length ? `；未导入 ${saved.rejected.map((r) => `${r.code}（${r.reason}）`).join('、')}` : ''
-    importHint.value = `已替换 ${saved.date} 榜单：${saved.items.length} 只，按外部 AI 排序${outside}${rejected}`
+    importHint.value = `已替换 ${saved.date} 榜单：${saved.items.length} 只，按外部 AI 排序${outside}${warned}${rejected}`
     importText.value = ''
   } catch (reason) {
     importHint.value = reason instanceof ApiError ? reason.detail : '导入失败'
@@ -66,11 +67,20 @@ watch(
 )
 const rows = computed(() => {
   const items = (ranking.value?.items ?? []).map((row, index) => ({ row, index }))
-  if (sortMode.value === 'external')
-    items.sort((a, b) => (b.row.model_score ?? -1e9) - (a.row.model_score ?? -1e9) || a.index - b.index)
+  // 外部 AI 顺序 = 后端存好的顺序（priority → 外部分 → 给定顺序）
+  if (sortMode.value === 'external') items.sort((a, b) => (a.row.rank ?? a.index) - (b.row.rank ?? b.index) || a.index - b.index)
   else items.sort((a, b) => (b.row.composite_score ?? -1) - (a.row.composite_score ?? -1) || a.index - b.index)
   return items.map((item, i) => ({ ...item.row, rank: i + 1 }))
 })
+function riskLabel(key: string) {
+  const map: Record<string, string> = { sentiment: '情绪', up_down_ratio: '涨跌比', median_pct: '中位涨跌%', limit_down: '跌停', limit_up: '涨停', broken_rate: '炸板率%' }
+  return map[key] ?? key
+}
+function scoreLabel(key: string) {
+  const base = key.replace(/_score$/, '')
+  const known: Record<string, string> = { deepseek: 'DeepSeek', gpt: 'GPT', claude: 'Claude', qwen: 'Qwen', kimi: 'Kimi', glm: 'GLM', doubao: '豆包', gemini: 'Gemini' }
+  return known[base.toLowerCase()] ?? base
+}
 function composite(row: AiRankingItem) {
   if (row.formula && !row.formula.has_signal) return '—'
   return row.composite_score == null ? '—' : row.composite_score.toFixed(2)
@@ -231,6 +241,15 @@ onActivated(async () => {
         </select>
       </label>
     </div>
+    <div v-if="ranking?.external_meta" class="ext-meta">
+      <b v-if="ranking.external_meta.title">{{ ranking.external_meta.title }}</b>
+      <p v-if="ranking.external_meta.market_sentiment" class="muted" style="margin: 4px 0">{{ ranking.external_meta.market_sentiment }}</p>
+      <p v-if="ranking.external_meta.market_risk" class="muted small" style="margin: 4px 0">外部 AI 市场判断：
+        <template v-for="(v, k) in ranking.external_meta.market_risk" :key="k">{{ riskLabel(String(k)) }} {{ v }}；</template>
+      </p>
+      <p v-if="ranking.external_meta.disclaimer" class="hint" style="margin: 4px 0">{{ ranking.external_meta.disclaimer }}</p>
+    </div>
+    <p v-if="ranking?.name_warnings?.length" class="hint">⚠ {{ ranking.name_warnings.length }} 只名称与本地不一致（{{ ranking.name_warnings.map((w) => `${w.code} 写成「${w.claimed}」，本地「${w.local}」`).join('；') }}），已按代码导入。</p>
     <p v-if="ranking?.unscored_count" class="alert">
       有 {{ ranking.unscored_count }} 只没拿到 AI 解读（{{ ranking.batches?.failed ?? 0 }} 批失败）；排名按系统综合评分，不受影响。
       <button class="btn btn-ghost" type="button" :disabled="generating" @click="generate()">重新生成</button>
@@ -277,12 +296,14 @@ onActivated(async () => {
           <tr class="clickable" :class="{ active: expanded === row.code }" @click="toggle(row.code)">
             <td class="rank" :class="{ top: row.rank <= 3 }">{{ String(row.rank).padStart(2, '0') }}</td>
             <td class="stock">
-              <div class="stock-name">{{ row.name }}<span v-if="row.checks?.length" class="check-badge" :title="checkTitle(row)">⚠ 核对</span></div>
+              <div class="stock-name">{{ row.name }}<span v-if="row.name_warning" class="check-badge" :title="row.name_warning">⚠ 名称</span><span v-if="row.checks?.length" class="check-badge" :title="checkTitle(row)">⚠ 核对</span></div>
               <div class="muted small"><span class="code">{{ row.code }}</span> · {{ row.board_name }}<template v-if="row.is_limit_up"> · 已涨停</template></div>
             </td>
             <td v-if="isExternal" class="right">
               <b class="ext-score">{{ num(row.model_score) }}</b>
               <div class="muted small">综合 {{ composite(row) }} · 差 {{ gapText(row.model_gap) }}</div>
+              <div v-for="(v, k) in row.extra_scores ?? {}" :key="k" class="muted small">{{ scoreLabel(String(k)) }} {{ v }}</div>
+              <div v-if="row.priority != null" class="muted small">优先级 {{ row.priority }}</div>
             </td>
             <td v-else class="right">
               <b>{{ composite(row) }}</b>
@@ -343,6 +364,7 @@ onActivated(async () => {
 .ai-table { table-layout: fixed; width: 100%; }
 .ai-table th, .ai-table td { padding: 8px 8px; vertical-align: top; }
 .ai-table td.rank { color: var(--muted); }
+.ext-meta { border: 1px solid rgba(160, 186, 224, 0.18); border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
 .ext-score { color: var(--gold-2); font-size: 1.1em; }
 .sort-toggle { margin-left: auto; white-space: nowrap; }
 .ai-table td.rank.top { color: var(--gold-2); font-weight: 700; }

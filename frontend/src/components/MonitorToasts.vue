@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { dismiss, monitorState, startMonitorEvents } from '@/stores/monitor'
+import { startWatchlist } from '@/stores/watchlist'
 import { onMounted } from 'vue'
 
-onMounted(startMonitorEvents)
+onMounted(() => {
+  startMonitorEvents()
+  startWatchlist()
+})
 </script>
 
 <template>

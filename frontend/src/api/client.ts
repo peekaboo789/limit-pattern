@@ -1,5 +1,5 @@
 import { ApiError, formatDetail, request } from './http'
-import type { CaptureStatus, ManualResult,
+import type { CaptureStatus, ManualResult, WatchCandidate, WatchItem, WatchMonitor, WatchPreview,
   SourceTestResult,
   ClusterResult,
   CalendarInfo,
@@ -136,6 +136,27 @@ export const api = {
   captureStatus: () => request<CaptureStatus>('/api/snapshot/capture/status', {}, 5000),
   cancelCapture: () => request<CaptureStatus>('/api/snapshot/capture/cancel', { method: 'POST' }),
   manualSnapshot: (date?: string) => request<ManualResult>(`/api/snapshot/manual${query({ date })}`),
+
+  watchlist: () => request<{ items: WatchItem[] }>('/api/watchlist'),
+  watchlistSearch: (q: string) => request<{ items: WatchCandidate[] }>(`/api/watchlist/search${query({ q })}`, {}, 8000),
+  watchlistAdd: (items: { code: string; name?: string; note?: string }[]) =>
+    request<{ added: string[]; duplicates: string[]; invalid: string[]; items: WatchItem[] }>('/api/watchlist', { method: 'POST', body: JSON.stringify({ items }) }),
+  watchlistDelete: (codes: string[], all = false) =>
+    request<{ items: WatchItem[] }>('/api/watchlist/delete', { method: 'POST', body: JSON.stringify({ codes, all }) }),
+  watchlistNote: (code: string, note: string) =>
+    request<{ items: WatchItem[] }>('/api/watchlist/note', { method: 'POST', body: JSON.stringify({ code, note }) }),
+  watchlistReorder: (codes: string[]) =>
+    request<{ items: WatchItem[] }>('/api/watchlist/reorder', { method: 'POST', body: JSON.stringify({ codes }) }),
+  watchlistPreview: (text: string) =>
+    request<WatchPreview>('/api/watchlist/import/preview', { method: 'POST', body: JSON.stringify({ text }) }, 30000),
+  watchlistMonitor: () => request<WatchMonitor>('/api/watchlist/monitor', {}, 20000),
+  watchlistExport: async (format: 'txt' | 'csv') => {
+    const response = await fetch(`/api/watchlist/export${query({ format })}`)
+    const text = (await response.text()).replace(/^\ufeff/, '')
+    if (!response.ok) throw new ApiError(response.status, text || '导出失败')
+    const filename = filenameFromDisposition(response.headers.get('Content-Disposition')) ?? `自选股.${format}`
+    return { filename, text, blob: new Blob(['\ufeff' + text], { type: 'text/plain;charset=utf-8' }) }
+  },
 
   monitor: () => request<MonitorSnapshot>('/api/monitor'),
 

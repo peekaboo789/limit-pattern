@@ -381,6 +381,9 @@ def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, 
                 "reason": got.get("reason", ""),
                 "risk": got.get("risk", ""),
                 "tags": got.get("tags") or [],
+                "priority": got.get("priority"),
+                "extra_scores": got.get("extra_scores") or {},
+                "name_warning": got.get("name_warning"),
                 "similarity": item.get("max_similarity"),
                 "max_similarity": item.get("max_similarity"),
                 "avg_similarity": item.get("avg_similarity"),
@@ -399,9 +402,10 @@ def _save_ranking(session, day, pool, market, scores, trigger, snapshot, model, 
         ranked.sort(key=lambda row: (-(row["composite_score"] if row["composite_score"] is not None else -1), -(row["max_similarity"] or 0), row["code"]))
         ranked = ranked[:KEEP]
     else:
-        # 外部导入：按外部 AI 的分数排，同分保持它给的顺序；全部保留，不按系统综合分重排
+        # 外部导入：有 priority 按 priority，否则按外部 AI 分，再按它给的顺序；全部保留，不按系统综合分重排
         given = {code: index for index, code in enumerate(scores)}
-        ranked.sort(key=lambda row: (-(row["model_score"] if row["model_score"] is not None else -1e9), given[row["code"]]))
+        ranked.sort(key=lambda row: (row.get("priority") if row.get("priority") is not None else 1e9,
+                                     -(row["model_score"] if row["model_score"] is not None else -1e9), given[row["code"]]))
         if len(ranked) > KEEP:  # 只留外部分最高的前 20，多出来的写进 rejected 说明
             extra = dict(extra or {})
             extra["rejected"] = list(extra.get("rejected") or []) + [

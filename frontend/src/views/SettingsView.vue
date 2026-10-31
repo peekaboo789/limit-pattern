@@ -24,6 +24,7 @@ const form = reactive({
   similarity_threshold_high: 90,
   alert_trading_hours_only: true,
   alert_include_auction: false,
+  watchlist_alerts: true,
 })
 const sourceOptions = computed(() =>
   meta.value?.data_source_options?.length ? meta.value.data_source_options : FALLBACK_SOURCES,
@@ -50,6 +51,7 @@ function apply(settings: Settings) {
   form.similarity_threshold_high = settings.similarity_threshold_high ?? 90
   form.alert_trading_hours_only = settings.alert_trading_hours_only !== false
   form.alert_include_auction = settings.alert_include_auction === true
+  form.watchlist_alerts = settings.watchlist_alerts !== false
 }
 
 const switching = ref(false)
@@ -173,6 +175,7 @@ async function save() {
       similarity_threshold_high: number
       alert_trading_hours_only: boolean
       alert_include_auction: boolean
+      watchlist_alerts: boolean
     } = {
       retention_trading_days: form.retention_trading_days,
       sample_pool_trading_days: form.sample_pool_trading_days,
@@ -188,6 +191,7 @@ async function save() {
       similarity_threshold_high: Number(form.similarity_threshold_high),
       alert_trading_hours_only: form.alert_trading_hours_only,
       alert_include_auction: form.alert_include_auction,
+      watchlist_alerts: form.watchlist_alerts,
     }
     if (form.ai_api_key.trim()) body.ai_api_key = form.ai_api_key.trim()
     apply(await api.saveSettings(body))
@@ -247,6 +251,10 @@ onMounted(() => {
       <label class="field" style="margin-top: 8px">
         <span><input v-model="form.alert_include_auction" type="checkbox" :disabled="!form.alert_trading_hours_only" /> 集合竞价 9:15–9:25 也报警</span>
         <span class="hint">默认关。竞价价格会撤单变动，容易误报。</span>
+      </label>
+      <label class="field" style="margin-top: 8px">
+        <span><input v-model="form.watchlist_alerts" type="checkbox" /> 自选股报警</span>
+        <span class="hint">默认开：自选股涨幅 ≥3% 弹提醒、≥6% 红框，阈值和交易时段规则与 AI 榜单监控相同。</span>
       </label>
       <label class="field" style="margin-top: 12px">
         <span>数据源</span>

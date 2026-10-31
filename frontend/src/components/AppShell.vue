@@ -13,6 +13,7 @@ const items = [
   { name: 'similarity', label: '个股相似度', to: '/similarity' },
   { name: 'ai-ranking', label: 'AI 榜单', to: '/ai-ranking' },
   { name: 'monitor', label: '实时监控', to: '/monitor' },
+  { name: 'watchlist', label: '自选股', to: '/watchlist' },
   { name: 'next-day', label: '次日观察池', to: '/next-day' },
   { name: 'backtest', label: '回测', to: '/backtest' },
   { name: 'cluster', label: '聚类分析', to: '/cluster' },
