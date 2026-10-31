@@ -270,9 +270,11 @@ def update_download() -> dict:
 
 
 @router.post("/update/apply")
-def update_apply() -> dict:
+def update_apply(body: dict | None = None) -> dict:
     from backend.app.services import update_service
 
+    if update_service.mode() == "docker" and (body or {}).get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="需要二次确认（confirm: true）")
     try:
         st = update_service.apply()
     except ValueError as exc:

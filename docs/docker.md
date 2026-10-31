@@ -60,13 +60,28 @@ v0.5.0 在设置里设过的访问密码会自动迁移为 admin 账号）。勾
 
 ## 升级
 
-设置 → 在线更新 → 检查更新 会显示新版本和更新内容。容器没法安全地替换自己的镜像（需要挂载 docker.sock，等于把宿主机 root 权限交给容器），所以本系统**不做**容器内一键升级，请在 compose 目录执行：
+### 程序内一键更新（v0.5.3 起，推荐）
+
+设置 → 在线更新 → 检查更新 → 下载 → 一键更新（二次确认）。**不需要挂载 docker.sock，也不用改 docker-compose.yml。**
+
+1. 程序从 GitHub Release 下载 `limit-pattern-app-<版本>.tar.gz`（后端代码 + 网页）到 `/data/updates/`，校验 sha256；
+2. 备份设置、数据库、自选股、账号到 `data/backups/`（保留最近 3 份）；
+3. 程序退出并由容器里的监督进程（`/opt/lp/supervisor.py`，镜像入口）接管：解压到 `/data/app/<版本>`、核对依赖、导入自检、启动新版本并检查 `/api/health`；
+4. 新版本起不来 → 自动回退到上一个版本或镜像自带版本，设置页会显示失败原因。
+
+规则：
+- 运行「镜像自带版本」和「程序内更新版本」中**较新**的一个；以后 `docker compose pull` 到更新的镜像会自动接管，旧的程序内更新自动清理。
+- 新版本如果需要新的 Python 依赖（更新包里带 requirements 哈希），程序内更新会拒绝，并提示改用 `docker compose pull`。
+- 监督进程自己负责重启程序，不依赖 Docker 的 restart 策略；compose 里保留 `restart: unless-stopped` 只是为了宿主机重启后自动起来。
+- v0.5.2 及更早的镜像没有监督进程：先手动 `docker compose pull && docker compose up -d` 升到 v0.5.3，之后就能程序内更新。
+
+### 用新镜像升级
 
 ```bash
 docker compose pull && docker compose up -d
 ```
 
-想全自动，用 Watchtower（它自己挂 docker.sock，权限隔离在这个专用容器里），在 docker-compose.yml 里加：
+想全自动拉镜像，可以用 Watchtower（它需要挂 docker.sock，权限隔离在它自己的容器里；本程序不需要）：
 
 ```yaml
   watchtower:
@@ -74,7 +89,7 @@ docker compose pull && docker compose up -d
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: --cleanup --schedule "0 0 20 * * *" limit-pattern   # 每天 20:00 检查，只更新本容器
+    command: --cleanup --schedule "0 0 20 * * *" limit-pattern
 ```
 
 新版本第一次启动会自动把设置、数据库、自选股、账号备份到 `data/backups/`（保留最近 3 份），再做数据迁移。

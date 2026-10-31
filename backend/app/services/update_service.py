@@ -59,6 +59,28 @@ def is_newer(latest: str, current: str = __version__) -> bool:
     return vtuple(latest) > vtuple(current)
 
 
+def app_asset(version: str) -> str:
+    return f"limit-pattern-app-{version}.tar.gz"
+
+
+def supervised() -> bool:
+    """Docker 镜像（v0.5.3+）的入口是 docker/supervisor.py，它会设置 LP_SUPERVISED=1。"""
+    return os.environ.get("LP_SUPERVISED") == "1"
+
+
+def image_root() -> Path:
+    return Path(os.environ.get("LP_IMAGE_ROOT") or Path(__file__).resolve().parents[3])
+
+
+def requirements_hash(root: Path) -> str:
+    """和 docker/supervisor.py 里的算法一致（有测试保证）。"""
+    h = hashlib.sha256()
+    for name in ("requirements.txt", "requirements-cluster.txt"):
+        p = root / name
+        h.update(name.encode() + b"\0" + (p.read_bytes().replace(b"\r\n", b"\n") if p.is_file() else b"") + b"\0")
+    return h.hexdigest()
+
+
 def mode() -> str:
     if os.environ.get("LP_HEADLESS", "0") == "1":
         return "docker"
@@ -78,6 +100,8 @@ def parse_release(payload: dict) -> dict:
         "url": payload.get("html_url") or f"https://github.com/{REPO}/releases",
         "zip_url": assets.get(ASSET),
         "sha256_url": assets.get(ASSET + ".sha256"),
+        "app_url": assets.get(app_asset(tag.lstrip("vV"))),
+        "app_sha256_url": assets.get(app_asset(tag.lstrip("vV")) + ".sha256"),
     }
 
 
@@ -87,7 +111,8 @@ def check(force: bool = False) -> dict:
             return dict(_CACHE["info"])
     info = {"current": __version__, "mode": mode(), "docker_command": DOCKER_CMD, "error": ""}
     try:
-        r = _http().get(f"https://api.github.com/repos/{REPO}/releases/latest", headers={"Accept": "application/vnd.github+json"})
+        feed = os.environ.get("LP_UPDATE_FEED") or f"https://api.github.com/repos/{REPO}/releases/latest"  # LP_UPDATE_FEED 只用于自测
+        r = _http().get(feed, headers={"Accept": "application/vnd.github+json"})
         if r.status_code == 200:
             info.update(parse_release(r.json()))
         else:
@@ -102,7 +127,9 @@ def check(force: bool = False) -> dict:
         except Exception as exc2:  # noqa: BLE001
             info.update(latest=None, error=f"连不上 GitHub（{type(exc).__name__} / {type(exc2).__name__}），稍后再试或设置镜像")
     info["newer"] = bool(info.get("latest")) and is_newer(info["latest"])
-    info["can_auto"] = info["mode"] == "desktop" and bool(info.get("zip_url")) and info["newer"]
+    info["docker_inapp"] = info["mode"] == "docker" and supervised()
+    info["can_auto"] = info["newer"] and (
+        (info["mode"] == "desktop" and bool(info.get("zip_url"))) or (info["docker_inapp"] and bool(info.get("app_url"))))
     with _LOCK:
         _CACHE.update(at=_time.monotonic(), info=dict(info))
     return info
@@ -130,12 +157,51 @@ def updates_dir() -> Path:
     return path
 
 
+def _state_path() -> Path:
+    return updates_dir() / "state.json"
+
+
 def _set(**kw) -> None:
+    phase_changed = "phase" in kw and kw["phase"] != STATE.get("phase")
     STATE.update(kw)
+    if phase_changed or "message" in kw:
+        try:
+            import json as _json
+
+            keep = {k: v for k, v in STATE.items() if k not in ("program",)}
+            _state_path().write_text(_json.dumps(keep, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
 
 
 def status() -> dict:
-    return dict(STATE)
+    """内存里的进度；进程重启过（Docker 程序内更新）就读 data/updates 里存的状态和监督进程写的结果。"""
+    import json as _json
+
+    st = dict(STATE)
+    if st["phase"] == "idle":
+        try:
+            saved = _json.loads(_state_path().read_text(encoding="utf-8"))
+            if saved.get("phase") in ("applying", "ready", "error"):
+                st.update(saved)
+        except (OSError, ValueError):
+            pass
+        try:
+            res = _json.loads((updates_dir() / "last_result.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            res = None
+        if res and st.get("phase") == "applying":
+            if res.get("ok") and res.get("version") == __version__:
+                st.update(phase="done", message=f"已更新到 v{__version__}（数据已保留，更新前备份在 backups/）", error="")
+            elif not res.get("ok"):
+                st.update(phase="error", message=res.get("message", "更新失败"), error=res.get("message", ""))
+            else:
+                st.update(phase="error", message=f"更新后仍在运行 v{__version__}：{res.get('message', '')}", error=res.get("message", ""))
+            _set(**{k: st[k] for k in ("phase", "message", "error")})
+    st["mode"] = mode()
+    st["supervised"] = supervised()
+    st["current"] = __version__
+    return st
 
 
 def _candidates(url: str) -> list[str]:
@@ -235,6 +301,20 @@ def start_download() -> dict:
     info = check(force=True)
     if not info.get("newer"):
         raise ValueError("已是最新版")
+    if mode() == "docker":
+        if not supervised():
+            raise ValueError("这个镜像太旧（没有更新监督进程），请先执行一次 docker compose pull && docker compose up -d")
+        if not info.get("app_url"):
+            raise ValueError("最新 Release 里没有程序内更新包，请用 docker compose pull 更新")
+
+        def run_docker():
+            try:
+                prepare_docker(info)
+            except Exception as exc:  # noqa: BLE001
+                _set(phase="error", message=str(exc), error=str(exc))
+
+        threading.Thread(target=run_docker, name="update-download", daemon=True).start()
+        return status()
     if not info.get("zip_url"):
         raise ValueError("最新 Release 里没有 Windows 程序包")
 
@@ -252,8 +332,43 @@ def install_dir() -> Path:
     return Path(sys.executable).resolve().parent
 
 
+def prepare_docker(info: dict) -> Path:
+    """Docker：下载程序更新包到 /data/updates/v<ver>/，校验 sha256 和依赖哈希。真正解压安装由监督进程在重启时做。"""
+    import json as _json
+    import tarfile
+
+    version = info["latest"]
+    work = updates_dir() / f"v{version}"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    pkg = work / app_asset(version)
+    _set(phase="download", message=f"正在下载 v{version} 程序更新包", version=version, error="")
+    _download(info["app_url"], pkg)
+    _set(phase="verify", message="校验 sha256 和依赖")
+    if not info.get("app_sha256_url"):
+        raise RuntimeError("Release 里没有 sha256 校验文件，为安全起见不更新")
+    sha_file = work / "sha256.txt"
+    _download(info["app_sha256_url"], sha_file)
+    want, got = expected_sha(sha_file.read_text(encoding="utf-8", errors="replace")), sha256_of(pkg)
+    if want != got:
+        raise RuntimeError("sha256 不一致，下载的文件可能损坏或被篡改，已放弃")
+    with tarfile.open(pkg, "r:gz") as tf:
+        member = tf.extractfile("manifest.json")
+        manifest = _json.loads(member.read().decode("utf-8")) if member else {}
+    if manifest.get("version") != version:
+        raise RuntimeError("更新包版本号对不上")
+    if manifest.get("requirements_sha256") != requirements_hash(image_root()):
+        raise RuntimeError("新版本需要新的 Python 依赖，不能在程序内安装。请在服务器上执行 docker compose pull && docker compose up -d")
+    STATE["package"] = str(pkg)
+    STATE["sha256"] = got
+    _set(phase="ready", message=f"v{version} 已下载并校验，点「立即更新」后程序自动重启（约半分钟）")
+    return pkg
+
+
 def apply() -> dict:
     """备份数据，启动新版的 --apply-update，然后退出当前进程。"""
+    if mode() == "docker":
+        return apply_docker()
     if mode() != "desktop":
         raise ValueError("只有 Windows 桌面版能一键替换程序")
     program = STATE.get("program")
@@ -293,3 +408,25 @@ def swap_install(target: Path, source: Path) -> Path:
         old.rename(target)
         raise
     return old
+
+
+def apply_docker() -> dict:
+    import json as _json
+
+    if not supervised():
+        raise ValueError("这个镜像不支持程序内更新，请执行 docker compose pull && docker compose up -d")
+    if STATE["phase"] != "ready" or not STATE.get("package"):
+        raise ValueError("还没有下载好新版本")
+    from backend.app.core.database import wal_checkpoint
+    from backend.app.services import backups
+
+    wal_checkpoint("update")
+    b = backups.make_backup(f"pre-update-v{STATE.get('version')}")
+    (updates_dir() / "last_result.json").unlink(missing_ok=True)
+    (updates_dir() / "pending.json").write_text(_json.dumps({"version": STATE["version"], "package": STATE["package"], "sha256": STATE["sha256"]}), encoding="utf-8")
+    _set(phase="applying", message=f"已备份到 backups/{b.name}，正在重启并安装 v{STATE['version']}（约半分钟后自动刷新）")
+    threading.Timer(1.5, lambda: os._exit(RESTART_CODE)).start()
+    return status()
+
+
+RESTART_CODE = 75

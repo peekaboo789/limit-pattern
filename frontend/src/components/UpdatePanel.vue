@@ -2,8 +2,8 @@
 import { request } from '@/api/http'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-interface Info { current: string; latest: string | null; newer: boolean; mode: string; notes?: string; url?: string; error?: string; can_auto?: boolean; docker_command: string; published_at?: string }
-interface St { phase: string; message: string; downloaded: number; total: number; error: string }
+interface Info { docker_inapp?: boolean; current: string; latest: string | null; newer: boolean; mode: string; notes?: string; url?: string; error?: string; can_auto?: boolean; docker_command: string; published_at?: string }
+interface St { mode?: string; supervised?: boolean; version?: string | null; phase: string; message: string; downloaded: number; total: number; error: string }
 
 const info = ref<Info | null>(null)
 const st = ref<St | null>(null)
@@ -25,9 +25,18 @@ async function check(force = true) {
 }
 
 async function poll() {
-  st.value = await request<St>('/api/update/status')
-  if (['download', 'verify', 'extract'].includes(st.value.phase)) timer = window.setTimeout(poll, 800)
+  try {
+    st.value = await request<St>('/api/update/status')
+  } catch {
+    // Docker 程序内更新：重启期间接口暂时连不上，继续等
+    if (st.value?.phase === 'applying') timer = window.setTimeout(poll, 2000)
+    return
+  }
+  if (['download', 'verify', 'extract', 'applying'].includes(st.value.phase)) timer = window.setTimeout(poll, st.value.phase === 'applying' ? 2000 : 800)
+  if (st.value.phase === 'done' && wasApplying) window.setTimeout(() => window.location.reload(), 1500)
+  if (st.value.phase === 'applying') wasApplying = true
 }
+let wasApplying = false
 
 async function download() {
   err.value = ''
@@ -40,8 +49,12 @@ async function download() {
 }
 
 async function apply() {
+  const docker = info.value?.mode === 'docker'
+  if (docker && !window.confirm(`确认更新到 v${info.value?.latest ?? st.value?.version}？\n\n会先备份数据到 backups/，然后程序自动重启（约半分钟页面不可用）。数据卷 /data 里的数据全部保留，失败会自动回退到当前版本。`)) return
   try {
-    st.value = await request<St>('/api/update/apply', { method: 'POST', body: '{}' })
+    st.value = await request<St>('/api/update/apply', { method: 'POST', body: JSON.stringify({ confirm: true }) })
+    wasApplying = true
+    timer = window.setTimeout(poll, 3000)
   } catch (e) {
     err.value = e instanceof Error ? e.message : '更新失败'
   }
@@ -74,9 +87,9 @@ onBeforeUnmount(() => window.clearTimeout(timer))
     <p class="hint">从 GitHub Releases 检查新版本。更新前自动把设置、数据库、自选股备份到数据目录 backups/（保留最近 3 份），程序替换不碰数据目录。</p>
     <div class="actions">
       <button class="btn btn-ghost" type="button" :disabled="checking" @click="check(true)">{{ checking ? '检查中…' : '检查更新' }}</button>
-      <template v-if="info?.newer && info.mode === 'desktop'">
-        <button class="btn" type="button" :disabled="!info.can_auto || ['download','verify','extract'].includes(st?.phase || '')" @click="download">下载 v{{ info.latest }}</button>
-        <button v-if="st?.phase === 'ready'" class="btn" type="button" @click="apply">立即更新并重启</button>
+      <template v-if="(info?.newer && (info.mode === 'desktop' || info.docker_inapp)) || st?.phase === 'ready'">
+        <button class="btn" type="button" :disabled="!info?.can_auto || ['download','verify','extract'].includes(st?.phase || '')" @click="download">下载 v{{ info?.latest ?? st?.version }}</button>
+        <button v-if="st?.phase === 'ready'" class="btn" type="button" @click="apply">{{ info?.mode === 'docker' ? '一键更新（重启容器内程序）' : '立即更新并重启' }}</button>
       </template>
     </div>
     <p v-if="err" class="hint" style="color: #dc2626">{{ err }}</p>
@@ -87,8 +100,9 @@ onBeforeUnmount(() => window.clearTimeout(timer))
         <a v-if="info.url" :href="info.url" target="_blank" rel="noopener">发布页</a>
       </p>
       <pre v-if="info.newer && info.notes" class="notes">{{ info.notes }}</pre>
+      <p v-if="info.newer && info.docker_inapp" class="hint">Docker 版程序内更新：只替换程序代码（存在 /data/app），不动镜像和数据；以后 docker compose pull 到更新的镜像会自动接管。新版本若需要新的 Python 依赖，会提示改用下面的命令。</p>
       <div v-if="info.newer && info.mode === 'docker'" class="docker">
-        <p class="hint">Docker 版：容器不能安全地替换自己的镜像。在服务器上 docker-compose.yml 所在目录执行（/data 里的数据会保留）：</p>
+        <p class="hint">{{ info.docker_inapp ? '也可以' : '这个镜像还不支持程序内更新，请' }}在服务器 docker-compose.yml 所在目录执行（/data 里的数据会保留）：</p>
         <code>{{ info.docker_command }}</code>
         <button class="btn btn-ghost" type="button" @click="copy(info.docker_command)">复制</button>
         <p class="hint">想自动更新可以加 Watchtower（见 docs/docker.md）。</p>
@@ -96,6 +110,7 @@ onBeforeUnmount(() => window.clearTimeout(timer))
       <p v-if="info.newer && info.mode === 'source'" class="hint">源码运行：git pull 后重启即可。</p>
     </template>
     <div v-if="st && st.phase !== 'idle'" style="margin-top: 8px">
+      <progress v-if="st.phase === 'applying'" style="width: 100%"></progress>
       <progress v-if="st.phase === 'download'" :value="pct()" max="100" style="width: 100%"></progress>
       <p class="hint" :style="{ color: st.phase === 'error' ? '#dc2626' : undefined }">{{ st.message }}{{ st.phase === 'download' ? ` ${pct()}%` : '' }}</p>
     </div>

@@ -470,3 +470,9 @@ logs/launcher.log
 
 - 设置 → 配置导出 / 导入：一键导出全部设置为 JSON（格式 version 1，可选包含自选股）；默认不含密钥，勾选「包含密钥（请妥善保管）」才导出 AI Key、企业微信 Secret/Token/EncodingAESKey 和登录密码哈希。导入先预览改动，再应用；应用前自动备份当前设置到 backups/；文件里没有的密钥保留现有值。桌面版走保存对话框，网页版浏览器下载。
 - 设置 → AI 模型：添加 / 编辑 / 删除多个 OpenAI 兼容模型（名称、接口地址、模型 ID、API Key 只写、可选 temperature / max_tokens），逐个测试连接，一键「设为当前」；AI 榜单页顶部也能直接切换。原来的单个 AI 配置自动迁移为第一个模型。企业微信「系统状态」显示当前模型。
+
+## v0.5.3 Docker 版程序内一键更新
+
+- 设置 → 在线更新：Docker 版也能「下载 → 一键更新」（二次确认）。下载 Release 里的程序更新包到 /data/updates，校验 sha256、备份数据，程序重启后由镜像里的监督进程安装到 /data/app/<版本>、自检、启动并检查健康，失败自动回退。不需要 docker.sock，不用改 compose。
+- 镜像自带版本和程序内更新版本取较新的；需要新 Python 依赖的版本会提示改用 docker compose pull。监督进程负责崩溃重启，不依赖 Docker restart 策略。
+- 每个 Release 新增 `limit-pattern-app-<版本>.tar.gz` 和 `.sha256`。

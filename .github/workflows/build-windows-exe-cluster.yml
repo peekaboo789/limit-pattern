@@ -65,6 +65,14 @@ jobs:
         with:
           name: LimitPattern-cluster-win64.zip
           path: dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build Docker in-app update package
+        run: |
+          cd frontend && npm ci --no-audit --no-fund && npm run build && cd ..
+          python3 scripts/build_app_package.py dist
+          ls -la dist
       - name: Create release if missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -83,4 +91,5 @@ jobs:
           print((m.group(1).strip() if m else f"v{v}") + "\n\n数据目录不在程序目录里，更新不会动数据；更新前程序会自动备份到 数据目录/backups/。\nDocker：`docker compose pull && docker compose up -d`")
           PY
           gh release create "v$V" dist/LimitPattern-cluster-win64.zip dist/LimitPattern-cluster-win64.zip.sha256 \
+            "dist/limit-pattern-app-$V.tar.gz" "dist/limit-pattern-app-$V.tar.gz.sha256" \
             --target "$GITHUB_SHA" --title "v$V" --notes-file notes.md

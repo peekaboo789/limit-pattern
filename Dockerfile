@@ -16,7 +16,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     LP_STATIC_DIR=/app/frontend/dist \
     LP_HEADLESS=1 \
     LP_HOST=0.0.0.0 \
-    LP_PORT=8000
+    LP_PORT=8000 \
+    LP_IMAGE_ROOT=/app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tzdata ca-certificates curl \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
@@ -25,6 +26,7 @@ WORKDIR /app
 COPY requirements.txt requirements-cluster.txt ./
 RUN pip install -r requirements.txt -r requirements-cluster.txt
 COPY backend/ ./backend/
+COPY docker/supervisor.py /opt/lp/supervisor.py
 COPY cluster-data/ ./cluster-data/
 COPY --from=frontend /src/frontend/dist ./frontend/dist
 # 以 root 运行：宿主机 ./data 绑定挂载由 Docker 以 root 创建，非 root 用户会写不进去
@@ -33,4 +35,5 @@ VOLUME ["/data"]
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1
-CMD ["python", "-m", "backend.app.main"]
+# 监督进程：装程序内更新、选新版本、崩溃自动重启、失败回退（不依赖 Docker restart 策略）
+CMD ["python", "/opt/lp/supervisor.py"]
