@@ -246,20 +246,27 @@ private struct SavedLoginCard: View {
 
     @State private var offsetX: CGFloat = 0
     private let actionWidth: CGFloat = 76
+    private var swipeProgress: CGFloat { max(0, min(1, -offsetX / actionWidth)) }
 
     var body: some View {
         ZStack(alignment: .trailing) {
-            Button(role: .destructive) {
-                onDelete()
-            } label: {
-                VStack(spacing: 3) {
-                    Image(systemName: "trash")
-                    Text("删除").font(.caption)
+            Rectangle()
+                .fill(.red.opacity(0.85))
+                .frame(width: max(0, -offsetX))
+                .opacity(swipeProgress)
+
+            if offsetX < 0 {
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: "trash")
+                        Text("删除").font(.caption)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(width: actionWidth)
+                    .frame(maxHeight: .infinity)
                 }
-                .foregroundStyle(.white)
-                .frame(width: actionWidth)
-                .frame(maxHeight: .infinity)
-                .background(.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 16))
             }
 
             HStack(spacing: 12) {
@@ -283,6 +290,7 @@ private struct SavedLoginCard: View {
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 12)
+            .background(Theme.bg, in: RoundedRectangle(cornerRadius: 16))
             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
             .contentShape(Rectangle())
             .offset(x: offsetX)
@@ -318,7 +326,8 @@ private struct SavedLoginCard: View {
                 }
             }
         }
-        .clipped()
+        .background(Theme.bg, in: RoundedRectangle(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
 
