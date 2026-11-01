@@ -136,6 +136,7 @@ struct LoginView: View {
     }
 
     private func loginSection(state: AppState) -> some View {
+        @Bindable var state = state
         GlassEffectContainer(spacing: 12) {
             VStack(spacing: 12) {
                 field("账号", systemImage: "person") {
