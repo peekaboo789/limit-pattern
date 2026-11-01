@@ -7,16 +7,18 @@ struct LoginView: View {
     @FocusState private var focus: Int?
     @State private var serverEditor: ServerEditor?
     @State private var reachable: ServerReachability?
+    @State private var swipedLoginID: String?
+    @State private var deleteCandidate: SavedLogin?
 
     var body: some View {
         @Bindable var state = state
         ScrollView {
             VStack(spacing: 20) {
                 header
-                savedLoginsSection
                 serverSection
                 loginSection(username: $state.username)
                 notes
+                savedLoginsSection
             }
             .padding(22).frame(maxWidth: 520)
             .frame(maxWidth: .infinity)
@@ -109,39 +111,33 @@ struct LoginView: View {
                             Text("轻点即可登录").font(.caption).foregroundStyle(.secondary)
                         }
                         ForEach(state.savedLogins) { login in
-                            HStack(spacing: 12) {
-                                Image(systemName: "person.crop.circle.fill")
-                                    .font(.title3).foregroundStyle(Theme.gold)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    HStack(spacing: 6) {
-                                        Text(login.server.name).font(.body.weight(.semibold)).lineLimit(1)
-                                        Text(login.server.baseURL).font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                    HStack(spacing: 6) {
-                                        Text(login.username).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                                        Text(login.lastUsed, format: Date.RelativeFormatStyle(presentation: .named)).font(.caption2).foregroundStyle(.tertiary)
-                                    }
-                                }
-                                Spacer()
-                                if state.loggingInKey == login.id {
-                                    ProgressView()
-                                } else {
-                                    Image(systemName: "arrow.right.circle").foregroundStyle(Theme.gold)
-                                }
-                            }
-                            .padding(.horizontal, 14).padding(.vertical, 12)
-                            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
-                            .contentShape(Rectangle())
-                            .onTapGesture { Task { await quickLogin(login.account) } }
-                            .contextMenu {
-                                Button { Task { await quickLogin(login.account) } } label: { Label("登录", systemImage: "arrow.right.circle") }
-                                Button(role: .destructive) {
-                                    state.accounts.remove(serverID: login.account.serverID, username: login.account.username)
-                                } label: { Label("删除", systemImage: "trash") }
-                            }
+                            SavedLoginCard(
+                                login: login,
+                                isLoggingIn: state.loggingInKey == login.id,
+                                swipedLoginID: $swipedLoginID,
+                                onLogin: { Task { await quickLogin(login.account) } },
+                                onDelete: { deleteCandidate = login }
+                            )
                         }
                     }
                 }
+            }
+        }
+        .confirmationDialog("删除已保存的登录？", isPresented: Binding(
+            get: { deleteCandidate != nil },
+            set: { if !$0 { deleteCandidate = nil } }
+        ), titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                if let login = deleteCandidate {
+                    state.accounts.remove(serverID: login.account.serverID, username: login.account.username)
+                    if swipedLoginID == login.id { swipedLoginID = nil }
+                }
+                deleteCandidate = nil
+            }
+            Button("取消", role: .cancel) { deleteCandidate = nil }
+        } message: {
+            if let login = deleteCandidate {
+                Text("将同时删除「\(login.server.name) · \(login.username)」的密码和登录状态。")
             }
         }
     }
@@ -239,6 +235,93 @@ struct LoginView: View {
         return reachable == .ok ? "可达" : "不可达"
     }
 }
+
+@MainActor
+private struct SavedLoginCard: View {
+    let login: SavedLogin
+    let isLoggingIn: Bool
+    @Binding var swipedLoginID: String?
+    let onLogin: () -> Void
+    let onDelete: () -> Void
+
+    @State private var offsetX: CGFloat = 0
+    private let actionWidth: CGFloat = 76
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            Button(role: .destructive) {
+                onDelete()
+            } label: {
+                VStack(spacing: 3) {
+                    Image(systemName: "trash")
+                    Text("删除").font(.caption)
+                }
+                .foregroundStyle(.white)
+                .frame(width: actionWidth)
+                .frame(maxHeight: .infinity)
+                .background(.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 16))
+            }
+
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.title3).foregroundStyle(Theme.gold)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(login.server.name).font(.body.weight(.semibold)).lineLimit(1)
+                        Text(login.server.baseURL).font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    HStack(spacing: 6) {
+                        Text(login.username).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        Text(login.lastUsed, format: Date.RelativeFormatStyle(presentation: .named)).font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+                Spacer()
+                if isLoggingIn {
+                    ProgressView()
+                } else {
+                    Image(systemName: "arrow.right.circle").foregroundStyle(Theme.gold)
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
+            .contentShape(Rectangle())
+            .offset(x: offsetX)
+            .gesture(
+                DragGesture(minimumDistance: 20)
+                    .onChanged { value in
+                        let proposed = min(0, max(-actionWidth, value.translation.width))
+                        offsetX = proposed
+                    }
+                    .onEnded { value in
+                        let open = value.translation.width < -35
+                        withAnimation(.spring(duration: 0.22)) {
+                            offsetX = open ? -actionWidth : 0
+                        }
+                        swipedLoginID = open ? login.id : nil
+                    }
+            )
+            .onTapGesture {
+                if offsetX < 0 {
+                    withAnimation(.spring(duration: 0.22)) { offsetX = 0 }
+                    swipedLoginID = nil
+                } else {
+                    onLogin()
+                }
+            }
+            .contextMenu {
+                Button { onLogin() } label: { Label("登录", systemImage: "arrow.right.circle") }
+                Button(role: .destructive) { onDelete() } label: { Label("删除", systemImage: "trash") }
+            }
+            .onChange(of: swipedLoginID) { _, newValue in
+                if newValue != login.id, offsetX < 0 {
+                    withAnimation(.spring(duration: 0.22)) { offsetX = 0 }
+                }
+            }
+        }
+        .clipped()
+    }
+}
+
 
 enum ServerReachability: Equatable { case checking, ok, bad }
 
