@@ -8,7 +8,7 @@ struct APIError: LocalizedError {
 }
 
 /// 和 Docker 版的 /api 通讯。会话靠 HttpOnly cookie `lp_session`（HTTPCookieStorage 持久保存），
-/// 同时把 cookie 值备份到钥匙串，系统清掉 cookie 时自动补回。
+/// 并支持把 cookie 备份到任意 `KeychainStoring`，系统清掉 cookie 时自动补回。
 final class APIClient: @unchecked Sendable {
     static let cookieName = "lp_session"
     static let minServerVersion = "0.5.2"
@@ -17,14 +17,16 @@ final class APIClient: @unchecked Sendable {
     var baseURL: URL?
     var onUnauthorized: (() -> Void)?
     let session: URLSession
+    private let keychain: KeychainStoring
 
-    init(storage: HTTPCookieStorage = .shared) {
+    init(storage: HTTPCookieStorage = .shared, keychain: KeychainStoring = KeychainStore.shared) {
         let cfg = URLSessionConfiguration.default
         cfg.httpCookieStorage = storage
         cfg.httpCookieAcceptPolicy = .always
         cfg.httpShouldSetCookies = true
         cfg.timeoutIntervalForRequest = 60
         cfg.timeoutIntervalForResource = 900
+        self.keychain = keychain
         session = URLSession(configuration: cfg)
     }
 
@@ -55,17 +57,20 @@ final class APIClient: @unchecked Sendable {
     }
 
     func backupCookie() {
-        guard let c = sessionCookie() else { return }
-        Keychain.set(c.value, for: "cookie:" + (baseURL?.absoluteString ?? ""))
+        guard let c = sessionCookie(), let baseURL else { return }
+        keychain.set(c.value, for: Self.cookieKey(for: baseURL))
     }
 
     /// 系统 cookie 丢了就用钥匙串里的备份补一个（有效期一年，服务器会按签名判断是否失效）。
     @discardableResult
     func restoreCookieIfNeeded() -> Bool {
-        guard let baseURL, sessionCookie() == nil, let v = Keychain.get("cookie:" + baseURL.absoluteString), !v.isEmpty else { return false }
+        guard let baseURL, sessionCookie() == nil,
+              let v = keychain.get(Self.cookieKey(for: baseURL)), !v.isEmpty else { return false }
         if let c = Self.makeCookie(value: v, for: baseURL) { storage.setCookie(c); return true }
         return false
     }
+
+    static func cookieKey(for url: URL) -> String { "cookie:" + url.absoluteString }
 
     static func makeCookie(value: String, for url: URL) -> HTTPCookie? {
         HTTPCookie(properties: [.name: cookieName, .value: value, .domain: url.host ?? "", .path: "/",
@@ -73,9 +78,27 @@ final class APIClient: @unchecked Sendable {
     }
 
     func clearSession() {
-        if let baseURL {
-            storage.cookies(for: baseURL)?.forEach { storage.deleteCookie($0) }
-            Keychain.set(nil, for: "cookie:" + baseURL.absoluteString)
+        guard let baseURL else { return }
+        storage.cookies(for: baseURL)?.forEach { storage.deleteCookie($0) }
+        keychain.remove(Self.cookieKey(for: baseURL))
+    }
+
+    func clearAllCookies(for urls: [URL]? = nil) {
+        let targets = urls ?? (baseURL.map { [$0] } ?? [])
+        for url in targets {
+            storage.cookies(for: url)?.forEach { storage.deleteCookie($0) }
+            keychain.remove(Self.cookieKey(for: url))
+        }
+    }
+
+    func injectCookie(value: String, username: String? = nil) {
+        guard let baseURL else { return }
+        let c = Self.makeCookie(value: value, for: baseURL)
+        if let c { storage.setCookie(c) }
+        keychain.set(value, for: Self.cookieKey(for: baseURL))
+        if let username {
+            // 兼容旧版的“cookie:username:host”备份键
+            keychain.set(value, for: "cookie:" + username + ":" + (baseURL.host ?? ""))
         }
     }
 

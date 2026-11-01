@@ -33,6 +33,7 @@ struct MoreView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("服务器") {
+                NavigationLink { ServerAccountsView() } label: { Label("服务器与账户", systemImage: "server.rack") }
                 LabeledContent("地址", value: state.serverText)
                 LabeledContent("服务器版本", value: state.serverVersion.isEmpty ? "—" : state.serverVersion)
                 LabeledContent("App 需要", value: "≥ \(APIClient.minServerVersion)")
