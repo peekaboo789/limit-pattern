@@ -1,6 +1,14 @@
 import SwiftUI
 import Observation
 
+struct SavedLogin: Identifiable {
+    let server: Server
+    let account: SavedAccount
+    var id: String { account.accountKey }
+    var username: String { account.username }
+    var lastUsed: Date { account.lastUsed }
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -12,6 +20,8 @@ final class AppState {
     var authStatus: JSON = .null
     var loginError: String?
     var busy = false
+    var loggingInKey: String?
+    var debugStayOnLogin = false
 
     var api = APIClient.shared
     let servers: ServerStore
@@ -27,6 +37,18 @@ final class AppState {
     }
     var selectedServer: Server? { servers.selected }
     var accountsForSelectedServer: [SavedAccount] { accounts.accounts(forServerID: selectedServer?.id ?? "") }
+    var savedLogins: [SavedLogin] {
+        var seen: [String: SavedLogin] = [:]
+        for account in accounts.accounts.sorted(by: { $0.lastUsed > $1.lastUsed }) {
+            guard let server = servers.servers.first(where: { $0.id == account.serverID }) else { continue }
+            let key = account.serverID + "+" + account.username
+            if seen[key] == nil {
+                seen[key] = SavedLogin(server: server, account: account)
+            }
+        }
+        return seen.values.sorted { $0.lastUsed > $1.lastUsed }
+    }
+    var hasSavedLogins: Bool { !savedLogins.isEmpty }
 
     /// 0.5.1 起用账号 + 密码。旧服务器只要密码。
     var needsUsername: Bool {
@@ -41,6 +63,7 @@ final class AppState {
         self.username = UserDefaults.standard.string(forKey: "username") ?? ""
         self.api = api
         migrateIfNeeded()
+        seedSavedLoginsIfRequested()
         api.onUnauthorized = { [weak self] in
             Task { @MainActor in
                 guard let self, self.phase == .ready else { return }
@@ -51,6 +74,10 @@ final class AppState {
     }
 
     func bootstrap() async {
+        if debugStayOnLogin {
+            phase = .login
+            return
+        }
         guard let server = selectedServer, let url = APIClient.normalize(server.baseURL) else {
             phase = .login
             return
@@ -167,6 +194,8 @@ final class AppState {
             loginError = "已保存的服务器已不存在，请先选择服务器"
             return .failed
         }
+        loggingInKey = account.accountKey
+        defer { loggingInKey = nil }
         busy = true; defer { busy = false }
         selectServer(server, clearPrevious: true)
         username = account.username
@@ -239,6 +268,22 @@ final class AppState {
         }
 
         defaults.set(true, forKey: migratedKey)
+    }
+
+    private func seedSavedLoginsIfRequested() {
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: "savedLoginsSeed") == "1" else { return }
+        let baseURL = defaults.string(forKey: "savedLoginsSeedURL") ?? "http://127.0.0.1:8000"
+        let name = defaults.string(forKey: "savedLoginsSeedName") ?? "本地 Docker"
+        let username = defaults.string(forKey: "savedLoginsSeedUser") ?? "admin"
+        debugStayOnLogin = defaults.string(forKey: "savedLoginsSeedStayOnLogin") == "1"
+        guard let server = try? servers.upsert(id: "screenshot-seed", name: name, baseURL: baseURL) else { return }
+        accounts.save(serverID: server.id, username: username, password: nil, cookie: nil)
+        defaults.removeObject(forKey: "savedLoginsSeed")
+        defaults.removeObject(forKey: "savedLoginsSeedURL")
+        defaults.removeObject(forKey: "savedLoginsSeedName")
+        defaults.removeObject(forKey: "savedLoginsSeedUser")
+        defaults.removeObject(forKey: "savedLoginsSeedStayOnLogin")
     }
 
     func refreshHealth() async { if let h = try? await api.get("/api/health", timeout: 15) { health = h } }

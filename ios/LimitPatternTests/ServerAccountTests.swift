@@ -21,6 +21,9 @@ final class ServerAccountTests: XCTestCase {
     }
 
     override func tearDown() {
+        ["savedLoginsSeed", "savedLoginsSeedStayOnLogin", "savedLoginsSeedURL", "savedLoginsSeedName", "savedLoginsSeedUser"].forEach {
+            UserDefaults.standard.removeObject(forKey: $0)
+        }
         defaults.removePersistentDomain(forName: suiteName)
         super.tearDown()
     }
@@ -105,5 +108,34 @@ final class ServerAccountTests: XCTestCase {
         _ = AppState(servers: serverStore, accounts: accountStore, api: APIClient(storage: .shared, keychain: keychain))
         XCTAssertEqual(serverStore.servers.count, 1)
         XCTAssertEqual(accountStore.accounts.count, 1)
+    }
+
+    func testSavedLoginsAggregatesAcrossServers() throws {
+        let keychain = InMemoryKeychainStore()
+        let serverStore = ServerStore(defaults: defaults)
+        let accountStore = AccountStore(keychain: keychain, defaults: defaults)
+        let server1 = try serverStore.upsert(name: "家", baseURL: "https://a.b")
+        let server2 = try serverStore.upsert(name: "公司", baseURL: "https://c.d")
+        accountStore.save(serverID: server1.id, username: "alice", password: nil, cookie: nil)
+        accountStore.save(serverID: server2.id, username: "bob", password: nil, cookie: nil)
+
+        let state = AppState(servers: serverStore, accounts: accountStore, api: APIClient(storage: .shared, keychain: keychain))
+        XCTAssertEqual(state.savedLogins.count, 2)
+        XCTAssertEqual(Set(state.savedLogins.map(\.username)), Set(["alice", "bob"]))
+        XCTAssertEqual(state.savedLogins.map(\.server.id).sorted(), [server1.id, server2.id].sorted())
+    }
+
+    func testSavedLoginsSeed() {
+        UserDefaults.standard.set("1", forKey: "savedLoginsSeed")
+        UserDefaults.standard.set("本地 Docker", forKey: "savedLoginsSeedName")
+        UserDefaults.standard.set("http://127.0.0.1:8000", forKey: "savedLoginsSeedURL")
+        UserDefaults.standard.set("admin", forKey: "savedLoginsSeedUser")
+        let keychain = InMemoryKeychainStore()
+        let serverStore = ServerStore(defaults: defaults)
+        let accountStore = AccountStore(keychain: keychain, defaults: defaults)
+        let state = AppState(servers: serverStore, accounts: accountStore, api: APIClient(storage: .shared, keychain: keychain))
+        XCTAssertEqual(state.savedLogins.count, 1)
+        XCTAssertEqual(state.savedLogins.first?.username, "admin")
+        XCTAssertNil(UserDefaults.standard.string(forKey: "savedLoginsSeed"))
     }
 }

@@ -81,7 +81,7 @@ jobs:
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl install "$UDID" "$APP"
           xcrun simctl privacy "$UDID" grant notifications com.peekaboo789.limitpattern || true
-          xcrun simctl launch "$UDID" com.peekaboo789.limitpattern; sleep 8
+          xcrun simctl launch "$UDID" com.peekaboo789.limitpattern -savedLoginsSeed 1 -savedLoginsSeedStayOnLogin 1 -savedLoginsSeedName "本地 Docker" -savedLoginsSeedURL "http://127.0.0.1:8000" -savedLoginsSeedUser "admin"; sleep 8
           xcrun simctl io "$UDID" screenshot shots/01-login.png
           xcrun simctl terminate "$UDID" com.peekaboo789.limitpattern
           xcrun simctl launch "$UDID" com.peekaboo789.limitpattern -server http://127.0.0.1:8000 -noprompt YES; sleep 12

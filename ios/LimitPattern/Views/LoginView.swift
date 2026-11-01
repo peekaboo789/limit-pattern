@@ -6,8 +6,6 @@ struct LoginView: View {
     @State private var password = ""
     @FocusState private var focus: Int?
     @State private var serverEditor: ServerEditor?
-    @State private var accountPassword: SavedAccount?
-    @State private var accountPasswordText = ""
     @State private var reachable: ServerReachability?
 
     var body: some View {
@@ -15,8 +13,8 @@ struct LoginView: View {
         ScrollView {
             VStack(spacing: 20) {
                 header
+                savedLoginsSection
                 serverSection
-                savedAccountsSection
                 loginSection(username: $state.username)
                 notes
             }
@@ -27,9 +25,6 @@ struct LoginView: View {
         .screenBackground()
         .sheet(item: $serverEditor) { editor in
             serverEditorSheet(editor)
-        }
-        .sheet(item: $accountPassword) { account in
-            accountPasswordSheet(account)
         }
         .onChange(of: state.selectedServer?.id) { _, _ in reachable = nil }
     }
@@ -103,30 +98,45 @@ struct LoginView: View {
         }
     }
 
-    private var savedAccountsSection: some View {
+    private var savedLoginsSection: some View {
         Group {
-            if !state.accountsForSelectedServer.isEmpty {
+            if state.hasSavedLogins {
                 GlassEffectContainer(spacing: 8) {
                     VStack(spacing: 8) {
                         HStack {
-                            Text("已保存的账户").font(.headline)
+                            Text("已保存的登录").font(.headline)
                             Spacer()
                             Text("轻点即可登录").font(.caption).foregroundStyle(.secondary)
                         }
-                        ForEach(state.accountsForSelectedServer) { account in
-                            HStack(spacing: 10) {
-                                Label(account.username, systemImage: "person.crop.circle")
+                        ForEach(state.savedLogins) { login in
+                            HStack(spacing: 12) {
+                                Image(systemName: "person.crop.circle.fill")
+                                    .font(.title3).foregroundStyle(Theme.gold)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(spacing: 6) {
+                                        Text(login.server.name).font(.body.weight(.semibold)).lineLimit(1)
+                                        Text(login.server.baseURL).font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                    HStack(spacing: 6) {
+                                        Text(login.username).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                                        Text(login.lastUsed, format: Date.RelativeFormatStyle(presentation: .named)).font(.caption2).foregroundStyle(.tertiary)
+                                    }
+                                }
                                 Spacer()
-                                Text(account.lastUsed, format: Date.RelativeFormatStyle(presentation: .named)).font(.caption2).foregroundStyle(.secondary)
+                                if state.loggingInKey == login.id {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "arrow.right.circle").foregroundStyle(Theme.gold)
+                                }
                             }
                             .padding(.horizontal, 14).padding(.vertical, 12)
                             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
                             .contentShape(Rectangle())
-                            .onTapGesture { Task { await quickLogin(account) } }
+                            .onTapGesture { Task { await quickLogin(login.account) } }
                             .contextMenu {
-                                Button { Task { await quickLogin(account) } } label: { Label("登录", systemImage: "arrow.right.circle") }
+                                Button { Task { await quickLogin(login.account) } } label: { Label("登录", systemImage: "arrow.right.circle") }
                                 Button(role: .destructive) {
-                                    state.accounts.remove(serverID: account.serverID, username: account.username)
+                                    state.accounts.remove(serverID: login.account.serverID, username: login.account.username)
                                 } label: { Label("删除", systemImage: "trash") }
                             }
                         }
@@ -170,13 +180,6 @@ struct LoginView: View {
         }
     }
 
-    private func accountPasswordSheet(_ account: SavedAccount) -> some View {
-        AccountPasswordSheet(account: account, password: $accountPasswordText) {
-            Task { _ = await state.quickLogin(account, password: accountPasswordText) }
-            accountPassword = nil
-        }
-    }
-
     private var notes: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("· 登录成功后会按服务器保存账户，下次轻点即可登录。")
@@ -202,9 +205,8 @@ struct LoginView: View {
 
     private func quickLogin(_ account: SavedAccount) async {
         let outcome = await state.quickLogin(account)
-        if outcome == .needsPassword {
-            accountPasswordText = ""
-            accountPassword = account
+        if outcome != .ready {
+            focus = 2
         }
     }
 
@@ -299,35 +301,6 @@ struct ServerEditorSheet: View {
                     }
                 }
             }
-        }
-    }
-}
-
-@MainActor
-struct AccountPasswordSheet: View {
-    let account: SavedAccount
-    @Binding var password: String
-    let onConfirm: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                Text("\(account.username) 的会话已过期，请输入密码重新登录")
-                    .font(.callout).foregroundStyle(.secondary)
-                SecureField("密码", text: $password).textContentType(.password).padding()
-                    .glassEffect(.regular, in: .rect(cornerRadius: 16))
-                Button {
-                    onConfirm()
-                    dismiss()
-                } label: {
-                    Label("登录", systemImage: "arrow.right.circle").frame(maxWidth: .infinity)
-                }.buttonStyle(.glassProminent).tint(Theme.gold)
-            }
-            .padding()
-            .screenBackground()
-            .navigationTitle("重新登录").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
         }
     }
 }
