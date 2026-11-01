@@ -64,11 +64,15 @@ struct ServerAccountsView: View {
         .screenBackground()
         .navigationTitle("服务器与账户")
         .sheet(item: $editor) { editor in
-            let activate = editor.serverID == nil || editor.serverID == state.selectedServer?.id
-            let previousURL = state.selectedServer?.baseURL
-            ServerEditorSheet(editor: editor, store: state.servers) { server in
-                state.reconcileServer(server, activate: activate, previousURL: previousURL)
-            }
+            serverEditorSheet(editor)
+        }
+    }
+
+    private func serverEditorSheet(_ editor: ServerEditor) -> some View {
+        let activate = editor.serverID == nil || editor.serverID == state.selectedServer?.id
+        let previousURL = state.selectedServer?.baseURL
+        return ServerEditorSheet(editor: editor, store: state.servers) { server in
+            state.reconcileServer(server, activate: activate, previousURL: previousURL)
         }
     }
 }

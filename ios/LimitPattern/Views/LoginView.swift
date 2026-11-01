@@ -15,9 +15,9 @@ struct LoginView: View {
         ScrollView {
             VStack(spacing: 20) {
                 header
-                serverSection(state: state)
+                serverSection
                 savedAccountsSection
-                loginSection(state: state)
+                loginSection(username: $state.username)
                 notes
             }
             .padding(22).frame(maxWidth: 520)
@@ -26,17 +26,10 @@ struct LoginView: View {
         .scrollDismissesKeyboard(.interactively)
         .screenBackground()
         .sheet(item: $serverEditor) { editor in
-            let activate = editor.serverID == nil || editor.serverID == state.selectedServer?.id
-            let previousURL = state.selectedServer?.baseURL
-            ServerEditorSheet(editor: editor, store: state.servers) { server in
-                state.reconcileServer(server, activate: activate, previousURL: previousURL)
-            }
+            serverEditorSheet(editor)
         }
         .sheet(item: $accountPassword) { account in
-            AccountPasswordSheet(account: account, password: $accountPasswordText) {
-                Task { _ = await state.quickLogin(account, password: accountPasswordText) }
-                accountPassword = nil
-            }
+            accountPasswordSheet(account)
         }
         .onChange(of: state.selectedServer?.id) { _, _ in reachable = nil }
     }
@@ -52,52 +45,60 @@ struct LoginView: View {
         }
     }
 
-    private func serverSection(state: AppState) -> some View {
+    private var serverSection: some View {
         GlassEffectContainer(spacing: 10) {
             VStack(spacing: 10) {
-                Menu {
-                    if state.servers.servers.isEmpty {
-                        Text("还没有服务器")
-                    } else {
-                        ForEach(state.servers.servers) { server in
-                            Button {
-                                if server.id != state.servers.selectedID {
-                                    state.selectServer(server)
-                                }
-                            } label: {
-                                if server.id == state.servers.selectedID { Label(server.name, systemImage: "checkmark") }
-                                else { Text(server.name) }
-                            }
-                        }
-                    }
-                    Divider()
-                    Button { serverEditor = ServerEditor(name: "", baseURL: "") } label: {
-                        Label("添加服务器", systemImage: "plus")
-                    }
-                } label: {
-                    fieldRow(icon: "server.rack", title: "服务器") {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(state.selectedServer?.name ?? "选择服务器").font(.body.weight(.medium))
-                                Text(state.serverText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.up.chevron.down").foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                serverPicker
+                serverActions
+            }
+        }
+    }
 
-                if let server = state.selectedServer {
-                    HStack(spacing: 10) {
-                        Button { checkReachability(server) } label: { Label(reachLabel(server), systemImage: reachIcon(server)).font(.caption) }
-                            .buttonStyle(.glass)
-                        Spacer()
-                        Button { serverEditor = ServerEditor(serverID: server.id, name: server.name, baseURL: server.baseURL) } label: {
-                            Label("编辑", systemImage: "pencil").font(.caption)
-                        }.buttonStyle(.glass)
-                        Button(role: .destructive) { state.removeServer(server.id) } label: { Label("删除", systemImage: "trash").font(.caption) }.buttonStyle(.glass)
+    private var serverPicker: some View {
+        Menu {
+            if state.servers.servers.isEmpty {
+                Text("还没有服务器")
+            } else {
+                ForEach(state.servers.servers) { server in
+                    Button {
+                        if server.id != state.servers.selectedID {
+                            state.selectServer(server)
+                        }
+                    } label: {
+                        if server.id == state.servers.selectedID { Label(server.name, systemImage: "checkmark") }
+                        else { Text(server.name) }
                     }
                 }
+            }
+            Divider()
+            Button { serverEditor = ServerEditor(name: "", baseURL: "") } label: {
+                Label("添加服务器", systemImage: "plus")
+            }
+        } label: {
+            fieldRow(icon: "server.rack", title: "服务器") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(state.selectedServer?.name ?? "选择服务器").font(.body.weight(.medium))
+                        Text(state.serverText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down").foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var serverActions: some View {
+        if let server = state.selectedServer {
+            HStack(spacing: 10) {
+                Button { checkReachability(server) } label: { Label(reachLabel(server), systemImage: reachIcon(server)).font(.caption) }
+                    .buttonStyle(.glass)
+                Spacer()
+                Button { serverEditor = ServerEditor(serverID: server.id, name: server.name, baseURL: server.baseURL) } label: {
+                    Label("编辑", systemImage: "pencil").font(.caption)
+                }.buttonStyle(.glass)
+                Button(role: .destructive) { state.removeServer(server.id) } label: { Label("删除", systemImage: "trash").font(.caption) }.buttonStyle(.glass)
             }
         }
     }
@@ -116,7 +117,7 @@ struct LoginView: View {
                             HStack(spacing: 10) {
                                 Label(account.username, systemImage: "person.crop.circle")
                                 Spacer()
-                                Text(account.lastUsed, format: .relative(presentation: .named)).font(.caption2).foregroundStyle(.secondary)
+                                Text(account.lastUsed, format: Date.RelativeFormatStyle(presentation: .named)).font(.caption2).foregroundStyle(.secondary)
                             }
                             .padding(.horizontal, 14).padding(.vertical, 12)
                             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
@@ -135,12 +136,11 @@ struct LoginView: View {
         }
     }
 
-    private func loginSection(state: AppState) -> some View {
-        @Bindable var state = state
+    private func loginSection(username: Binding<String>) -> some View {
         GlassEffectContainer(spacing: 12) {
             VStack(spacing: 12) {
                 field("账号", systemImage: "person") {
-                    TextField(state.needsUsername ? "管理员账号" : "账号（旧版服务器可留空）", text: $state.username)
+                    TextField(state.needsUsername ? "管理员账号" : "账号（旧版服务器可留空）", text: username)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.username).focused($focus, equals: 1)
                 }
                 field("密码", systemImage: "lock") {
@@ -159,6 +159,21 @@ struct LoginView: View {
                 }
                 .buttonStyle(.glassProminent).tint(Theme.gold).disabled(state.busy)
             }
+        }
+    }
+
+    private func serverEditorSheet(_ editor: ServerEditor) -> some View {
+        let activate = editor.serverID == nil || editor.serverID == state.selectedServer?.id
+        let previousURL = state.selectedServer?.baseURL
+        return ServerEditorSheet(editor: editor, store: state.servers) { server in
+            state.reconcileServer(server, activate: activate, previousURL: previousURL)
+        }
+    }
+
+    private func accountPasswordSheet(_ account: SavedAccount) -> some View {
+        AccountPasswordSheet(account: account, password: $accountPasswordText) {
+            Task { _ = await state.quickLogin(account, password: accountPasswordText) }
+            accountPassword = nil
         }
     }
 

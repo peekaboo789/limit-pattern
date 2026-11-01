@@ -36,9 +36,16 @@ jobs:
         working-directory: ios
         run: |
           set -o pipefail
-          xcodebuild test -project LimitPattern.xcodeproj -scheme LimitPattern \
+          if xcodebuild test -project LimitPattern.xcodeproj -scheme LimitPattern \
             -destination "id=${{ steps.sim.outputs.udid }}" -derivedDataPath build/sim \
-            CODE_SIGNING_ALLOWED=NO | tail -n 80
+            CODE_SIGNING_ALLOWED=NO > /tmp/xcodebuild-test.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
+          grep -E 'error:|warning:' /tmp/xcodebuild-test.log || true
+          tail -n 80 /tmp/xcodebuild-test.log
+          exit $status
 
       - name: Build unsigned IPA
         working-directory: ios
