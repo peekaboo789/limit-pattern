@@ -1,5 +1,6 @@
 import ClusterView from '@/views/ClusterView.vue'
 import BacktestView from '@/views/BacktestView.vue'
+import SignalsView from '@/views/SignalsView.vue'
 import NextDayPoolView from '@/views/NextDayPoolView.vue'
 import AiRankingView from '@/views/AiRankingView.vue'
 import MonitorView from '@/views/MonitorView.vue'
@@ -32,6 +33,7 @@ export const router = createRouter({
     { path: '/next-day', name: 'next-day', component: NextDayPoolView, meta: { title: '次日观察池' } },
     { path: '/cluster', name: 'cluster', component: ClusterView, meta: { title: '聚类分析' } },
     { path: '/backtest', name: 'backtest', component: BacktestView, meta: { title: '回测' } },
+    { path: '/signals', name: 'signals', component: SignalsView, meta: { title: '信号有效性' } },
     { path: '/pool', name: 'pool', component: PoolView, meta: { title: '涨停池' } },
     { path: '/summaries', name: 'summaries', component: SummaryView, meta: { title: '每日总结' } },
     { path: '/settings', name: 'settings', component: SettingsView, meta: { title: '设置' } },

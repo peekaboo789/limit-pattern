@@ -281,3 +281,70 @@ class IntradayWatchAlert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
+class SignalEvent(Base):
+    """不可变信号事件：发出那一刻的完整上下文。事后只读、只补标签，验证在事件表上重放。"""
+
+    __tablename__ = "signal_events"
+    __table_args__ = (
+        UniqueConstraint("signal_id", name="uq_signal_id"),
+        Index("ix_signal_day", "signal_date", "signal_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[str] = mapped_column(String(64))
+    signal_date: Mapped[date] = mapped_column(Date)
+    signal_type: Mapped[str] = mapped_column(String(32))
+    stock_code: Mapped[str] = mapped_column(String(6), index=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    model: Mapped[str] = mapped_column(String(128), default="")
+    prompt_version: Mapped[str] = mapped_column(String(32), default="")
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snapshot_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class SignalSnapshot(Base):
+    """信号日快照：未复权日线 + 涨跌停价 + 停牌 + 情绪分组，验证只读快照。"""
+
+    __tablename__ = "signal_snapshots"
+    __table_args__ = (UniqueConstraint("trade_date", "fingerprint", name="uq_snapshot"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class SignalOutcome(Base):
+    """信号的结果标签：T+1~T+5 净收益、基准收益、超额收益、可成交判定。事后只补不删。"""
+
+    __tablename__ = "signal_outcomes"
+    __table_args__ = (UniqueConstraint("signal_id", "hold", name="uq_outcome"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[str] = mapped_column(String(64), index=True)
+    hold: Mapped[int] = mapped_column(Integer)
+    buyable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    sellable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    net_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    benchmark_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    excess_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hit: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    settled_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class SignalShadowStatus(Base):
+    """信号上线状态：影子 / 达标 / 上线 / 降权 / 停用。审计轨迹只增不改。"""
+
+    __tablename__ = "signal_shadow_status"
+    __table_args__ = (UniqueConstraint("signal_type", "changed_at", name="uq_shadow"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_type: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="shadow")
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    changed_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+

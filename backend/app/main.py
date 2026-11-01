@@ -121,6 +121,9 @@ def create_app() -> FastAPI:
     from backend.app.api.wecom_routes import router as wecom_router
 
     app.include_router(wecom_router, prefix="/api")
+    from backend.app.api.signals_routes import router as signals_router
+
+    app.include_router(signals_router, prefix="/api")
     _mount_static(app)
     return app
 

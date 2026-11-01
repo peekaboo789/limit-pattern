@@ -22,6 +22,7 @@ import type { CaptureStatus, ManualResult, WatchCandidate, WatchItem, WatchMonit
   SummaryListResponse,
   SyncStatus,
   SyncTask,
+  SignalReport,
 } from './types'
 import { defaultExportFilename, filenameFromDisposition } from '@/utils/saveFile'
 
@@ -161,6 +162,15 @@ export const api = {
   monitor: () => request<MonitorSnapshot>('/api/monitor'),
 
   monitorEvents: (since: number) => request<MonitorEvents>(`/api/monitor/events${query({ since })}`),
+
+  signalReport: (signalType?: string) => request<SignalReport>(`/api/signals/report${query({ signal_type: signalType })}`),
+
+  signalTypes: () => request<{ items: { signal_type: string }[] }>('/api/signals/types'),
+
+  signalShadow: () => request<{ items: Record<string, string> }>('/api/signals/shadow'),
+
+  generateSignals: (date?: string) =>
+    request<{ date: string; counts: Record<string, number> }>('/api/signals/generate', { method: 'POST', body: JSON.stringify({ date }) }, 180000),
 
   summaryRange: () => request<{ earliest: string | null }>('/api/daily-summary/range'),
 

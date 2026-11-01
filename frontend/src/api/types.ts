@@ -576,3 +576,58 @@ export interface WatchMonitor {
   date: string; phase: string; alerts_active: boolean; alerts_enabled: boolean; status_text: string; market_open: boolean
   source: string; error: string; updated_at: string; items: WatchRow[]; alert_count: number; warn_count: number; price_label?: string
 }
+
+export interface SignalHoldStat {
+  n: number
+  excess_mean: number | null
+  excess_median: number | null
+  win_rate: number | null
+  profit_loss_ratio: number | null
+  t_stat: number | null
+  raw_mean: number | null
+  p_value: number | null
+  p_bh: number
+  p_holm: number
+  significant_bh: boolean
+  significant_holm: boolean
+}
+
+export interface SignalCalibration {
+  n: number
+  brier: number | null
+  ece: number | null
+  mean_confidence: number | null
+  hit_rate: number | null
+  reliability: { n: number; bins: { bin: number; lower: number; upper: number; n: number; confidence: number | null; hit_rate: number | null; gap: number | null }[] }
+}
+
+export interface SignalTypeReport {
+  signal_type: string
+  n_events: number
+  holds: Record<string, SignalHoldStat>
+  calibration: SignalCalibration | null
+  market_states: Record<string, { n: number; mean: number | null; median: number | null; win_rate: number | null; profit_loss_ratio: number | null }>
+}
+
+export interface SignalEventRow {
+  signal_id: string
+  signal_date: string
+  signal_type: string
+  code: string
+  name: string
+  confidence: number | null
+  model: string
+  prompt_version: string
+  temperature: number | null
+  [key: string]: unknown
+}
+
+export interface SignalReport {
+  signal_type: string | null
+  n_events: number
+  empty: boolean
+  disclaimer: string
+  events: SignalEventRow[]
+  by_type: Record<string, SignalTypeReport>
+  hold_labels: string[]
+}

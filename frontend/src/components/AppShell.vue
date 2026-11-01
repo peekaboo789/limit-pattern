@@ -17,6 +17,7 @@ const items = [
   { name: 'next-day', label: '次日观察池', to: '/next-day' },
   { name: 'backtest', label: '回测', to: '/backtest' },
   { name: 'cluster', label: '聚类分析', to: '/cluster' },
+  { name: 'signals', label: '信号有效性', to: '/signals' },
   { name: 'pool', label: '涨停池', to: '/pool' },
   { name: 'summaries', label: '每日总结', to: '/summaries' },
   { name: 'settings', label: '设置', to: '/settings' },

@@ -42,6 +42,7 @@ ALIASES = [
     ("采集当前行情", "采集"), ("采集", "采集"), ("同步行情", "同步"), ("同步", "同步"),
     ("今日总结", "总结"), ("总结", "总结"), ("系统状态", "状态"), ("状态", "状态"),
     ("检查更新", "检查更新"), ("更新", "检查更新"), ("帮助", "帮助"), ("菜单", "帮助"),
+    ("信号报告", "信号报告"), ("信号有效性", "信号报告"), ("最新信号", "最新信号"), ("盯盘状态", "盯盘状态"),
 ]
 
 
@@ -341,6 +342,12 @@ def run(cmd: str, arg: str = "", reply: Reply | None = None, user: str = "") -> 
         return _later(reply, job, "已开始同步日线（几分钟），完成后告诉你结果")
     if cmd == "状态":
         return status_text()
+    if cmd == "盯盘状态":
+        return signal_watch_status()
+    if cmd == "最新信号":
+        return signal_latest()
+    if cmd == "信号报告":
+        return signal_report_text(arg)
     if cmd == "检查更新":
         from backend.app.services import update_service
 
@@ -380,3 +387,74 @@ def _model_line() -> str:
     if not active:
         return "未配置"
     return f"{active['name']}（{active['model']}）" + ("" if active["api_key_set"] else " 缺密钥") + (f"，共 {len(pub['items'])} 个可切换" if len(pub["items"]) > 1 else "")
+
+
+# ---------- v0.6.0 盘中信号 ----------
+def signal_watch_status() -> tuple[str, str]:
+    """盯盘状态：当前是否交易时段、各信号是否可推送、影子状态。"""
+    from backend.app.services.monitor_service import alert_phase
+    from backend.app.services.signals import shadow
+
+    phase = alert_phase()
+    with session_scope() as s:
+        statuses = shadow.all_statuses(s)
+    lines = [f"当前：{phase['text']}"]
+    if not statuses:
+        lines.append("还没有任何信号进入影子模式")
+    else:
+        for sig_type, status in sorted(statuses.items()):
+            icon = {"live": "🟢", "passed": "🟡", "shadow": "⚪", "degraded": "🟠", "disabled": "🔴"}.get(status, "⚪")
+            lines.append(f"{icon} {sig_type}：{status}")
+    return "📡 盯盘状态", "\n".join(lines)
+
+
+def signal_latest() -> tuple[str, str]:
+    """最新信号：最近一个信号日的事件列表（只读，不提醒）。"""
+    from backend.app.models.tables import SignalEvent, Stock
+
+    with session_scope() as s:
+        row = s.query(SignalEvent).order_by(SignalEvent.signal_date.desc(), SignalEvent.id.desc()).first()
+        if row is None:
+            return "🔔 最新信号", "还没有任何信号事件。先在影子模式下积累样本。"
+        day = row.signal_date
+        events = (
+            s.query(SignalEvent)
+            .filter(SignalEvent.signal_date == day)
+            .order_by(SignalEvent.signal_type, SignalEvent.id)
+            .all()
+        )
+        names = {r.code: r.name for r in s.query(Stock)}
+    lines = [f"信号日 {day.isoformat()}（共 {len(events)} 条）"]
+    for e in events[:20]:
+        conf = "—" if e.confidence is None else f"{e.confidence:.0f}"
+        lines.append(f"• {e.signal_type} {notify.stock(names.get(e.stock_code, ''), e.stock_code)} 把握 {conf}")
+    lines.append("注：置信度不是概率，不构成投资建议。")
+    return "🔔 最新信号", "\n".join(lines)
+
+
+def signal_report_text(arg: str) -> tuple[str, str]:
+    """信号报告：某类信号（或全部）的有效性统计。"""
+    from backend.app.services.signals import report as signal_report
+
+    signal_type = arg.strip() or None
+    with session_scope() as s:
+        rep = signal_report.build_report(s, signal_type)
+    if rep.get("empty"):
+        return "📊 信号报告", rep.get("disclaimer") or "还没有信号事件"
+    lines = [f"信号 {rep.get('signal_type') or '全部'}（事件 {rep['n_events']} 条）"]
+    by_type = rep.get("by_type") or {}
+    if not by_type:
+        lines.append("还没有可统计的信号类型")
+    for sig_type, body in by_type.items():
+        lines.append(f"【{sig_type}】事件 {body['n_events']} 条")
+        for hold in (1, 3, 5):
+            h = body["holds"].get(hold)
+            if not h or h.get("n") == 0:
+                continue
+            sig = "✅" if h.get("significant_bh") else "▫️"
+            lines.append(
+                f"T+{hold} 超额均值 {h['excess_mean']}%（中位 {h['excess_median']}%），胜率 {h['win_rate']}，"
+                f"p={h['p_value']}，BH校正 {'显著' if h.get('significant_bh') else '不显著'} {sig}"
+            )
+    lines.append("注：超额收益 = 个股收益 − 同期全市场等权中位数，是历史统计，不构成投资建议。")
+    return "📊 信号报告", "\n".join(lines[:40])
