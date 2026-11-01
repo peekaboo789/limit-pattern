@@ -12,7 +12,12 @@ enum ServerURL {
     static func normalize(_ raw: String) -> String? {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.isEmpty { return nil }
-        if !s.lowercased().hasPrefix("http://") && !s.lowercased().hasPrefix("https://") { s = "http://" + s }
+        let lower = s.lowercased()
+        if lower.contains("://") {
+            guard lower.hasPrefix("http://") || lower.hasPrefix("https://") else { return nil }
+        } else {
+            s = "http://" + s
+        }
         s = s.lowercased()
         guard let comps = URLComponents(string: s),
               let scheme = comps.scheme?.lowercased(),
@@ -33,12 +38,12 @@ enum ServerURL {
     }
 
     private static func pathWithoutAPI(_ path: String) -> String {
-        guard path != "/", path != "/api" else { return "" }
-        if path.lowercased().hasSuffix("/api") {
-            return String(path.dropLast(4))
+        var path = path
+        while path.hasSuffix("/") {
+            path.removeLast()
         }
-        if path.hasSuffix("/") {
-            return String(path.dropLast())
+        if path.lowercased().hasSuffix("/api") {
+            path.removeLast(4)
         }
         return path
     }
