@@ -130,7 +130,10 @@ def pick(user: str, text: str) -> tuple[str, str]:
             _PICK.pop(key, None)
             return "🤖 切换AI", "列表已过期，请重新发「切换AI」"
         ids = hit[1]
-    n = int(text)
+    try:
+        n = int(text)
+    except (TypeError, ValueError):
+        return "🤖 切换AI", f"请回复 1~{len(ids)} 之间的数字"
     if not 1 <= n <= len(ids):
         return "🤖 切换AI", f"没有第 {n} 个，请回复 1~{len(ids)} 之间的数字"
     try:

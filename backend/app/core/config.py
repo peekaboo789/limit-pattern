@@ -146,7 +146,7 @@ def default_settings() -> dict:
 
 
 _SETTINGS_LOCK = threading.RLock()
-_SETTINGS_CACHE: dict = {"path": None, "mtime": None, "payload": None}
+_SETTINGS_CACHE: dict = {"path": None, "mtime": None, "size": None, "payload": None}
 
 
 def _load_settings_payload(path: Path):
@@ -154,17 +154,18 @@ def _load_settings_payload(path: Path):
     不能悄悄退回默认值（那会让数据源看起来「切换不生效」）。"""
     with _SETTINGS_LOCK:
         try:
-            mtime = path.stat().st_mtime_ns
+            st = path.stat()
+            mtime, size = st.st_mtime_ns, st.st_size
         except OSError:
-            mtime = None
+            mtime, size = None, None
         cache = _SETTINGS_CACHE
-        if cache["path"] == str(path) and cache["mtime"] == mtime and cache["payload"] is not None:
+        if cache["path"] == str(path) and cache["mtime"] == mtime and cache["size"] == size and cache["payload"] is not None:
             return cache["payload"]
         last_error = None
         for attempt in range(5):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
-                cache.update(path=str(path), mtime=mtime, payload=payload)
+                cache.update(path=str(path), mtime=mtime, size=size, payload=payload)
                 return payload
             except (OSError, json.JSONDecodeError) as exc:
                 last_error = exc
@@ -340,10 +341,11 @@ def write_settings_file(payload: dict) -> None:
                     raise
                 time.sleep(0.05 * (attempt + 1))
         try:
-            mtime = path.stat().st_mtime_ns
+            st = path.stat()
+            mtime, size = st.st_mtime_ns, st.st_size
         except OSError:
-            mtime = None
-        _SETTINGS_CACHE.update(path=str(path), mtime=mtime, payload=json.loads(text))
+            mtime, size = None, None
+        _SETTINGS_CACHE.update(path=str(path), mtime=mtime, size=size, payload=json.loads(text))
 
 
 def excluded_boards() -> set[str]:

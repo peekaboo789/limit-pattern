@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -191,7 +192,7 @@ def handle_message(cfg: dict, xml_text: str) -> dict:
             return {"user": user, "cmd": None, "reply": None}
     elif kind == "text":
         content = extract(xml_text, "Content").strip()
-        if content.isdigit() and len(content) <= 3 and commands.pending_pick(user):
+        if re.fullmatch(r"[0-9]{1,3}", content) and commands.pending_pick(user):
             cmd, arg = "选AI", content
         else:
             cmd, arg = commands.parse(content)

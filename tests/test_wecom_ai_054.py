@@ -74,6 +74,35 @@ def test_pick_expires(client, monkeypatch):
     assert "过期" in commands.pick("lisi", "1")[1]
 
 
+def test_pick_non_ascii_digit_is_friendly(client):
+    _two_profiles(client)
+    commands.ai_list("zhaoliu")
+    assert commands.pending_pick("zhaoliu")
+    title, body = commands.pick("zhaoliu", "²")  # Unicode 上标，isdigit() 为真但 int() 会炸
+    assert title == "🤖 切换AI" and "1~2" in body
+    assert commands.pending_pick("zhaoliu") is True  # 没真正切走，列表仍待选
+
+
+def test_pick_empty_and_out_of_range_prompt(client):
+    _two_profiles(client)
+    commands.ai_list("sunqi")
+    for text in ("", "0", "3", "abc"):
+        assert "1~2" in commands.pick("sunqi", text)[1]
+
+
+def test_handle_message_superscript_falls_through(client):
+    from backend.app.api.wecom_routes import handle_message
+
+    _two_profiles(client)
+    cfg = {"admins": ["zhangsan"]}
+    commands.ai_list("zhangsan")
+    assert commands.pending_pick("zhangsan")
+    info = handle_message(cfg, _text("zhangsan", "²"))
+    assert info["cmd"] == "unknown"  # 不当成「选AI」去 int()，落到正常解析
+    info = handle_message(cfg, _text("zhangsan", "1"))
+    assert info["cmd"] == "选AI" and info["arg"] == "1"
+
+
 def test_models_api(client):
     _two_profiles(client)
     got = client.get("/api/ai/models").json()

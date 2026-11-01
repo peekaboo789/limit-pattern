@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import time
 import zipfile
 import hashlib
@@ -89,6 +90,26 @@ def test_format_setting_and_migration(client):
     assert backups.migrate_v051() is True
     assert json.loads(settings_path().read_text(encoding="utf-8"))["wecom_msg_format"] == "text"
     assert backups.migrate_v051() is False
+
+
+def test_settings_cache_key_includes_size(client):
+    """同一 mtime 下两次重写不同内容，缓存不能只靠 (path, mtime) 返回旧 payload。"""
+    from backend.app.core import config
+    from backend.app.core.config import settings_path
+
+    client.put("/api/settings", json={"wecom_corpid": "wwcache"})
+    path = settings_path()
+    first = config._load_settings_payload(path)
+    assert first["wecom_corpid"] == "wwcache"
+    # 模拟同一次 stat（mtime_ns 相同）但文件内容已变长：只改 size 就能让缓存失效。
+    st = path.stat()
+    config._SETTINGS_CACHE.update(path=str(path), mtime=st.st_mtime_ns, size=st.st_size, payload=first)
+    bigger = dict(first)
+    bigger["wecom_corpid"] = "wwcache-longer"
+    path.write_text(json.dumps(bigger, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))  # 锁死 mtime，只剩 size 不同
+    reloaded = config._load_settings_payload(path)
+    assert reloaded["wecom_corpid"] == "wwcache-longer"
 
 
 # ---------- 菜单 ----------
