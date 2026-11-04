@@ -57,6 +57,15 @@ def _safe_freeze() -> None:
         logger.exception("11:30 冻结快照失败")
 
 
+def _safe_poll_bots() -> None:
+    try:
+        from backend.app.services.bots import router
+
+        router.dispatch_polled()
+    except Exception:
+        logger.exception("微信机器人轮询失败")
+
+
 def start_scheduler() -> None:
     global _SCHEDULER
     if os.environ.get("LP_SCHEDULER", "1") == "0":
@@ -76,9 +85,10 @@ def start_scheduler() -> None:
     from backend.app.services.wecom.loop import INTERVAL_SECONDS, safe_tick
 
     scheduler.add_job(safe_tick, "interval", seconds=INTERVAL_SECONDS, id="monitor-loop", max_instances=1, coalesce=True)
+    scheduler.add_job(_safe_poll_bots, "interval", seconds=15, id="bot-poll", max_instances=1, coalesce=True)
     scheduler.start()
     _SCHEDULER = scheduler
-    logger.info("定时任务已启动：17:10 同步并写总结，17:40 清理明细，18:10 补写缺失的总结；交易日 14:50、15:10 生成 AI 榜单")
+    logger.info("定时任务已启动：17:10 同步并写总结，17:40 清理明细，18:10 补写缺失的总结；交易日 14:50、15:10 生成 AI 榜单；每 15 秒轮询微信机器人消息")
 
 
 def scheduled_job_ids() -> list[str]:

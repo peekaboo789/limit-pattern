@@ -128,6 +128,56 @@ def wecom_test(body: dict | None = None) -> dict:
     return {"ok": True, "errcode": 0, "channels": used, "message": "已发送：" + "、".join({"app": "应用消息", "webhook": "群机器人"}[u] for u in used) + f"（{FORMAT_NAMES.get(fmt, fmt)}）"}
 
 
+# ---------- 个人微信 ----------
+@router.get("/wechat/status")
+def wechat_status() -> dict:
+    from backend.app.services.bots import router
+
+    ch = router.channel("wechat")
+    cfg = ch.config()
+    status = ch.qr_status(cfg)
+    return {
+        "enabled": cfg["enabled"],
+        "ready": ch.ready(cfg),
+        "logged_in": bool(status.get("logged_in")),
+        "api_base": cfg["base"],
+        "admins": cfg["admins"],
+    }
+
+
+@router.get("/wechat/qrcode")
+def wechat_qrcode() -> dict:
+    from backend.app.services.bots import router
+    from backend.app.services.wechat.client import WeChatError
+
+    ch = router.channel("wechat")
+    cfg = ch.config()
+    if not cfg["enabled"]:
+        raise HTTPException(status_code=422, detail="先启用个人微信并保存设置，再获取二维码")
+    try:
+        from backend.app.services.wechat import client
+
+        return client.get_qrcode(cfg)
+    except WeChatError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/wechat/test")
+def wechat_test() -> dict:
+    from backend.app.services.bots import router
+    from backend.app.services.wechat.client import WeChatError
+
+    ch = router.channel("wechat")
+    cfg = ch.config()
+    if not ch.ready(cfg):
+        raise HTTPException(status_code=422, detail="个人微信还没登录：请先在设置页扫码")
+    try:
+        result = ch.test(cfg)
+    except WeChatError as exc:
+        return {"ok": False, "errcode": exc.code, "message": str(exc)}
+    return result
+
+
 FORMAT_NAMES = {"text": "文本", "textcard": "卡片", "markdown": "Markdown"}
 
 

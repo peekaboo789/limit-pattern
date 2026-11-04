@@ -164,8 +164,12 @@ def test_webhook_channel(mock):
 # ---------- 报警推送：时段 + 去重 ----------
 def test_alert_dedupe_and_gating(mock, monkeypatch):
     from backend.app.services.wecom import notify
+    from backend.app.services.bots import router
 
-    monkeypatch.setattr(notify.client, "config", lambda raw=None: cfg())
+    monkeypatch.setattr(router, "enabled_channels", lambda raw=None: [router.channel("wecom")])
+    monkeypatch.setattr(router.channel("wecom"), "config", lambda raw=None: cfg())
+    monkeypatch.setattr(router.channel("wecom"), "enabled", lambda raw=None: True)
+    monkeypatch.setattr(router.channel("wecom"), "ready", lambda c: True)
     t = datetime(2026, 10, 30, 10, 0)
     items = [{"code": "600519", "name": "贵州茅台", "level": "warn", "pct": 3.4, "rank": 1}]
     assert notify.push_alerts(items, "ranking", t) == 1
@@ -174,7 +178,7 @@ def test_alert_dedupe_and_gating(mock, monkeypatch):
     assert notify.push_alerts(items, "watchlist", t) == 1  # 自选和榜单分开计
     assert notify.push_alerts(items, "ranking", datetime(2026, 11, 2, 10, 0)) == 1  # 第二天重新计
     assert len(mock.sent) == 4 and "贵州茅台" in mock.sent[0]["text"]["content"]
-    monkeypatch.setattr(notify.client, "config", lambda raw=None: cfg(wecom_events=["ranking"]))
+    monkeypatch.setattr(router.channel("wecom"), "config", lambda raw=None: cfg(wecom_events=["ranking"]))
     assert notify.push_alerts([dict(items[0], code="000001")], "ranking", t) == 0  # 没勾选报警事件
 
 

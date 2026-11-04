@@ -17,29 +17,8 @@ LEVEL_ICON = {"warn": "🟠", "alert": "🔴"}
 
 
 def wants(event: str, cfg: dict | None = None) -> dict | None:
-    cfg = cfg or client.config()
-    if not cfg["enabled"] or not client.ready(cfg) or event not in cfg["events"]:
-        return None
-    return cfg
-
-
-def _fire(event: str, build, background: bool = True) -> None:
-    cfg = wants(event)
-    if cfg is None:
-        return
-
-    def run():
-        try:
-            msg = build()
-            if msg:
-                client.deliver(*msg, cfg=cfg)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("企业微信推送（%s）失败：%s", event, exc)
-
-    if background:
-        threading.Thread(target=run, name=f"wecom-{event}", daemon=True).start()
-    else:
-        run()
+    """v0.7.0：走渠道无关层，让已启用的所有渠道都收到事件。"""
+    return None
 
 
 def fmt_pct(pct) -> str:
@@ -55,11 +34,16 @@ def stock(name: str, code: str) -> str:
 
 def push_alerts(items: list[dict], source: str, moment: datetime | None = None, background: bool = False) -> int:
     """items: [{code, name, level, pct, rank?}]；source: "ranking" / "watchlist"。每天每只每档一次。"""
-    cfg = wants("alert")
-    if cfg is None or not items:
+    if not items:
         return 0
     moment = moment or now()
-    fresh = [x for x in items if x.get("level") in LEVEL_TEXT and client.once(f"{source}:{x['code']}:{x['level']}", moment.date())]
+    from backend.app.services.bots import router
+
+    # 先确认至少有一个渠道勾选 alert；否则别把 dedupe 消耗掉。
+    cfg = router.wants_event_for("alert")
+    if cfg is None:
+        return 0
+    fresh = [x for x in items if x.get("level") in LEVEL_TEXT and router.once(f"{source}:{x['code']}:{x['level']}", moment.date())]
     if not fresh:
         return 0
     label = "AI 榜单" if source == "ranking" else "自选股"
@@ -67,7 +51,7 @@ def push_alerts(items: list[dict], source: str, moment: datetime | None = None, 
     for x in fresh[:20]:
         rank = f"#{x['rank']} " if x.get("rank") else ""
         lines.append(f"{LEVEL_ICON[x['level']]} {rank}{stock(x.get('name'), x['code'])} {fmt_pct(x.get('pct'))} {LEVEL_TEXT[x['level']]}")
-    _fire("alert", lambda: (f"🚨 {label}盘中提醒 {moment.strftime('%H:%M')}", "\n".join(lines)), background)
+    router.push_event("alert", f"🚨 {label}盘中提醒 {moment.strftime('%H:%M')}", "\n".join(lines), background=background)
     return len(fresh)
 
 
@@ -81,8 +65,10 @@ def ranking_text(payload: dict, top: int = 10) -> tuple[str, str]:
 
 
 def ranking_ready(payload: dict) -> None:
-    if wants("ranking") and client.once(f"ranking:{payload.get('date')}:{payload.get('run_at')}"):
-        _fire("ranking", lambda: ranking_text(payload))
+    from backend.app.services.bots import router
+
+    if router.wants_event_for("ranking") and router.once(f"ranking:{payload.get('date')}:{payload.get('run_at')}"):
+        router.push_event("ranking", *ranking_text(payload))
 
 
 def summary_text(payload: dict) -> tuple[str, str]:
@@ -91,12 +77,17 @@ def summary_text(payload: dict) -> tuple[str, str]:
 
 
 def summary_done(payload: dict) -> None:
-    if wants("summary") and client.once(f"summary:{payload.get('date')}:{payload.get('generated_at')}"):
-        _fire("summary", lambda: summary_text(payload))
+    from backend.app.services.bots import router
+
+    if router.wants_event_for("summary") and router.once(f"summary:{payload.get('date')}:{payload.get('generated_at')}"):
+        router.push_event("summary", *summary_text(payload))
 
 
 def sync_failed(message: str) -> None:
-    _fire("sync_failed", lambda: ("⚠️ 日线同步失败", message[:300]))
+    from backend.app.services.bots import router
+
+    if router.wants_event_for("sync_failed"):
+        router.push_event("sync_failed", "⚠️ 日线同步失败", message[:300])
 
 
 def capture_text(result: dict, top: int = 10) -> tuple[str, str]:
@@ -108,4 +99,7 @@ def capture_text(result: dict, top: int = 10) -> tuple[str, str]:
 
 
 def capture_done(result: dict) -> None:
-    _fire("capture", lambda: capture_text(result))
+    from backend.app.services.bots import router
+
+    if router.wants_event_for("capture"):
+        router.push_event("capture", *capture_text(result))

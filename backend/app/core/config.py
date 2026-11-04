@@ -132,6 +132,7 @@ def default_settings() -> dict:
         "alert_include_auction": False,
         "watchlist_alerts": True,
         **WECOM_DEFAULTS,
+        **WECHAT_DEFAULTS,
         "access_password": "",
         "ai_profiles": [],
         "ai_active_profile": None,
@@ -249,6 +250,18 @@ WECOM_SECRET_FIELDS = ("wecom_secret", "wecom_token", "wecom_aes_key", "wecom_we
 WECOM_TEXT_FIELDS = ("wecom_corpid", "wecom_agentid", "wecom_proxy", "wecom_touser", "wecom_toparty", "wecom_totag", "wecom_admins",
                      "wecom_card_url", "update_mirror")
 
+# v0.7.0 个人微信（iLink Bot / ClawBot，扫码登录）。token 只写不读；白名单、事件与企业微信同口径。
+WECHAT_DEFAULTS = {
+    "wechat_enabled": False,
+    "wechat_api_base": "https://ilinkai.weixin.qq.com",
+    "wechat_token": "",
+    "wechat_admins": "",
+    "wechat_events": ["alert", "ranking", "summary", "sync_failed"],
+    "wechat_username": "",
+}
+WECHAT_SECRET_FIELDS = ("wechat_token",)
+WECHAT_TEXT_FIELDS = ("wechat_api_base", "wechat_admins", "wechat_username")
+
 
 def wecom_public(raw: dict) -> dict:
     out = {k: raw.get(k, v) for k, v in WECOM_DEFAULTS.items() if k not in WECOM_SECRET_FIELDS}
@@ -299,6 +312,35 @@ def _update_wecom(current: dict, changes: dict) -> None:
         if not isinstance(events, list) or any(e not in WECOM_EVENTS for e in events):
             raise ValueError("推送事件只能是 " + "、".join(WECOM_EVENTS))
         current["wecom_events"] = list(dict.fromkeys(events))
+
+
+def _update_wechat(current: dict, changes: dict) -> None:
+    if "wechat_enabled" in changes and changes["wechat_enabled"] is not None:
+        if not isinstance(changes["wechat_enabled"], bool):
+            raise ValueError("微信开关只能是 true / false")
+        current["wechat_enabled"] = changes["wechat_enabled"]
+    for k in WECHAT_TEXT_FIELDS:
+        if k in changes and changes[k] is not None:
+            value = str(changes[k]).strip()[:500]
+            if k == "wechat_api_base":
+                value = (value or WECHAT_DEFAULTS["wechat_api_base"]).rstrip("/")
+                if not value.startswith(("http://", "https://")):
+                    raise ValueError("微信 iLink 接口地址要以 http:// 或 https:// 开头")
+            if k == "wechat_username" and value and " " in value:
+                raise ValueError("微信账号名不能包含空格")
+            current[k] = value
+    for k in WECHAT_SECRET_FIELDS:
+        value = changes.get(k)
+        if value:
+            value = str(value).strip()
+            current[k] = value
+        if changes.get(f"{k}_clear") is True:
+            current[k] = ""
+    if "wechat_events" in changes and changes["wechat_events"] is not None:
+        events = changes["wechat_events"]
+        if not isinstance(events, list) or any(e not in WECOM_EVENTS for e in events):
+            raise ValueError("推送事件只能是 " + "、".join(WECOM_EVENTS))
+        current["wechat_events"] = list(dict.fromkeys(events))
     if changes.get("access_password") or changes.get("access_password_clear"):
         raise ValueError("访问密码改到了 设置 → 账号与登录（用户名 + 密码）")
 
@@ -360,6 +402,15 @@ def excluded_boards() -> set[str]:
     return {"star"}
 
 
+def wechat_public(raw: dict) -> dict:
+    out = {k: raw.get(k, v) for k, v in WECHAT_DEFAULTS.items() if k not in WECHAT_SECRET_FIELDS}
+    out["wechat_enabled"] = raw.get("wechat_enabled") is True
+    for k in WECHAT_SECRET_FIELDS:
+        out[f"{k}_set"] = bool(raw.get(k))
+    out["wechat_event_options"] = list(WECOM_EVENTS)
+    return out
+
+
 def public_settings() -> dict:
     raw = read_settings_file()
     key = str(raw.get("ai_api_key") or "")
@@ -395,6 +446,7 @@ def public_settings() -> dict:
         "last_sync_at": raw.get("last_sync_at"),
         "last_cleanup_at": raw.get("last_cleanup_at"),
         **wecom_public(raw),
+        **wechat_public(raw),
         "access_password_from_env": bool(os.environ.get("LP_PASSWORD")),
     }
 
@@ -493,6 +545,7 @@ def _update_settings(changes: dict) -> dict:
 
         sync_from_flat(current)
     _update_wecom(current, changes)
+    _update_wechat(current, changes)
     if "data_source" in changes and changes["data_source"] is not None:
         from backend.app.providers.router import normalize_source
 

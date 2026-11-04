@@ -23,7 +23,7 @@ from backend.app.core.config import (
 
 FORMAT = "limit-pattern-config"
 VERSION = 1
-SECRET_KEYS = ("ai_api_key", "access_password", *WECOM_SECRET_FIELDS)
+SECRET_KEYS = ("ai_api_key", "access_password", *WECOM_SECRET_FIELDS, "wechat_token")
 SKIP_KEYS = ("last_sync_at", "last_cleanup_at", "settings_schema", "ai_thinking_learned", "active_source")
 LABELS = {
     "data_source": "数据源", "retention_trading_days": "保留交易日", "sample_pool_trading_days": "涨停样本池",
@@ -33,6 +33,8 @@ LABELS = {
     "wecom_corpid": "企业ID", "wecom_agentid": "AgentId", "wecom_secret": "企业微信 Secret", "wecom_token": "回调 Token",
     "wecom_aes_key": "EncodingAESKey", "wecom_webhook": "群机器人 webhook", "wecom_events": "推送事件", "wecom_msg_format": "消息格式", "wecom_touser": "企业微信接收人", "wecom_toparty": "接收部门", "wecom_totag": "接收标签",
     "wecom_proxy": "企业微信接口地址", "wecom_admins": "指令白名单", "update_mirror": "更新镜像",
+    "wechat_enabled": "个人微信开关", "wechat_api_base": "个人微信接口地址", "wechat_token": "个人微信 token",
+    "wechat_admins": "个人微信白名单", "wechat_events": "个人微信推送事件", "wechat_username": "个人微信账号名",
 }
 MASK = "（密钥）"
 

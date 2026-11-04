@@ -328,6 +328,10 @@ npm run build
 
 设置 → 企业微信：自建应用推送（盘中报警、榜单、总结、同步失败、采集），并可在企业微信里发 `榜单 / 自选 / 加自选 X / 删自选 X / 采集 / 总结 / 帮助`。详见 [docs/wecom.md](docs/wecom.md)。
 
+### 个人微信
+
+设置 → 个人微信：走 iLink Bot / ClawBot 网关（默认 `https://ilinkai.weixin.qq.com`，可换成自托管网关），不需要公网回调。启用后点「获取二维码」→ 用个人微信扫码登录，程序每 15 秒轮询消息；可直接回复推送，或给机器人发 `榜单 / 自选 / 加自选 X / 删自选 X / 采集 / 总结 / 帮助`。只发纯文本，token 不回显、不写日志。详见 [docs/wechat.md](docs/wechat.md)。
+
 ## 配置
 
 | 项 | 默认 | 说明 |
@@ -500,3 +504,10 @@ logs/launcher.log
 - 页面 `信号有效性`（Vue3）：每类信号的持有期收益表、显著性、校准曲线、分市场状态、事件只读列表。企业微信指令：盯盘状态 / 最新信号 / 信号报告。
 - 已知边界：免费源补不了长历史 tick / 分钟线，历史回测用日线，影子模式往前进积累分钟样本。
 - 新接口 `GET /api/signals/report`、`GET /api/signals/types`、`GET /api/signals/shadow`、`POST /api/signals/generate`。
+
+## v0.7.0 个人微信机器人 + 多渠道统一推送
+
+- 新增「个人微信」渠道：走 iLink Bot / ClawBot 网关（默认 `https://ilinkai.weixin.qq.com`，可在设置里换成自托管网关），扫码登录后每 15 秒轮询收消息、回指令，不需要公网回调。
+- 多渠道统一：企业微信与个人微信抽象成同一套 Bot 渠道，报警 / 榜单 / 总结 / 同步失败 / 采集去重按「渠道 + 事件 + 日期」隔离，同一事件可同时推给多个已启用渠道；指令从哪个渠道来，就回给那个渠道。
+- 个人微信只发纯文本，标题 + 正文合并、超长分段；token 只写不读、只显示「已设置」、不写日志；扫码会话保存到 `data/wechat_session.json`。
+- 新增接口 `GET /api/wechat/status`、`GET /api/wechat/qrcode`、`POST /api/wechat/test`。设置步骤见 [docs/wechat.md](docs/wechat.md)。

@@ -8,6 +8,7 @@ import ConfigTransfer from '@/components/ConfigTransfer.vue'
 import AccountPanel from '@/components/AccountPanel.vue'
 import UpdatePanel from '@/components/UpdatePanel.vue'
 import WeComSettings from '@/components/WeComSettings.vue'
+import WeChatSettings from '@/components/WeChatSettings.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 const FALLBACK_SOURCES = ['auto', 'eastmoney', 'tencent', 'sina']
@@ -367,6 +368,7 @@ onMounted(() => {
   </form>
   <AiProfiles />
   <WeComSettings />
+  <WeChatSettings />
   <UpdatePanel />
   <AccountPanel />
   <ConfigTransfer />
