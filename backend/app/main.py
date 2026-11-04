@@ -124,6 +124,9 @@ def create_app() -> FastAPI:
     from backend.app.api.signals_routes import router as signals_router
 
     app.include_router(signals_router, prefix="/api")
+    from backend.app.api.cleanup_routes import router as cleanup_router
+
+    app.include_router(cleanup_router, prefix="/api")
     _mount_static(app)
     return app
 

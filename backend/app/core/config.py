@@ -143,6 +143,8 @@ def default_settings() -> dict:
         "excluded_boards": ["star"],
         "last_sync_at": None,
         "last_cleanup_at": None,
+        "data_cleanup_days": 60,
+        "data_cleanup_auto_enabled": False,
     }
 
 
@@ -445,6 +447,8 @@ def public_settings() -> dict:
         "market_scope": _market_scope_text(),
         "last_sync_at": raw.get("last_sync_at"),
         "last_cleanup_at": raw.get("last_cleanup_at"),
+        "data_cleanup_days": data_cleanup_days(raw),
+        "data_cleanup_auto_enabled": raw.get("data_cleanup_auto_enabled") is True,
         **wecom_public(raw),
         **wechat_public(raw),
         "access_password_from_env": bool(os.environ.get("LP_PASSWORD")),
@@ -550,8 +554,29 @@ def _update_settings(changes: dict) -> dict:
         from backend.app.providers.router import normalize_source
 
         current["data_source"] = normalize_source(str(changes["data_source"]))
+    if "data_cleanup_days" in changes and changes["data_cleanup_days"] is not None:
+        try:
+            days = int(changes["data_cleanup_days"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("删除 N 天前数据的天数要是整数") from exc
+        if not 30 <= days <= 365:
+            raise ValueError("删除 N 天前数据的天数只能在 30–365 之间")
+        current["data_cleanup_days"] = days
+    if "data_cleanup_auto_enabled" in changes and changes["data_cleanup_auto_enabled"] is not None:
+        if not isinstance(changes["data_cleanup_auto_enabled"], bool):
+            raise ValueError("每天自动删除开关只能是 true / false")
+        current["data_cleanup_auto_enabled"] = changes["data_cleanup_auto_enabled"]
     write_settings_file(current)
     return public_settings()
+
+
+def data_cleanup_days(raw: dict | None = None) -> int:
+    raw = read_settings_file() if raw is None else raw
+    try:
+        days = int(raw.get("data_cleanup_days") or 60)
+    except (TypeError, ValueError):
+        days = 60
+    return max(30, min(365, days))
 
 
 def stamp(field: str, value: str) -> None:

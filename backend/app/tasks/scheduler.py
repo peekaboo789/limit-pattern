@@ -66,6 +66,17 @@ def _safe_poll_bots() -> None:
         logger.exception("微信机器人轮询失败")
 
 
+def _safe_data_cleanup() -> None:
+    try:
+        from backend.app.services.data_cleanup import auto_cleanup_if_enabled
+
+        result = auto_cleanup_if_enabled()
+        if result.get("ran"):
+            logger.info("自动删除 N 天前数据完成：%s", result)
+    except Exception:
+        logger.exception("自动删除 N 天前数据失败")
+
+
 def start_scheduler() -> None:
     global _SCHEDULER
     if os.environ.get("LP_SCHEDULER", "1") == "0":
@@ -86,9 +97,10 @@ def start_scheduler() -> None:
 
     scheduler.add_job(safe_tick, "interval", seconds=INTERVAL_SECONDS, id="monitor-loop", max_instances=1, coalesce=True)
     scheduler.add_job(_safe_poll_bots, "interval", seconds=15, id="bot-poll", max_instances=1, coalesce=True)
+    scheduler.add_job(_safe_data_cleanup, "cron", hour=3, minute=10, id="daily-data-cleanup")
     scheduler.start()
     _SCHEDULER = scheduler
-    logger.info("定时任务已启动：17:10 同步并写总结，17:40 清理明细，18:10 补写缺失的总结；交易日 14:50、15:10 生成 AI 榜单；每 15 秒轮询微信机器人消息")
+    logger.info("定时任务已启动：17:10 同步并写总结，17:40 清理明细，18:10 补写缺失的总结；交易日 14:50、15:10 生成 AI 榜单；03:10 自动删除 N 天前数据（默认关）；每 15 秒轮询微信机器人消息")
 
 
 def scheduled_job_ids() -> list[str]:
@@ -98,7 +110,7 @@ def scheduled_job_ids() -> list[str]:
 
 
 JOB_NAMES = {"daily-sync": "日线同步", "daily-purge": "清理明细", "daily-summary": "补写总结", "morning-freeze": "午间冻结",
-             "ai-ranking-1450": "AI 榜单", "ai-ranking-1510": "AI 榜单"}
+             "ai-ranking-1450": "AI 榜单", "ai-ranking-1510": "AI 榜单", "daily-data-cleanup": "自动删除旧数据"}
 
 
 def next_runs() -> list[tuple[str, str]]:

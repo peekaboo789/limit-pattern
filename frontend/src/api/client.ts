@@ -23,6 +23,7 @@ import type { CaptureStatus, ManualResult, WatchCandidate, WatchItem, WatchMonit
   SyncStatus,
   SyncTask,
   SignalReport,
+  DataCleanupPreview,
 } from './types'
 import { defaultExportFilename, filenameFromDisposition } from '@/utils/saveFile'
 
@@ -65,6 +66,11 @@ export const api = {
     ),
 
   cancelSync: () => request<SyncStatus>('/api/sync/cancel', { method: 'POST' }),
+
+  dataCleanupPreview: (days = 60) => request<DataCleanupPreview>(`/api/data-cleanup/preview?days=${days}`),
+
+  dataCleanupExecute: (days: number) =>
+    request<Record<string, unknown>>('/api/data-cleanup/execute', { method: 'POST', body: JSON.stringify({ days, confirm: true }) }),
 
   testSources: (timeout = 8) =>
     request<{ timeout: number; results: SourceTestResult[] }>('/api/sources/test', {

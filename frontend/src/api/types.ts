@@ -41,6 +41,8 @@ export interface Settings {
   market_scope?: string
   last_sync_at: string | null
   last_cleanup_at: string | null
+  data_cleanup_days?: number
+  data_cleanup_auto_enabled?: boolean
 }
 
 export interface SettingsUpdate {
@@ -55,6 +57,36 @@ export interface SettingsUpdate {
   euclidean_similarity_weight?: number
   cosine_similarity_weight?: number
   similarity_threshold_high?: number
+  data_cleanup_days?: number
+  data_cleanup_auto_enabled?: boolean
+}
+
+export interface DataCleanupTable {
+  label: string
+  count: number
+}
+
+export interface DataCleanupFiles {
+  label: string
+  count: number
+  size: number
+}
+
+export interface DataCleanupPreview {
+  today: string
+  days: number
+  cutoff: string
+  timezone: string
+  mode?: 'manual' | 'auto'
+  calc_cutoff: string | null
+  calc_history_days: number
+  calc_protected_archive: number
+  calc_note: string
+  tables: DataCleanupTable[]
+  files: DataCleanupFiles[]
+  total_files: number
+  total_file_size: number
+  protected: string[]
 }
 
 /** 一只候选对样本池（已去掉它自己的全部样本）的统计 */

@@ -9,6 +9,7 @@ import AccountPanel from '@/components/AccountPanel.vue'
 import UpdatePanel from '@/components/UpdatePanel.vue'
 import WeComSettings from '@/components/WeComSettings.vue'
 import WeChatSettings from '@/components/WeChatSettings.vue'
+import DataCleanup from '@/components/DataCleanup.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 const FALLBACK_SOURCES = ['auto', 'eastmoney', 'tencent', 'sina']
@@ -370,6 +371,7 @@ onMounted(() => {
   <WeComSettings />
   <WeChatSettings />
   <UpdatePanel />
+  <DataCleanup />
   <AccountPanel />
   <ConfigTransfer />
 </template>
