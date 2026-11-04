@@ -136,12 +136,15 @@ def wechat_status() -> dict:
     ch = router.channel("wechat")
     cfg = ch.config()
     status = ch.qr_status(cfg)
+    from backend.app.services.wechat import client as wx_client
+
     return {
         "enabled": cfg["enabled"],
         "ready": ch.ready(cfg),
         "logged_in": bool(status.get("logged_in")),
         "api_base": cfg["base"],
         "admins": cfg["admins"],
+        "admin": wx_client.admin_public(cfg),
     }
 
 
@@ -160,6 +163,14 @@ def wechat_qrcode() -> dict:
         return client.get_qrcode(cfg)
     except WeChatError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/wechat/unbind")
+def wechat_unbind() -> dict:
+    from backend.app.services.wechat import client as wx_client
+
+    wx_client.unbind_admin()
+    return {"ok": True, "admin": wx_client.admin_public()}
 
 
 @router.post("/wechat/test")

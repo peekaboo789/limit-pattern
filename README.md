@@ -505,6 +505,12 @@ logs/launcher.log
 - 已知边界：免费源补不了长历史 tick / 分钟线，历史回测用日线，影子模式往前进积累分钟样本。
 - 新接口 `GET /api/signals/report`、`GET /api/signals/types`、`GET /api/signals/shadow`、`POST /api/signals/generate`。
 
+## v0.7.1 修复个人微信扫码登录 + 首个发送者绑定管理员
+
+- 严格按官方 openclaw-weixin 协议重写个人微信客户端：`get_bot_qrcode` 使用 `POST /ilink/bot/get_bot_qrcode?bot_type=3`，`get_qrcode_status` 使用 GET 长轮询，`getupdates`/`sendmessage` 使用 `ilink/bot/...`、Authorization 头、`base_info`、`get_updates_buf` 游标与 `item_list`/`context_token` 消息结构。
+- `get_qrcode` 把官方返回的 `qrcode_img_content` 链接用后端 `qrcode` 库生成 PNG data URL，前端 `<img>` 可直接渲染；失败会在页面上显示红色错误原因，扫码时显示 等待扫码 / 已扫码待确认 / 登录成功 / 已过期。
+- 去掉指令白名单：第一个给机器人发消息的人自动绑定为管理员并持久化，设置页显示脱敏绑定者和「解除绑定」；其他人消息忽略；解除后下一个发送者重新绑定。主动推送需要该用户先发过消息以取得 `context_token`。
+
 ## v0.7.0 个人微信机器人 + 多渠道统一推送
 
 - 新增「个人微信」渠道：走 iLink Bot / ClawBot 网关（默认 `https://ilinkai.weixin.qq.com`，可在设置里换成自托管网关），扫码登录后每 15 秒轮询收消息、回指令，不需要公网回调。

@@ -63,7 +63,7 @@ class WeChatChannel:
         return wechat_client.deliver(title, body, touser=touser, cfg=cfg)
 
     def admins(self, cfg: dict) -> list[str]:
-        return list(cfg.get("admins") or [])
+        return [wechat_client.current_admin(cfg)] if wechat_client.current_admin(cfg) else []
 
     def inbound(self, cfg: dict, text: str, user: str = "", menu_key: str = "") -> Inbound | None:
         return Inbound(channel=self.name, user=user, text=text)
@@ -82,7 +82,15 @@ class WeChatChannel:
 
             get_logger("limit_pattern.wechat").warning("微信长轮询失败：%s", exc)
             return []
-        return [Inbound(channel=self.name, user=u["user"], text=u["text"]) for u in updates]
+        out = []
+        for u in updates:
+            user = u["user"]
+            if not user:
+                continue
+            # 第一个发消息的人自动绑定为管理员；其他人消息忽略。
+            if wechat_client.bind_first_sender(cfg, user) or wechat_client.current_admin(cfg) == user:
+                out.append(Inbound(channel=self.name, user=user, text=u["text"]))
+        return out
 
     def qr_status(self, cfg: dict | None = None) -> dict:
         cfg = cfg or self.config()
@@ -90,6 +98,9 @@ class WeChatChannel:
 
     def test(self, cfg: dict | None = None) -> dict:
         cfg = cfg or self.config()
+        admin = wechat_client.current_admin(cfg)
+        if not admin:
+            return {"ok": False, "channels": [], "message": "还没绑定管理员：请先用自己的微信给机器人发任意一条消息"}
         from backend.app import __version__
         from backend.app.core.clock import now
 

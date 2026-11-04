@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { request } from '@/api/http'
+import { ApiError, request } from '@/api/http'
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 
 type View = Record<string, unknown>
@@ -15,7 +15,7 @@ const SECRETS = ['wechat_token'] as const
 const view = ref<View | null>(null)
 const form = reactive({
   wechat_enabled: false, wechat_api_base: 'https://ilinkai.weixin.qq.com',
-  wechat_token: '', wechat_username: '', wechat_admins: '', wechat_events: [] as string[],
+  wechat_token: '', wechat_username: '', wechat_events: [] as string[],
 })
 const saving = ref(false)
 const testing = ref(false)
@@ -24,6 +24,10 @@ const qrcode = ref('')
 const qrExpires = ref<number | null>(null)
 const qrLoading = ref(false)
 const loggedIn = ref(false)
+const qrStatus = ref('')
+const statusLabel = ref('')
+const admin = ref<{ bound: boolean; masked: string; bound_at: string; user_id?: string } | null>(null)
+const unbinding = ref(false)
 let pollTimer: number | undefined
 
 function fill(v: View) {
@@ -41,8 +45,9 @@ async function load() {
 
 async function refreshStatus() {
   try {
-    const r = await request<{ logged_in: boolean; ready: boolean }>('/api/wechat/status')
+    const r = await request<{ logged_in: boolean; ready: boolean; status?: string; admin?: { bound: boolean; masked: string; bound_at: string; user_id?: string } }>('/api/wechat/status')
     loggedIn.value = !!r.logged_in
+    if (r.admin) admin.value = r.admin
     if (r.logged_in) clearQr()
   } catch {
     loggedIn.value = false
@@ -77,14 +82,16 @@ async function clearSecret(field: string) {
 async function getQr() {
   qrLoading.value = true
   msg.value = null
+  qrStatus.value = ''
   try {
-    const r = await request<{ qrcode: string; expires_seconds?: number | null }>('/api/wechat/qrcode')
+    const r = await request<{ qrcode: string; expires_seconds?: number | null; qrcode_img_content?: string }>('/api/wechat/qrcode')
     qrcode.value = r.qrcode || ''
     qrExpires.value = r.expires_seconds ? Date.now() + r.expires_seconds * 1000 : null
-    msg.value = { ok: true, text: '二维码已刷新，请用个人微信扫码' }
+    msg.value = { ok: true, text: '二维码已生成，请用个人微信扫码登录。这个二维码图片不是直接加载的链接，而是程序按官方返回链接本地生成的。' }
     startPolling()
   } catch (e) {
-    msg.value = { ok: false, text: e instanceof Error ? e.message : '获取二维码失败' }
+    qrcode.value = ''
+    msg.value = { ok: false, text: e instanceof ApiError ? e.detail : e instanceof Error ? e.message : '获取二维码失败' }
   } finally {
     qrLoading.value = false
   }
@@ -93,6 +100,8 @@ async function getQr() {
 function clearQr() {
   qrcode.value = ''
   qrExpires.value = null
+  qrStatus.value = ''
+  statusLabel.value = ''
   stopPolling()
 }
 
@@ -100,19 +109,33 @@ function startPolling() {
   stopPolling()
   pollTimer = window.setInterval(async () => {
     try {
-      const r = await request<{ logged_in: boolean }>('/api/wechat/status')
+      const r = await request<{ logged_in: boolean; status?: string; admin?: { bound: boolean; masked: string; bound_at: string; user_id?: string } }>('/api/wechat/status')
       loggedIn.value = !!r.logged_in
+      if (r.admin) admin.value = r.admin
       if (r.logged_in) {
-        msg.value = { ok: true, text: '扫码登录成功，已保存会话到 ./data' }
+        msg.value = { ok: true, text: '扫码登录成功，已保存会话到 ./data。请先用自己的微信给机器人发任意一条消息，绑定为管理员。' }
         clearQr()
-      } else if (qrExpires.value && Date.now() > qrExpires.value) {
-        msg.value = { ok: false, text: '二维码已过期，请重新获取' }
-        clearQr()
+      } else {
+        qrStatus.value = r.status || 'wait'
+        statusLabel.value = statusText(qrStatus.value)
+        if (qrExpires.value && Date.now() > qrExpires.value) {
+          msg.value = { ok: false, text: '二维码已过期，请重新获取' }
+          clearQr()
+        }
       }
     } catch {
       // 状态轮询失败不打断用户；下次再试
     }
   }, 2500)
+}
+
+function statusText(status: string): string {
+  if (status === 'wait') return '等待扫码'
+  if (status === 'scaned') return '已扫码，待确认'
+  if (status === 'confirmed') return '登录成功'
+  if (status === 'expired') return '已过期'
+  if (status) return status
+  return ''
 }
 
 function stopPolling() {
@@ -127,9 +150,23 @@ async function test() {
     const r = await request<{ ok: boolean; message: string }>('/api/wechat/test', { method: 'POST', body: '{}' }, 40000)
     msg.value = { ok: r.ok, text: r.message }
   } catch (e) {
-    msg.value = { ok: false, text: e instanceof Error ? e.message : '发送失败' }
+    msg.value = { ok: false, text: e instanceof ApiError ? e.detail : e instanceof Error ? e.message : '发送失败' }
   } finally {
     testing.value = false
+  }
+}
+
+async function unbind() {
+  unbinding.value = true
+  msg.value = null
+  try {
+    const r = await request<{ ok: boolean; admin: { bound: boolean; masked: string; bound_at: string } }>('/api/wechat/unbind', { method: 'POST', body: '{}' })
+    admin.value = r.admin
+    msg.value = { ok: true, text: '已解除绑定。下一个给机器人发消息的人会自动绑定为管理员。' }
+  } catch (e) {
+    msg.value = { ok: false, text: e instanceof ApiError ? e.detail : e instanceof Error ? e.message : '解除绑定失败' }
+  } finally {
+    unbinding.value = false
   }
 }
 
@@ -167,15 +204,25 @@ onUnmounted(() => {
         <input v-model="form.wechat_token" type="password" autocomplete="new-password" :placeholder="view?.wechat_token_set ? '已设置，留空不修改' : '扫码成功会自动写入，一般不用填'" />
       </label>
       <label class="field"><span>登录账号名（可选）</span><input v-model="form.wechat_username" placeholder="用于自托管网关，可空" /></label>
-      <label class="field"><span>指令白名单（微信用户）</span><input v-model="form.wechat_admins" placeholder="wxid_xxx,wxid_yyy（逗号分隔，只有他们能发指令）" /></label>
+      <div class="field">
+        <span>管理员绑定</span>
+        <div v-if="admin?.bound" class="admin-box">
+          <span class="result">{{ admin.masked }}</span>
+          <span v-if="admin.bound_at" class="muted">绑定于 {{ admin.bound_at }}</span>
+          <button class="btn btn-ghost" type="button" :disabled="unbinding" @click="unbind">{{ unbinding ? '解除中…' : '解除绑定' }}</button>
+        </div>
+        <span v-else class="hint result">未绑定。扫码登录后，用你自己的微信给机器人发任意一条消息即可绑定。</span>
+      </div>
     </div>
 
     <h3>扫码登录</h3>
     <p class="hint">先启用并保存，再点击获取二维码；手机微信扫码后状态会自动轮询。二维码过期需重新获取。</p>
     <div class="qr-row">
       <button class="btn btn-ghost" type="button" :disabled="qrLoading || !view?.wechat_enabled" @click="getQr">{{ qrLoading ? '获取中…' : '获取登录二维码' }}</button>
-      <span v-if="loggedIn" class="hint result">✅ 当前已登录，可直接发送测试消息。</span>
+      <span v-if="!view?.wechat_enabled" class="hint result">请先勾选「启用个人微信」并保存，再获取二维码。</span>
+      <span v-else-if="loggedIn" class="hint result">✅ 当前已登录，可直接发送测试消息。</span>
       <span v-else-if="qrcode" class="hint result">请用个人微信扫码，二维码 {{ qrExpires ? `将在 ${Math.max(0, Math.round((qrExpires - Date.now()) / 1000))} 秒后过期` : '有效期内' }}</span>
+      <span v-if="qrStatus && !loggedIn" class="tag type-weak">{{ statusLabel }}</span>
     </div>
     <div v-if="qrcode" class="qr-box">
       <img v-if="qrcode.startsWith('http')" :src="qrcode" alt="个人微信登录二维码" />
@@ -206,4 +253,6 @@ code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; }
 .qr-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
 .qr-box { margin-top: 12px; max-width: 260px; padding: 8px; border: 1px solid #e5e7eb; border-radius: 8px; }
 .qr-box img { width: 100%; display: block; }
+.admin-box { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.muted { color: #6b7280; font-size: 12px; }
 </style>

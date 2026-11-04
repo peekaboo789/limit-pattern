@@ -403,7 +403,7 @@ def excluded_boards() -> set[str]:
 
 
 def wechat_public(raw: dict) -> dict:
-    out = {k: raw.get(k, v) for k, v in WECHAT_DEFAULTS.items() if k not in WECHAT_SECRET_FIELDS}
+    out = {k: raw.get(k, v) for k, v in WECHAT_DEFAULTS.items() if k not in WECHAT_SECRET_FIELDS and k != "wechat_admins"}
     out["wechat_enabled"] = raw.get("wechat_enabled") is True
     for k in WECHAT_SECRET_FIELDS:
         out[f"{k}_set"] = bool(raw.get(k))

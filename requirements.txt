@@ -9,3 +9,4 @@ numpy==2.2.1
 pytest==8.3.4
 truststore==0.10.5
 cryptography==44.0.0
+qrcode[pil]==8.2
