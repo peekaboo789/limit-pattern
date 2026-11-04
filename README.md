@@ -508,7 +508,7 @@ logs/launcher.log
 ## v0.7.1 修复个人微信扫码登录 + 首个发送者绑定管理员
 
 - 严格按官方 openclaw-weixin 协议重写个人微信客户端：`get_bot_qrcode` 使用 `POST /ilink/bot/get_bot_qrcode?bot_type=3`，`get_qrcode_status` 使用 GET 长轮询，`getupdates`/`sendmessage` 使用 `ilink/bot/...`、Authorization 头、`base_info`、`get_updates_buf` 游标与 `item_list`/`context_token` 消息结构。
-- `get_qrcode` 把官方返回的 `qrcode_img_content` 链接用后端 `qrcode` 库生成 PNG data URL，前端 `<img>` 可直接渲染；失败会在页面上显示红色错误原因，扫码时显示 等待扫码 / 已扫码待确认 / 登录成功 / 已过期。
+- `get_qrcode` 把官方返回的 `qrcode_img_content` 链接直接交给前端；浏览器用内置纯 JS `qrcode` 库本地生成二维码，不引入 Python 依赖，失败会在页面上显示红色错误原因。扫码时显示 等待扫码 / 已扫码待确认 / 登录成功 / 已过期。
 - 去掉指令白名单：第一个给机器人发消息的人自动绑定为管理员并持久化，设置页显示脱敏绑定者和「解除绑定」；其他人消息忽略；解除后下一个发送者重新绑定。主动推送需要该用户先发过消息以取得 `context_token`。
 
 ## v0.7.0 个人微信机器人 + 多渠道统一推送
@@ -517,3 +517,8 @@ logs/launcher.log
 - 多渠道统一：企业微信与个人微信抽象成同一套 Bot 渠道，报警 / 榜单 / 总结 / 同步失败 / 采集去重按「渠道 + 事件 + 日期」隔离，同一事件可同时推给多个已启用渠道；指令从哪个渠道来，就回给那个渠道。
 - 个人微信只发纯文本，标题 + 正文合并、超长分段；token 只写不读、只显示「已设置」、不写日志；扫码会话保存到 `data/wechat_session.json`。
 - 新增接口 `GET /api/wechat/status`、`GET /api/wechat/qrcode`、`POST /api/wechat/test`。设置步骤见 [docs/wechat.md](docs/wechat.md)。
+
+## v0.7.2 移除个人微信二维码后端 Python 依赖
+
+- `requirements.txt` 删除 `qrcode[pil]`：个人微信登录二维码改为浏览器本地用纯 JS `qrcode` 库生成，后端只返回 `qrcode_img_content` 链接。
+- 依赖哈希恢复到与 v0.7.0 相同，v0.7.1 / v0.7.0 的程序内更新可正常通过依赖检查，不用 `docker compose pull`。

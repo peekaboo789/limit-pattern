@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ApiError, request } from '@/api/http'
+import QRCode from 'qrcode'
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 
 type View = Record<string, unknown>
@@ -85,9 +86,10 @@ async function getQr() {
   qrStatus.value = ''
   try {
     const r = await request<{ qrcode: string; expires_seconds?: number | null; qrcode_img_content?: string }>('/api/wechat/qrcode')
-    qrcode.value = r.qrcode || ''
+    const content = r.qrcode_img_content || r.qrcode || ''
+    qrcode.value = content.startsWith('http') ? await QRCode.toDataURL(content, { width: 260, margin: 2, errorCorrectionLevel: 'M' }) : content
     qrExpires.value = r.expires_seconds ? Date.now() + r.expires_seconds * 1000 : null
-    msg.value = { ok: true, text: '二维码已生成，请用个人微信扫码登录。这个二维码图片不是直接加载的链接，而是程序按官方返回链接本地生成的。' }
+    msg.value = { ok: true, text: '二维码已生成，请用个人微信扫码登录。二维码由浏览器本地按官方返回链接生成，不依赖后端二维码库。' }
     startPolling()
   } catch (e) {
     qrcode.value = ''

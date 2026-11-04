@@ -252,25 +252,6 @@ def _raise_if_error(resp: dict, default: str = "请求失败") -> None:
     raise WeChatError(str(resp.get("errmsg") or resp.get("message") or default), code)
 
 
-def _qrcode_data_url(qrcode_img_content: str) -> str:
-    """把官方返回的 qrcode_img_content 链接转成可直接 <img src> 的 PNG data URL。"""
-    try:
-        import io
-        import qrcode
-        from qrcode.image.pil import PilImage
-
-        qr = qrcode.QRCode(border=2)
-        qr.add_data(qrcode_img_content)
-        qr.make(fit=True)
-        img = qr.make_image(image_factory=PilImage)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("二维码本地渲染失败，退化为返回原始链接：%s", exc)
-        return qrcode_img_content
-
-
 def get_qrcode(cfg: dict | None = None) -> dict:
     cfg = cfg or config()
     if not cfg["enabled"]:
@@ -281,7 +262,7 @@ def get_qrcode(cfg: dict | None = None) -> dict:
     qr_url = str(resp.get("qrcode_img_content") or "")
     if not qr_id:
         raise WeChatError("微信接口没返回 qrcode")
-    qr = _qrcode_data_url(qr_url or f"https://liteapp.weixin.qq.com/q/?qrcode={qr_id}&bot_type={BOT_TYPE}")
+    qr = qr_url or f"https://liteapp.weixin.qq.com/q/?qrcode={qr_id}&bot_type={BOT_TYPE}"
     with _STATE_LOCK:
         _STATE["qrcode"] = qr_id
         _STATE["qrcode_img_content"] = qr_url

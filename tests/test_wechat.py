@@ -82,7 +82,8 @@ def test_qr_login_and_session_persist(mock, tmp_path):
     c = cfg()
     assert not wx.ready(c)
     qr = wx.get_qrcode(c)
-    assert qr["qrcode"].startswith("data:image")
+    assert qr["qrcode"].startswith("http")
+    assert qr["qrcode_img_content"].startswith("http")
     assert qr["qrcode_id"] == "qr-123"
     st = wx.qr_status(c)
     assert st["logged_in"] and wx.ready(c)
@@ -194,7 +195,7 @@ def test_wechat_endpoints(mock, client, monkeypatch):
 
     client.put("/api/settings", json={"wechat_enabled": True, "wechat_api_base": "https://mock.local"})
     qr = client.get("/api/wechat/qrcode")
-    assert qr.status_code == 200 and qr.json()["qrcode"].startswith("data:image")
+    assert qr.status_code == 200 and qr.json()["qrcode"].startswith("http")
     st = client.get("/api/wechat/status").json()
     assert st["logged_in"] and st["ready"]
     assert st["admin"]["bound"] is False
