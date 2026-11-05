@@ -505,6 +505,11 @@ logs/launcher.log
 - 已知边界：免费源补不了长历史 tick / 分钟线，历史回测用日线，影子模式往前进积累分钟样本。
 - 新接口 `GET /api/signals/report`、`GET /api/signals/types`、`GET /api/signals/shadow`、`POST /api/signals/generate`。
 
+## v0.7.8 企业微信命令结果镜像到个人微信
+
+- 企业微信触发的所有命令回复（同步返回、`CAPTURE` / `CAPTURE_AI` / `SYNC` / `SIM_TOP` / `NEXT_POOL` / `RANK_REGEN` 等后台任务先回「已开始」再回最终结果，以及没权限 / 没看懂等同步结果）在个人微信已启用、已登录且已绑定管理员时，用相同标题 + 正文同步一份给个人微信管理员。
+- 命令回复统一经过 `bots.router.command_reply` 出口：来源是企业微信时才镜像，个人微信 → 企业微信不反向；镜像失败只记 warning，不影响企业微信主回复。事件推送（alert / ranking / summary / capture）仍走 `push_event` 自动分发，不在命令路径重复镜像。
+
 ## v0.7.7 修复个人微信菜单序号错位 + 切换AI数字抢占
 
 - 菜单卡片从「每组从 1 重新编号」改为 1–15 跨组连续编号，卡片显示序号与 `wechat_menu_cmd` 扁平索引端到端一致，杜绝“看 1 点 6”串功能。

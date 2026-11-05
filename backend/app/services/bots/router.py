@@ -169,11 +169,40 @@ def dispatch_polled() -> int:
         try:
             msg = run_command(ch, cfg, inbound)
             if msg:
-                ch.reply(cfg, inbound.user, *msg)
+                command_reply(ch, cfg, inbound.user, *msg)
                 handled += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning("%s 处理入站消息失败：%s", name, exc)
     return handled
+
+
+def command_reply(origin: BotChannel, cfg: dict, user: str, title: str, body: str) -> None:
+    """命令回复统一出口：先回给来源渠道，来源是企业微信时再镜像到个人微信。
+
+    - 镜像条件：wechat 已启用、配置就绪、且已绑定管理员。任一不满足只跳过。
+    - 镜像失败只记 warning，绝不影响企业微信主回复。
+    - 只在「命令 reply」路径调用；push_event 的 alert/ranking/summary/capture
+      本身会 fan-out 到勾选事件的渠道，不经过这里，避免重复推送。
+    """
+    try:
+        origin.reply(cfg, user, title, body)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("%s 回复失败：%s", origin.name, exc)
+
+    if origin.name != "wecom":
+        return
+    try:
+        wechat_ch = channel("wechat")
+        wechat_cfg = wechat_ch.config()
+        if not (wechat_ch.enabled() and wechat_ch.ready(wechat_cfg)):
+            return
+        admin = wechat_ch.admins(wechat_cfg)
+        touser = admin[0] if admin else ""
+        if not touser:
+            return
+        wechat_ch.deliver(title, body, touser=touser, cfg=wechat_cfg)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("wechat 命令回复镜像失败：%s", exc)
 
 
 def run_command(
@@ -201,10 +230,7 @@ def run_command(
             return "🤔 没看懂", f"「{inbound.text[:20]}」不是指令。\n{commands.HELP_BODY}"
 
     def reply(title: str, body: str) -> None:
-        try:
-            ch.reply(cfg, inbound.user, title, body)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("%s 回复失败：%s", ch.name, exc)
+        command_reply(ch, cfg, inbound.user, title, body)
 
     return commands.run(cmd, arg, reply=reply, user=inbound.user)
 

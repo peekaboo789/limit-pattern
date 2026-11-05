@@ -208,3 +208,204 @@ def test_dispatch_polled_pending_pick_digit_skips_menu(monkeypatch):
     assert ch.replies == [("✅ 已切换AI", "当前模型：模型 B")]
     assert all(not inbound.menu_key for inbound in ch.seen)
 
+
+class _FakeWeComChannel:
+    name = "wecom"
+
+    def __init__(self):
+        self.replies = []
+
+    def config(self, raw=None):
+        return {"admins": ["wecom-user"]}
+
+    def ready(self, cfg):
+        return True
+
+    def poll_once(self):
+        return []
+
+    def reply(self, cfg, user, title, body):
+        self.replies.append((title, body))
+
+
+class _FakeWeChatChannel:
+    name = "wechat"
+
+    def __init__(self, enabled=True, ready=True, admin="wx-admin", deliver_error=None):
+        self.enabled_value = enabled
+        self.ready_value = ready
+        self.admin_value = admin
+        self.deliver_error = deliver_error
+        self.delivered = []
+
+    def enabled(self, raw=None):
+        return self.enabled_value
+
+    def ready(self, cfg):
+        return self.ready_value
+
+    def config(self, raw=None):
+        return {"enabled": self.enabled_value}
+
+    def admins(self, cfg):
+        return [self.admin_value] if self.admin_value else []
+
+    def deliver(self, title, body, *, touser=None, cfg=None):
+        if self.deliver_error:
+            raise self.deliver_error
+        self.delivered.append((touser, title, body))
+        return ["wechat"]
+
+    def reply(self, cfg, user, title, body):
+        if self.deliver_error:
+            raise self.deliver_error
+        self.delivered.append((user, title, body))
+        return ["wechat"]
+
+
+def _install_fake_wechat(monkeypatch, fake):
+    monkeypatch.setattr(router, "channel", lambda name: fake)
+
+
+def test_command_reply_mirrors_wecom_to_wechat(monkeypatch):
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel()
+    _install_fake_wechat(monkeypatch, wechat)
+
+    router.command_reply(wecom, {"corpid": "x", "agentid": "y", "secret": "z"}, "wecom-user", "标题", "正文")
+
+    assert wecom.replies == [("标题", "正文")]
+    assert wechat.delivered == [("wx-admin", "标题", "正文")]
+
+
+def test_command_reply_skips_wechat_when_disabled(monkeypatch):
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel(enabled=False)
+    _install_fake_wechat(monkeypatch, wechat)
+
+    router.command_reply(wecom, {}, "wecom-user", "标题", "正文")
+
+    assert wecom.replies == [("标题", "正文")]
+    assert wechat.delivered == []
+
+
+def test_command_reply_skips_wechat_when_not_ready(monkeypatch):
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel(ready=False)
+    _install_fake_wechat(monkeypatch, wechat)
+
+    router.command_reply(wecom, {}, "wecom-user", "标题", "正文")
+
+    assert wecom.replies == [("标题", "正文")]
+    assert wechat.delivered == []
+
+
+def test_command_reply_skips_wechat_when_no_admin(monkeypatch):
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel(admin="")
+    _install_fake_wechat(monkeypatch, wechat)
+
+    router.command_reply(wecom, {}, "wecom-user", "标题", "正文")
+
+    assert wecom.replies == [("标题", "正文")]
+    assert wechat.delivered == []
+
+
+def test_command_reply_wecom_success_when_mirror_fails(monkeypatch):
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel(deliver_error=RuntimeError("send failed"))
+    _install_fake_wechat(monkeypatch, wechat)
+
+    router.command_reply(wecom, {}, "wecom-user", "标题", "正文")
+
+    assert wecom.replies == [("标题", "正文")]
+    assert wechat.delivered == []
+
+
+def test_command_reply_wechat_origin_does_not_mirror_to_wecom(monkeypatch):
+    origin = _FakeWeChatChannel(admin="origin-admin")
+    target = _FakeWeComChannel()
+    # router.channel() only matters for mirror target; origin wechat should not trigger it.
+    monkeypatch.setattr(router, "channel", lambda name: target)
+
+    router.command_reply(origin, {}, "wx-user", "标题", "正文")
+
+    assert origin.delivered == [("wx-user", "标题", "正文")]
+    assert target.replies == []
+
+
+def test_run_command_sync_reply_is_mirrored(monkeypatch):
+    import backend.app.services.wecom.commands as commands
+
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel()
+    _install_fake_wechat(monkeypatch, wechat)
+    monkeypatch.setattr(commands, "allowed", lambda user, admins: True)
+    monkeypatch.setattr(commands, "parse", lambda text: ("帮助", ""))
+    monkeypatch.setattr(commands, "run", lambda cmd, arg="", reply=None, user="": ("📖 可用指令", "帮助正文"))
+
+    inbound = router.Inbound(channel="wecom", user="wecom-user", text="帮助")
+    result = router.run_command(wecom, {"admins": ["wecom-user"]}, inbound)
+
+    assert result == ("📖 可用指令", "帮助正文")
+    # 同步返回值由 dispatch_polled 用 command_reply 发送；run_command 本身不发送，
+    # 所以这里单独验证 dispatch_polled 路径。
+
+
+def test_dispatch_polled_wecom_sync_reply_mirrors_to_wechat(monkeypatch):
+    import backend.app.services.wecom.commands as commands
+
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel()
+
+    monkeypatch.setattr(router, "enabled_channels", lambda raw=None: [wecom])
+    monkeypatch.setattr(router, "channel", lambda name: wecom if name == "wecom" else wechat)
+    monkeypatch.setattr(wecom, "poll_once", lambda: [router.Inbound(channel="wecom", user="wecom-user", text="帮助")])
+    monkeypatch.setattr(commands, "allowed", lambda user, admins: True)
+    monkeypatch.setattr(commands, "parse", lambda text: ("帮助", ""))
+    monkeypatch.setattr(commands, "run", lambda cmd, arg="", reply=None, user="": ("📖 可用指令", "帮助正文"))
+
+    assert router.dispatch_polled() == 1
+    assert wecom.replies == [("📖 可用指令", "帮助正文")]
+    assert wechat.delivered == [("wx-admin", "📖 可用指令", "帮助正文")]
+
+
+def test_run_command_background_replies_are_mirrored(monkeypatch):
+    import backend.app.services.wecom.commands as commands
+
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel()
+    _install_fake_wechat(monkeypatch, wechat)
+    monkeypatch.setattr(commands, "allowed", lambda user, admins: True)
+    monkeypatch.setattr(commands, "parse", lambda text: ("采集分析", ""))
+
+    replies = [("⏳ 已开始", "正在开始"), ("✅ 完成", "最终结果")]
+
+    def fake_run(cmd, arg="", reply=None, user=""):
+        if reply is None:
+            return replies[0]
+        for item in replies:
+            reply(*item)
+        return None
+
+    monkeypatch.setattr(commands, "run", fake_run)
+
+    inbound = router.Inbound(channel="wecom", user="wecom-user", text="采集分析")
+    assert router.run_command(wecom, {"admins": ["wecom-user"]}, inbound) is None
+
+    assert wecom.replies == replies
+    assert wechat.delivered == [("wx-admin", *item) for item in replies]
+
+
+def test_push_event_not_double_mirrored(monkeypatch):
+    fake = _FakeWeChatChannel()
+    monkeypatch.setattr(router, "enabled_channels", lambda raw=None: [fake])
+    monkeypatch.setattr(router, "channel", lambda name: fake)
+
+    fake.config = lambda raw=None: {"enabled": True, "events": ["alert"]}
+    fake.delivered.clear()
+    router.push_event("alert", "标题", "正文", background=False)
+
+    assert fake.delivered == [(None, "标题", "正文")]
+    # push_event 直接 deliver；不调用 command_reply，因此只有一条。
+

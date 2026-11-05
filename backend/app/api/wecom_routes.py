@@ -265,12 +265,13 @@ def handle_message(cfg: dict, xml_text: str) -> dict:
 
 
 def _reply_async(cfg: dict, info: dict) -> None:
-    from backend.app.services.wecom import client, commands
+    from backend.app.services.bots import router as bots_router
+    from backend.app.services.wecom import commands
 
     user = info["user"]
 
     def reply(title: str, body: str) -> None:
-        client.deliver(title, body, cfg=cfg, touser=user)
+        bots_router.command_reply(bots_router.channel("wecom"), cfg, user, title, body)
 
     def run():
         try:
