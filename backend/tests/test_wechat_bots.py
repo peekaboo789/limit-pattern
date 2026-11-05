@@ -130,14 +130,81 @@ def test_channel_test_true_when_deliver_used(monkeypatch, tmp_path):
 
 def test_menu_card_and_mapping():
     assert "一键采集+AI分析" in menu.wechat_menu_card()
-    assert len(menu.wechat_menu_card().splitlines()) >= 18
+    assert len(menu.wechat_menu_card().splitlines()) >= 20
+    assert menu.wechat_menu_cmd("1") == "RANK_TODAY"
     assert menu.wechat_menu_cmd("6") == "CAPTURE_AI"
+    assert menu.wechat_menu_cmd("11") == "WL_QUOTE"
+    assert menu.wechat_menu_cmd("15") == "HELP"
+    assert menu.wechat_menu_cmd("0") == ""
     assert menu.wechat_menu_cmd("16") == ""
     assert menu.wechat_menu_cmd("") == ""
+
+
+@pytest.mark.parametrize("text,key", [
+    ("工具1", "CAPTURE_AI"),
+    ("工具 1", "CAPTURE_AI"),
+    ("工具5", "SUMMARY"),
+    ("榜单2", "RANK_LIVE"),
+    ("自选3", "WL_EXPORT"),
+])
+def test_wechat_group_cmd_valid(text, key):
+    assert menu.wechat_group_cmd(text) == key
+
+
+@pytest.mark.parametrize("text", ["工具9", "工具0", "榜单0", "自选6", "乱写", "", "工具x", "AI1"])
+def test_wechat_group_cmd_invalid(text):
+    assert menu.wechat_group_cmd(text) == ""
+
+
+def test_card_numbers_match_flat_mapping():
+    import re
+
+    flat = menu.flat_items()
+    lines = menu.wechat_menu_card().splitlines()
+    for n, (_group, name, key) in enumerate(flat, 1):
+        expected = f"{n}. {name}"
+        assert expected in lines
+        assert menu.wechat_menu_cmd(str(n)) == key
 
 
 def test_wechat_menu_key_uses_shared_commands(monkeypatch):
     monkeypatch.setattr(commands, "run", lambda cmd, arg="", reply=None, user="": (cmd, "ran"))
     inbound = router.Inbound(channel="wechat", user="user-a", menu_key="CAPTURE_AI")
     assert router.run_command(WeChatChannel(), CFG, inbound) == ("采集分析", "ran")
+
+
+class _PickWeChatChannel(WeChatChannel):
+    """用于 dispatch_polled 集成测试：记录 run_command 收到的入站并返回固定回复。"""
+
+    def __init__(self):
+        self.seen: list[router.Inbound] = []
+        self.replies: list[tuple[str, str]] = []
+
+    def poll_once(self):
+        return [router.Inbound(channel=self.name, user="user-a", text="2", pending_pick=False)]
+
+    def config(self, raw=None):
+        return CFG
+
+    def ready(self, cfg):
+        return True
+
+    def admins(self, cfg):
+        return ["user-a"]
+
+    def reply(self, cfg, user, title, body):
+        self.replies.append((title, body))
+
+
+def test_dispatch_polled_pending_pick_digit_skips_menu(monkeypatch):
+    import backend.app.services.wecom.commands as commands
+
+    ch = _PickWeChatChannel()
+    monkeypatch.setattr(router, "enabled_channels", lambda raw=None: [ch])
+    monkeypatch.setattr(router, "channel", lambda name: ch)
+    monkeypatch.setattr(commands, "pending_pick", lambda user: True)
+    monkeypatch.setattr(commands, "pick", lambda user, text: ("✅ 已切换AI", "当前模型：模型 B"))
+    assert router.dispatch_polled() == 1
+    assert ch.replies == [("✅ 已切换AI", "当前模型：模型 B")]
+    assert all(not inbound.menu_key for inbound in ch.seen)
 

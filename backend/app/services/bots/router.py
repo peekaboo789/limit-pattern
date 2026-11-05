@@ -146,14 +146,19 @@ def dispatch_polled() -> int:
         if not ch.ready(cfg):
             continue
         if name == "wechat" and inbound.text and not inbound.menu_key:
-            from backend.app.services.wecom.menu import wechat_menu_card, wechat_menu_cmd
+            from backend.app.services.wecom import commands
+            from backend.app.services.wecom.menu import wechat_menu_card, wechat_menu_cmd, wechat_group_cmd
 
             text = inbound.text.strip()
             card_on_first_bind = inbound.first_bind and text not in ("菜单", "帮助", "help", "?", "？")
             if text in ("菜单", "帮助", "help", "?", "？"):
                 inbound = Inbound(channel=inbound.channel, user=inbound.user, text="帮助")
-            elif text.isdigit():
-                key = wechat_menu_cmd(text)
+            elif not commands.pending_pick(inbound.user):
+                key = ""
+                if text.isdigit():
+                    key = wechat_menu_cmd(text)
+                else:
+                    key = wechat_group_cmd(text)
                 if key:
                     inbound = Inbound(channel=inbound.channel, user=inbound.user, menu_key=key)
             if card_on_first_bind:

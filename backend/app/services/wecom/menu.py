@@ -15,6 +15,29 @@ LAYOUT = [
 KEYS = {key for _name, subs in LAYOUT for _n, key in subs}
 
 
+def flat_items() -> list[tuple[str, str, str]]:
+    """把 LAYOUT 扁平化为 (组名, 名称, key)，作为菜单卡片和映射的唯一真相源。"""
+    return [(group, name, key) for group, subs in LAYOUT for name, key in subs]
+
+
+def wechat_group_cmd(text: str) -> str:
+    """解析「工具1 / 工具 1 / 榜单2 / 自选3」这类分组名+序号；无法解析返回空字符串。"""
+    import re
+
+    s = re.sub(r"\s+", "", str(text or "").strip())
+    m = re.match(r"^([榜工自])(?:[单具选])([0-9]+)$", s)
+    if not m:
+        return ""
+    group_name = m.group(1)
+    num = int(m.group(2))
+    for group, subs in LAYOUT:
+        if group.startswith(group_name):
+            if 1 <= num <= len(subs):
+                return subs[num - 1][1]
+            return ""
+    return ""
+
+
 def menu_json() -> dict:
     return {"button": [{"name": name, "sub_button": [{"type": "click", "name": n, "key": k} for n, k in subs]} for name, subs in LAYOUT]}
 
@@ -28,12 +51,18 @@ def sync_menu(cfg: dict | None = None) -> dict:
 
 def wechat_menu_card() -> str:
     """个人微信不支持持久底部菜单，退化为文本菜单卡片；序号与企业微信 LAYOUT 一致。"""
-    rows = ["📖 底部菜单（回复序号直接执行）："]
+    rows = ["📖 底部菜单（回复序号 1-15 直接执行）："]
+    number = 0
     for name, subs in LAYOUT:
         rows.append(f"【{name}】")
-        for index, (_n, key) in enumerate(subs, 1):
-            rows.append(f"{index}. {_n}")
-    rows += ["", "命令与「帮助」完全一致，也可以直接发 榜单 / 采集分析 / 自选 等文字。"]
+        for _n, _key in subs:
+            number += 1
+            rows.append(f"{number}. {_n}")
+    rows += [
+        "",
+        "命令与「帮助」一致，也可直接发 榜单 / 采集分析 / 自选 等文字；",
+        "也可发 工具1 / 榜单2 / 自选3 这类「分组名+序号」；切换AI 后请直接回复模型序号。",
+    ]
     return "\n".join(rows)
 
 
@@ -43,8 +72,8 @@ def wechat_menu_cmd(number: str) -> str:
         num = int(str(number or "").strip())
     except (TypeError, ValueError):
         return ""
-    flat = [key for _name, subs in LAYOUT for _n, key in subs]
-    return flat[num - 1] if 1 <= num <= len(flat) else ""
+    flat = flat_items()
+    return flat[num - 1][2] if 1 <= num <= len(flat) else ""
 
 
 def autosync_in_background() -> None:
