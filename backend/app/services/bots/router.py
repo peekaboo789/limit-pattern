@@ -30,6 +30,7 @@ class Inbound:
     text: str = ""
     menu_key: str = ""
     pending_pick: bool = False
+    first_bind: bool = False
 
 
 class BotChannel(Protocol):
@@ -144,6 +145,22 @@ def dispatch_polled() -> int:
         cfg = ch.config()
         if not ch.ready(cfg):
             continue
+        if name == "wechat" and inbound.text and not inbound.menu_key:
+            from backend.app.services.wecom.menu import wechat_menu_card, wechat_menu_cmd
+
+            text = inbound.text.strip()
+            card_on_first_bind = inbound.first_bind and text not in ("菜单", "帮助", "help", "?", "？")
+            if text in ("菜单", "帮助", "help", "?", "？"):
+                inbound = Inbound(channel=inbound.channel, user=inbound.user, text="帮助")
+            elif text.isdigit():
+                key = wechat_menu_cmd(text)
+                if key:
+                    inbound = Inbound(channel=inbound.channel, user=inbound.user, menu_key=key)
+            if card_on_first_bind:
+                try:
+                    ch.reply(cfg, inbound.user, "📖 底部菜单", wechat_menu_card())
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("%s 回菜单失败：%s", name, exc)
         try:
             msg = run_command(ch, cfg, inbound)
             if msg:

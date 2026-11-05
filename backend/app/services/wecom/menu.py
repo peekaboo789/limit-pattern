@@ -26,6 +26,27 @@ def sync_menu(cfg: dict | None = None) -> dict:
     return client.create_menu(cfg, menu_json())
 
 
+def wechat_menu_card() -> str:
+    """个人微信不支持持久底部菜单，退化为文本菜单卡片；序号与企业微信 LAYOUT 一致。"""
+    rows = ["📖 底部菜单（回复序号直接执行）："]
+    for name, subs in LAYOUT:
+        rows.append(f"【{name}】")
+        for index, (_n, key) in enumerate(subs, 1):
+            rows.append(f"{index}. {_n}")
+    rows += ["", "命令与「帮助」完全一致，也可以直接发 榜单 / 采集分析 / 自选 等文字。"]
+    return "\n".join(rows)
+
+
+def wechat_menu_cmd(number: str) -> str:
+    """把菜单卡片序号映射到 commands.MENU 的菜单 key。越界返回空。"""
+    try:
+        num = int(str(number or "").strip())
+    except (TypeError, ValueError):
+        return ""
+    flat = [key for _name, subs in LAYOUT for _n, key in subs]
+    return flat[num - 1] if 1 <= num <= len(flat) else ""
+
+
 def autosync_in_background() -> None:
     """版本变化后启动时自动同步一次菜单（设置里可关）。"""
     import os

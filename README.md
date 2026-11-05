@@ -507,6 +507,12 @@ logs/launcher.log
 
 ## v0.7.1 修复个人微信扫码登录 + 首个发送者绑定管理员
 
+## v0.7.6 修复个人微信测试消息谎报成功 + 文本菜单对等
+
+- 修复「发送测试消息」谎报成功：`sendmessage` 改为同时校验 `ret`/`errcode`/非 2xx/非 JSON 响应，没有捕获到对方最近一条消息的 `context_token` 时直接拒绝推送；`WeChatChannel.test` 只有真正投递成功才返回 `ok=true`，前端按结果显示红绿，不再固定显示“已发送”。
+- 核实 iLink/ClawBot 官方插件（`@tencent-weixin/openclaw-weixin 2.4.10`）没有持久底部菜单/菜单卡片协议；个人微信走文本层对等，`帮助/菜单` 与首次绑定自动回菜单卡片，回复 1–15 可直达企业微信同一套 15 个菜单命令，命令逻辑统一复用 `wecom/commands.py`。
+- 回归测试覆盖严格校验、`context_token` 守卫、菜单卡片与序号映射；依赖文件与哈希保持不变。
+
 - 严格按官方 openclaw-weixin 协议重写个人微信客户端：`get_bot_qrcode` 使用 `POST /ilink/bot/get_bot_qrcode?bot_type=3`，`get_qrcode_status` 使用 GET 长轮询，`getupdates`/`sendmessage` 使用 `ilink/bot/...`、Authorization 头、`base_info`、`get_updates_buf` 游标与 `item_list`/`context_token` 消息结构。
 - `get_qrcode` 把官方返回的 `qrcode_img_content` 链接直接交给前端；浏览器用内置纯 JS `qrcode` 库本地生成二维码，不引入 Python 依赖，失败会在页面上显示红色错误原因。扫码时显示 等待扫码 / 已扫码待确认 / 登录成功 / 已过期。
 - 去掉指令白名单：第一个给机器人发消息的人自动绑定为管理员并持久化，设置页显示脱敏绑定者和「解除绑定」；其他人消息忽略；解除后下一个发送者重新绑定。主动推送需要该用户先发过消息以取得 `context_token`。

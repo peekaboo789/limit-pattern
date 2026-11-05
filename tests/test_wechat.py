@@ -94,7 +94,7 @@ def test_qr_login_and_session_persist(mock, tmp_path):
 
 def test_send_plain_text_with_token(mock, tmp_path):
     c = cfg(token="tok-static", admins=["wxid_alice"])
-    wx._STATE.update(admin="wxid_alice")
+    wx._STATE.update(admin="wxid_alice", context_tokens={"wxid_alice": "ctx-1"})
     used = wx.deliver("标题", "正文", cfg=c)
     assert used == ["wechat"]
     msg = mock.sent[-1]["msg"]
@@ -166,7 +166,7 @@ def test_push_alert_uses_bot_router_and_wechat_only(mock, monkeypatch):
     monkeypatch.setattr(router.channel("wechat"), "config", lambda raw=None: cfg(admins=["wxid_alice"]))
     monkeypatch.setattr(router.channel("wechat"), "enabled", lambda raw=None: True)
     monkeypatch.setattr(router.channel("wechat"), "ready", lambda c: True)
-    wx._STATE.update(token="tok-test", admin="wxid_alice")
+    wx._STATE.update(token="tok-test", admin="wxid_alice", context_tokens={"wxid_alice": "ctx-1"})
     items = [{"code": "600519", "name": "贵州茅台", "level": "warn", "pct": 3.2, "rank": 1}]
     assert notify.push_alerts(items, "ranking", datetime(2026, 10, 30, 10, 0), background=False) == 1
     assert "贵州茅台" in mock.sent[-1]["msg"]["item_list"][0]["text_item"]["text"]

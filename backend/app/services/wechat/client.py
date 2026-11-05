@@ -359,6 +359,25 @@ def getupdates(cfg: dict, long_poll: bool = True) -> list[dict]:
     return _extract_updates(resp)
 
 
+def current_context_token(cfg: dict | None = None, touser: str | None = None) -> str:
+    """返回目标用户最近一条入站消息的 context_token；没有则返回空串。"""
+    cfg = cfg or config()
+    _load_state()
+    with _STATE_LOCK:
+        admin = _STATE.get("admin") or (cfg.get("admins") or [None])[0] or ""
+        user = touser or admin
+        tokens = _STATE.get("context_tokens") or {}
+        return str(tokens.get(user) or "")
+
+
+def current_admin_bound(cfg: dict | None = None) -> bool:
+    """是否有已绑定的管理员。current_admin() 会 fallback 到配置白名单，这里返回真实绑定状态。"""
+    cfg = cfg or config()
+    _load_state()
+    with _STATE_LOCK:
+        return bool(_STATE.get("admin"))
+
+
 def sendmessage(cfg: dict, text: str, touser: str | None = None, context_token: str | None = None) -> dict:
     _load_state()
     token = _current_token(cfg)
@@ -372,13 +391,10 @@ def sendmessage(cfg: dict, text: str, touser: str | None = None, context_token: 
         raise WeChatError("还没有可发送的用户：请先让管理员在微信里给机器人发一条消息")
 
     ctx = context_token
-    if not ctx and touser:
-        _load_state()
-        with _STATE_LOCK:
-            ctx = (_STATE.get("context_tokens") or {}).get(touser) or ""
     if not ctx:
-        # 官方允许不带 context_token 发一次，但通常需要先从入站消息拿到。
-        ctx = None
+        ctx = current_context_token(cfg, touser)
+    if not ctx:
+        raise WeChatError("还没收到你发给机器人的消息，暂时无法主动推送——请先用你自己的微信给机器人发任意一条消息，等系统收到后再点发送测试消息。")
 
     item_list = [{"type": MESSAGE_ITEM_TEXT, "text_item": {"text": text}}]
     payload = {
@@ -394,11 +410,18 @@ def sendmessage(cfg: dict, text: str, touser: str | None = None, context_token: 
         "base_info": _base_info(),
     }
     resp = _post(base, "ilink/bot/sendmessage", payload, token=token)
-    code = resp.get("ret")
-    if code not in (None, 0, "0"):
-        if int(code) == STALE_TOKEN_ERRCODE:
-            raise WeChatError("登录已失效，请重新扫码登录", code)
-        raise WeChatError(str(resp.get("errmsg") or "发送失败"), code)
+    if "raw" in resp or "http_status" in resp:
+        code = resp.get("http_status")
+        raise WeChatError(f"发送失败：微信接口返回了非 JSON 响应（HTTP {code}）", code)
+    stale = False
+    for key in ("ret", "errcode"):
+        try:
+            stale = stale or int(resp.get(key)) == STALE_TOKEN_ERRCODE
+        except (TypeError, ValueError):
+            pass
+    if stale:
+        raise WeChatError("登录已失效，请重新扫码登录", STALE_TOKEN_ERRCODE)
+    _raise_if_error(resp, "发送失败")
     return resp
 
 
