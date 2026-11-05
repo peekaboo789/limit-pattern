@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { api, ApiError } from '@/api/client'
-import type { DataCleanupPreview } from '@/api/types'
-import { computed, onMounted, ref } from 'vue'
+import type { DataCleanupJob, DataCleanupPreview } from '@/api/types'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 const days = ref(60)
 const autoEnabled = ref(false)
@@ -13,6 +13,9 @@ const confirmed = ref(false)
 const message = ref('')
 const error = ref('')
 const result = ref<Record<string, unknown> | null>(null)
+const job = ref<DataCleanupJob | null>(null)
+const jobProgress = ref(0)
+let pollTimer: number | null = null
 
 const daysValid = computed(() => Number.isInteger(days.value) && days.value >= 30 && days.value <= 365)
 const calcProtectionNeeded = computed(() => (preview.value?.calc_protected_archive ?? 0) > 0)
@@ -68,17 +71,73 @@ async function execute() {
     return
   }
   running.value = true
+  job.value = null
+  jobProgress.value = 0
   error.value = ''
   result.value = null
   message.value = ''
   try {
-    result.value = await api.dataCleanupExecute(days.value)
+    const started = await api.dataCleanupExecute(days.value)
+    job.value = started
+    jobProgress.value = started.progress ?? 0
     confirmed.value = false
-    await loadPreview()
+    await pollJob(started.job_id)
   } catch (reason) {
     error.value = reason instanceof ApiError ? reason.detail : '删除失败'
   } finally {
     running.value = false
+  }
+}
+
+function stopPolling() {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+async function pollJob(jobId: string) {
+  stopPolling()
+  try {
+    const status = await api.dataCleanupJob(jobId)
+    job.value = status
+    jobProgress.value = status.progress ?? jobProgress.value
+    if (!status.running) {
+      running.value = false
+      if (status.status === 'done') {
+        result.value = status.result ?? null
+        message.value = '删除完成'
+      } else {
+        error.value = status.error || status.message || '删除失败，可重试'
+      }
+      await loadPreview()
+      return
+    }
+    pollTimer = window.setInterval(async () => {
+      try {
+        const next = await api.dataCleanupJob(jobId)
+        job.value = next
+        jobProgress.value = next.progress ?? jobProgress.value
+        if (!next.running) {
+          stopPolling()
+          running.value = false
+          if (next.status === 'done') {
+            result.value = next.result ?? null
+            message.value = '删除完成'
+          } else {
+            error.value = next.error || next.message || '删除失败，可重试'
+          }
+          await loadPreview()
+        }
+      } catch (reason) {
+        stopPolling()
+        running.value = false
+        error.value = reason instanceof ApiError ? reason.detail : '轮询任务状态失败，可重试'
+      }
+    }, 2000)
+  } catch (reason) {
+    running.value = false
+    error.value = reason instanceof ApiError ? reason.detail : '获取任务状态失败，可重试'
   }
 }
 
@@ -90,6 +149,8 @@ onMounted(async () => {
     // 设置页主流程会显示加载错误
   }
 })
+
+onUnmounted(stopPolling)
 </script>
 
 <template>
@@ -109,7 +170,12 @@ onMounted(async () => {
     <div class="actions">
       <button class="btn btn-ghost" type="button" :disabled="loading || savingAuto" @click="loadPreview">刷新预览</button>
       <button class="btn btn-ghost" type="button" :disabled="savingAuto" @click="saveAuto">{{ savingAuto ? '保存中…' : '保存自动删除设置' }}</button>
-      <button class="btn danger" type="button" :disabled="running || !daysValid" @click="execute">{{ running ? '删除中…' : '执行删除' }}</button>
+      <button class="btn danger" type="button" :disabled="running || !daysValid || loading" @click="execute">{{ running ? '删除中…' : '执行删除' }}</button>
+    </div>
+    <div v-if="job" class="job-status">
+      <p class="hint">任务 {{ job.job_id }}：{{ job.message }}（{{ Math.round(jobProgress) }}%）</p>
+      <div class="progress-track"><div class="progress-fill" :style="{ width: `${Math.min(100, jobProgress)}%` }"></div></div>
+      <p class="hint">已用 {{ job.elapsed_seconds.toFixed(1) }} 秒</p>
     </div>
     <p v-if="error" class="hint" style="color: #dc2626">{{ error }}</p>
     <p v-if="message" class="hint" style="color: #16a34a">{{ message }}</p>
@@ -161,4 +227,7 @@ h3 { font-size: 14px; margin: 10px 0 4px; }
 ul { margin: 0; padding-left: 18px; }
 li { color: var(--text); font-size: 13px; }
 pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; color: var(--muted); }
+  .job-status { margin-top: 8px; padding: 8px; border: 1px solid #292f3d; border-radius: 8px; background: rgba(255, 255, 255, 0.02); }
+  .progress-track { height: 8px; margin: 8px 0; border-radius: 999px; background: #1f2937; overflow: hidden; }
+  .progress-fill { height: 100%; background: #16a34a; transition: width 0.2s ease; }
 </style>

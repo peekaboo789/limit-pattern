@@ -13,10 +13,11 @@ import re
 import shutil
 import sqlite3
 import threading
+import time as _time
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import text as sql_text
+from sqlalchemy import text as sql_text, tuple_
 
 from backend.app import __version__
 from backend.app.core.clock import SHANGHAI, today
@@ -32,7 +33,11 @@ MAX_DAYS = 365
 DEFAULT_DAYS = 60
 
 # 一次只有一个清理/执行任务在跑。手动清理与自动清理也互斥。
-_RUN_LOCK = threading.Lock()
+# 用状态锁跨线程标记 busy：后台线程收尾时自己释放。
+_STATE_LOCK = threading.Lock()
+_ACTIVE_JOB_ID: str | None = None
+_JOBS: dict[str, dict] = {}
+_JOB_SEQ = 0
 
 DATE_IN_NAME = re.compile(r"(20\d{2})[-_]?(0[1-9]|1[0-2])[-_]?(0[1-9]|[12]\d|3[01])")
 
@@ -221,6 +226,21 @@ def _scan_update_files(cutoff: date) -> list[tuple[Path, int]]:
     return out
 
 
+# 目录大小统计只扫文件，且一次扫描后缓存 30 秒；预览页与执行任务短时间重复进入时不再全盘 rglob。
+_SCAN_CACHE: dict[tuple[Path, bool], tuple[float, list[tuple[Path, int]]]] = {}
+_SCAN_TTL_SECONDS = 30.0
+
+
+def _scan_cached(root: Path, recursive: bool, cutoff: date) -> list[tuple[Path, int]]:
+    key = (root, recursive)
+    now = _time.monotonic()
+    cached = _SCAN_CACHE.get(key)
+    if cached is None or now - cached[0] > _SCAN_TTL_SECONDS:
+        cached = (now, _scan_directory_files("", root, cutoff, recursive))
+        _SCAN_CACHE[key] = cached
+    return cached[1]
+
+
 def _file_plan_for_cutoff(cutoff: date) -> dict:
     groups = []
     all_files = []
@@ -233,7 +253,7 @@ def _file_plan_for_cutoff(cutoff: date) -> dict:
         ("聚类结果", data_dir() / "clusters", True),
         ("日志目录", data_dir() / "logs", True),
     ):
-        files = _scan_directory_files(label, root, cutoff, recursive)
+        files = _scan_cached(root, recursive, cutoff)
         groups.append({"label": label, "count": len(files), "size": sum(size for _, size in files)})
         all_files.extend(files)
     log_files = _scan_log_root(cutoff)
@@ -252,7 +272,8 @@ def _protected_for(mode: str) -> list[str]:
     return protected
 
 
-def preview(days: int | None = None, *, mode: str = "manual") -> dict:
+def _preview_steps(days: int | None = None, *, mode: str = "manual") -> tuple[float, dict]:
+    started = _time.perf_counter()
     days = _validated_days(days) if days is not None else cleanup_days()
     cutoff = cutoff_date(days)
     with session_scope() as session:
@@ -265,7 +286,8 @@ def preview(days: int | None = None, *, mode: str = "manual") -> dict:
             })
         archived = _archive_estimate(session, cutoff, calc_cutoff)
     file_plan = _file_plan_for_cutoff(cutoff)
-    return {
+    elapsed = _time.perf_counter() - started
+    return elapsed, {
         "today": today().isoformat(),
         "days": days,
         "cutoff": cutoff.isoformat(),
@@ -280,7 +302,12 @@ def preview(days: int | None = None, *, mode: str = "manual") -> dict:
         "total_files": file_plan["count"],
         "total_file_size": file_plan["size"],
         "protected": _protected_for(mode),
+        "elapsed_ms": int(elapsed * 1000),
     }
+
+
+def preview(days: int | None = None, *, mode: str = "manual") -> dict:
+    return _preview_steps(days, mode=mode)[1]
 
 
 def _verify_backup(backup: Path) -> None:
@@ -304,17 +331,27 @@ def _delete_table_rows(session, cutoff: date, calc_cutoff: date | None, include_
     if calc_cutoff is not None and calc_cutoff < cutoff:
         have = {(c, d) for c, d in session.query(tables.CalcBar.stock_code, tables.CalcBar.trade_date).filter(
             tables.CalcBar.trade_date >= calc_cutoff, tables.CalcBar.trade_date < cutoff)}
-        rows = session.query(tables.DailyQuote).filter(tables.DailyQuote.trade_date >= calc_cutoff, tables.DailyQuote.trade_date < cutoff).all()
-        batch = [
-            dict(stock_code=r.stock_code, trade_date=r.trade_date, open=r.open, high=r.high, low=r.low, close=r.close,
-                 pre_close=r.pre_close, volume=r.volume, amount=r.amount, turnover_rate=r.turnover_rate)
-            for r in rows
-            if (r.stock_code, r.trade_date) not in have and None not in (r.open, r.high, r.low, r.close)
-        ]
+        rows = session.query(tables.DailyQuote).filter(
+            tables.DailyQuote.trade_date >= calc_cutoff, tables.DailyQuote.trade_date < cutoff
+        ).yield_per(50_000)
+        archived = 0
+        batch: list[dict] = []
+        for r in rows:
+            if (r.stock_code, r.trade_date) in have or None in (r.open, r.high, r.low, r.close):
+                continue
+            batch.append(dict(stock_code=r.stock_code, trade_date=r.trade_date, open=r.open, high=r.high, low=r.low,
+                              close=r.close, pre_close=r.pre_close, volume=r.volume, amount=r.amount,
+                              turnover_rate=r.turnover_rate))
+            if len(batch) >= 50_000:
+                session.bulk_insert_mappings(tables.CalcBar, batch)
+                session.flush()
+                archived += len(batch)
+                batch = []
         if batch:
             session.bulk_insert_mappings(tables.CalcBar, batch)
             session.flush()
-        deleted["archived_to_calc_bars"] = len(batch)
+            archived += len(batch)
+        deleted["archived_to_calc_bars"] = archived
     else:
         deleted["archived_to_calc_bars"] = 0
 
@@ -329,8 +366,31 @@ def _delete_table_rows(session, cutoff: date, calc_cutoff: date | None, include_
             q = session.query(model).filter(column_obj < _datetime_cutoff(cutoff))
         else:
             q = session.query(model).filter(column_obj < cutoff)
-        deleted[label] = q.delete(synchronize_session=False)
+        deleted[label] = _delete_query_in_batches(session, model, q)
     return deleted
+
+
+def _delete_query_in_batches(session, model, query) -> int:
+    """每批 5 万行并提交，避免大库单条 DELETE 锁库/爆事务。"""
+    total = 0
+    pk_columns = list(model.__table__.primary_key.columns)
+    if not pk_columns:
+        total = query.delete(synchronize_session=False)
+        session.commit()
+        return total
+    while True:
+        ids = query.with_entities(*[c for c in pk_columns]).limit(50_000).all()
+        if not ids:
+            break
+        if len(pk_columns) == 1:
+            id_values = [row[0] for row in ids]
+            session.query(model).filter(pk_columns[0].in_(id_values)).delete(synchronize_session=False)
+        else:
+            id_values = [tuple(row) for row in ids]
+            session.query(model).filter(tuple_(*pk_columns).in_(id_values)).delete(synchronize_session=False)
+        session.commit()
+        total += len(ids)
+    return total
 
 
 def _delete_files(cutoff: date) -> dict:
@@ -377,12 +437,40 @@ def _sqlite_pages() -> tuple[int, int]:
     return int((pages or (0,))[0]), int((free or (0,))[0])
 
 
+def _free_disk_bytes(path: Path) -> int | None:
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return None
+
+
+def _ensure_disk_for_backup(path: Path) -> None:
+    """备份前检查磁盘：需要同时放得下当前数据库和文件备份。"""
+    root = data_dir()
+    db = root / "lp.db"
+    free = _free_disk_bytes(path if path.exists() else root)
+    if free is None:
+        return
+    need = _db_size(db) * 2 + 1_048_576
+    if free < need:
+        raise RuntimeError(f"磁盘空间不足，无法完成备份：剩余 {free / 1024 / 1024:.1f}MB，预计需要 {need / 1024 / 1024:.1f}MB")
+
+
 def _vacuum() -> dict:
     engine = get_engine()
     if not str(engine.url).startswith("sqlite"):
         return {"vacuum": False, "reason": "非 SQLite，跳过 VACUUM"}
     db_path = data_dir() / "lp.db"
     before = _db_size(db_path)
+    free = _free_disk_bytes(db_path.parent)
+    if free is not None and free < before:
+        return {
+            "vacuum": False,
+            "skipped_disk_space": True,
+            "reason": "磁盘空间不足以重建数据库，跳过 VACUUM",
+            "before_size": before,
+            "free_bytes": free,
+        }
     before_pages, before_free = _sqlite_pages()
     try:
         with engine.connect() as conn:
@@ -411,14 +499,148 @@ def _vacuum() -> dict:
     }
 
 
-def execute(days: int | None = None, *, label: str = "manual-cleanup", mode: str = "manual") -> dict:
-    if not _RUN_LOCK.acquire(blocking=False):
-        raise RuntimeError("已有删除任务正在执行，请稍后再试")
+def _try_acquire(job_id: str) -> bool:
+    global _ACTIVE_JOB_ID
+    with _STATE_LOCK:
+        if _ACTIVE_JOB_ID is not None:
+            return False
+        _ACTIVE_JOB_ID = job_id
+        return True
+
+
+def _release_job(job_id: str) -> None:
+    global _ACTIVE_JOB_ID
+    with _STATE_LOCK:
+        if _ACTIVE_JOB_ID == job_id:
+            _ACTIVE_JOB_ID = None
+
+
+def _run_cleanup_job(job_id: str, days: int, *, label: str, mode: str) -> None:
+    """后台线程执行真正的清理。任何错误都会写进 job，不会抛到请求线程。"""
+    job = _JOBS[job_id]
+    started = _time.perf_counter()
+    def update(phase: str, progress: float, message: str, **extra) -> None:
+        job["phase"] = phase
+        job["progress"] = round(min(100.0, progress), 1)
+        job["message"] = message
+        job["elapsed_seconds"] = _time.perf_counter() - started
+        for key, value in extra.items():
+            job[key] = value
+
     try:
         from backend.app.services import backups
 
+        update("backup", 2, "正在备份数据库和设置文件")
+        _ensure_disk_for_backup(data_dir())
+        backup = backups.make_backup(f"pre-{label}")
+        _verify_backup(backup)
+        job["backup"] = backup.name
+        update("backup", 8, "备份完成")
+
+        include_permanent = mode == "manual"
+        update("tables", 10, "正在清理数据库旧行")
+        with session_scope() as session:
+            calc_cutoff = _calc_cutoff(session)
+            deleted = _delete_table_rows(session, cutoff_date(days), calc_cutoff, include_permanent)
+        job["deleted"] = deleted
+        update("tables", 60, "数据库清理完成")
+
+        update("files", 70, "正在删除旧文件")
+        file_result = _delete_files(cutoff_date(days))
+        job.update(file_result)
+        update("files", 85, "旧文件清理完成")
+
+        update("vacuum", 90, "正在 VACUUM 回收空间")
+        vacuum = _vacuum()
+        job["vacuum"] = vacuum
+        update("vacuum", 99, "VACUUM 完成")
+
+        result = {
+            "today": today().isoformat(),
+            "days": days,
+            "cutoff": cutoff_date(days).isoformat(),
+            "timezone": "Asia/Shanghai",
+            "mode": mode,
+            "calc_cutoff": calc_cutoff.isoformat() if calc_cutoff else None,
+            "backup": backup.name,
+            "deleted": deleted,
+            **file_result,
+            "vacuum": vacuum,
+            "protected": _protected_for(mode),
+        }
+        job["result"] = result
+        job["status"] = "done"
+        job["running"] = False
+        job["progress"] = 100
+        job["elapsed_seconds"] = _time.perf_counter() - started
+        job["message"] = "清理完成"
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("删除任务失败：%s", job_id)
+        job["status"] = "error"
+        job["running"] = False
+        job["error"] = str(exc)
+        job["message"] = f"删除未完成：{exc}"
+        job["elapsed_seconds"] = _time.perf_counter() - started
+    finally:
+        _release_job(job_id)
+
+
+def start_job(days: int | None = None, *, label: str = "manual-cleanup", mode: str = "manual") -> dict:
+    """POST 立刻返回 job_id；实际清理在后台线程执行。"""
+    global _JOB_SEQ
+    _JOB_SEQ += 1
+    job_id = f"cleanup-{_JOB_SEQ}"
+    try:
+        days = _validated_days(days) if days is not None else cleanup_days()
+    except Exception:
+        raise
+    if not _try_acquire(job_id):
+        raise RuntimeError("已有删除任务正在执行，请稍后再试")
+    job = {
+        "job_id": job_id,
+        "running": True,
+        "status": "running",
+        "phase": "queued",
+        "progress": 0.0,
+        "elapsed_seconds": 0.0,
+        "message": "任务已创建",
+        "days": days,
+        "mode": mode,
+        "label": label,
+        "result": None,
+        "error": None,
+    }
+    _JOBS[job_id] = job
+    try:
+        thread = threading.Thread(target=_run_cleanup_job, args=(job_id, days), kwargs={"label": label, "mode": mode}, daemon=True)
+        thread.start()
+    except Exception:
+        _release_job(job_id)
+        _JOBS.pop(job_id, None)
+        raise
+    return job
+
+
+def job_status(job_id: str) -> dict:
+    job = _JOBS.get(job_id)
+    if job is None:
+        raise KeyError(f"没有这个清理任务：{job_id}")
+    return dict(job)
+
+
+def execute(days: int | None = None, *, label: str = "manual-cleanup", mode: str = "manual") -> dict:
+    """兼容旧调用：同步执行到结束；新接口应使用 start_job/job_status。"""
+    global _JOB_SEQ
+    _JOB_SEQ += 1
+    job_id = f"cleanup-{_JOB_SEQ}"
+    if not _try_acquire(job_id):
+        raise RuntimeError("已有删除任务正在执行，请稍后再试")
+    try:
         days = _validated_days(days) if days is not None else cleanup_days()
         cutoff = cutoff_date(days)
+        from backend.app.services import backups
+
+        _ensure_disk_for_backup(data_dir())
         backup = backups.make_backup(f"pre-{label}")
         _verify_backup(backup)
         include_permanent = mode == "manual"
@@ -441,13 +663,12 @@ def execute(days: int | None = None, *, label: str = "manual-cleanup", mode: str
             "protected": _protected_for(mode),
         }
     finally:
-        _RUN_LOCK.release()
+        _release_job(job_id)
 
 
 def auto_cleanup_if_enabled() -> dict:
     raw = read_settings_file()
     if raw.get("data_cleanup_auto_enabled") is not True:
         return {"ran": False}
-    result = execute(cleanup_days(raw), label="auto-cleanup", mode="auto")
-    result["ran"] = True
-    return result
+    job = start_job(cleanup_days(raw), label="auto-cleanup", mode="auto")
+    return {"ran": True, "job_id": job["job_id"]}

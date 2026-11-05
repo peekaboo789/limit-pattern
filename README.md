@@ -518,7 +518,7 @@ logs/launcher.log
 - 个人微信只发纯文本，标题 + 正文合并、超长分段；token 只写不读、只显示「已设置」、不写日志；扫码会话保存到 `data/wechat_session.json`。
 - 新增接口 `GET /api/wechat/status`、`GET /api/wechat/qrcode`、`POST /api/wechat/test`。设置步骤见 [docs/wechat.md](docs/wechat.md)。
 
-## v0.7.3 设置页「删除 60 天前数据」
+## v0.7.4 设置页「删除 60 天前数据」（后台任务）
 
 - 设置 → 删除旧数据：先预览每个表/目录将删除的条数、文件数和占用空间，勾选二次确认后执行；执行前沿用现有 `data/backups/` 机制自动备份（保留最近 3 份），备份校验失败会中止删除。
 - 天数默认 60，可在 30–365 修改，按 Asia/Shanghai 自然日计算；恰好 N 天前这一天的数据保留。

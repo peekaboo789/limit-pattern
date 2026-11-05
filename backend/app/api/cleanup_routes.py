@@ -29,8 +29,18 @@ def data_cleanup_execute(body: dict | None = None) -> dict:
     if mode not in {"manual", "auto"}:
         raise HTTPException(status_code=422, detail="mode 只能是 manual 或 auto")
     try:
-        return data_cleanup.execute(int(days) if days is not None else None, mode=mode)
+        return data_cleanup.start_job(int(days) if days is not None else None, mode=mode)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - 备份失败、磁盘失败等对用户可见
         raise HTTPException(status_code=500, detail=f"删除未完成：{exc}") from exc
+
+
+@router.get("/data-cleanup/jobs/{job_id}")
+def data_cleanup_job_status(job_id: str) -> dict:
+    try:
+        return data_cleanup.job_status(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

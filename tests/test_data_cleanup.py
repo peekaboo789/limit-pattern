@@ -1,4 +1,4 @@
-"""v0.7.3 手动删除 N 天前数据：自然日边界、Asia/Shanghai、保护数据、备份失败中止、计算窗口。"""
+"""手动删除 N 天前数据：自然日边界、Asia/Shanghai、保护数据、后台任务、备份失败中止、计算窗口。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,19 @@ from backend.app.core.database import session_scope
 from backend.app.models.tables import AiDailySummary, AiRanking, CalcBar, DailyQuote, Stock
 from backend.app.services import backups, data_cleanup
 from tests.test_api import _save, _series, weekdays
+
+
+def _wait_job(job_id: str, timeout: float = 10.0) -> dict:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while True:
+        status = data_cleanup.job_status(job_id)
+        if not status["running"]:
+            return status
+        if time.monotonic() > deadline:
+            raise AssertionError(f"清理任务 {job_id} 超时未完成：{status}")
+        time.sleep(0.02)
 
 
 def _seed_stock(code="600000", name="浦发银行"):
@@ -114,8 +127,11 @@ def test_auto_cleanup_keeps_permanent_tables_and_is_off_by_default(monkeypatch, 
     config.write_settings_file({**config.read_settings_file(), "data_cleanup_auto_enabled": True, "data_cleanup_days": 60})
     result = data_cleanup.auto_cleanup_if_enabled()
     assert result["ran"] is True
-    assert result["mode"] == "auto"
-    assert "AI 前 20 榜单" in result["protected"]
+    assert "job_id" in result
+    status = _wait_job(result["job_id"])
+    assert status["status"] == "done"
+    assert status["result"]["mode"] == "auto"
+    assert "AI 前 20 榜单" in status["result"]["protected"]
     with session_scope() as session:
         assert session.query(AiRanking).count() == 1
         assert session.query(AiDailySummary).count() == 1
@@ -194,3 +210,68 @@ def test_calc_window_archive_is_kept_for_position_60(monkeypatch, client):
         assert session.query(DailyQuote).filter(DailyQuote.trade_date < result["cutoff"]).count() == 0
         assert session.query(CalcBar).filter(CalcBar.trade_date < calc_cutoff).count() == 0
         assert session.query(CalcBar).filter(CalcBar.trade_date >= calc_cutoff).count() > 0
+
+
+def test_start_job_and_status_are_background_and_single_runner(monkeypatch, client):
+    fixed_today = date(2026, 6, 12)
+    monkeypatch.setattr(data_cleanup, "today", lambda: fixed_today)
+    days = weekdays(120, end=fixed_today)
+    _seed_stock()
+    _save("600000", "浦发银行", "SSE", _series(days, limit_on={100}))
+    with session_scope() as session:
+        session.add(AiRanking(trade_date=fixed_today - timedelta(days=61), run_at="x", trigger="t", payload={}))
+
+    job = data_cleanup.start_job(60, mode="manual")
+    assert job["running"] is True
+    assert job["phase"] in {"queued", "backup", "tables", "files", "vacuum"}
+    try:
+        data_cleanup.start_job(60, mode="manual")
+    except RuntimeError as exc:
+        assert "已有删除任务" in str(exc)
+    else:
+        raise AssertionError("同一时间只能有一个清理任务")
+
+    status = _wait_job(job["job_id"])
+    assert status["status"] == "done"
+    assert status["phase"] == "vacuum"
+    assert status["progress"] == 100
+    assert status["elapsed_seconds"] >= 0
+    assert status["result"]["mode"] == "manual"
+
+
+def test_execute_route_returns_job_id_and_status_route(monkeypatch, client):
+    fixed_today = date(2026, 6, 12)
+    monkeypatch.setattr(data_cleanup, "today", lambda: fixed_today)
+    days = weekdays(120, end=fixed_today)
+    _seed_stock()
+    _save("600000", "浦发银行", "SSE", _series(days, limit_on={100}))
+
+    response = client.post("/api/data-cleanup/execute", json={"days": 60, "confirm": True})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["job_id"]
+    status = _wait_job(body["job_id"])
+    assert status["status"] == "done"
+
+    response = client.get(f"/api/data-cleanup/jobs/{body['job_id']}")
+    assert response.status_code == 200
+    assert response.json()["status"] == "done"
+    assert response.json()["progress"] == 100
+
+    missing = client.get("/api/data-cleanup/jobs/does-not-exist")
+    assert missing.status_code == 404
+
+
+def test_vacuum_skips_when_disk_does_not_have_room(monkeypatch, client):
+    fixed_today = date(2026, 6, 12)
+    monkeypatch.setattr(data_cleanup, "today", lambda: fixed_today)
+    db_path = data_dir() / "lp.db"
+    _seed_stock()
+    with session_scope() as session:
+        session.add(DailyQuote(stock_code="600000", trade_date=fixed_today, open=1, high=2, low=0.5, close=1.5))
+    db_size = data_cleanup._db_size(db_path)
+    monkeypatch.setattr(data_cleanup, "_free_disk_bytes", lambda path: max(0, db_size - 1))
+    vacuum = data_cleanup._vacuum()
+    assert vacuum["vacuum"] is False
+    assert vacuum.get("skipped_disk_space") is True
+    assert "磁盘空间不足" in vacuum["reason"]

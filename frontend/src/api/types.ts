@@ -89,6 +89,20 @@ export interface DataCleanupPreview {
   protected: string[]
 }
 
+export interface DataCleanupJob {
+  job_id: string
+  running: boolean
+  status: 'running' | 'done' | 'error'
+  phase: string
+  progress: number
+  elapsed_seconds: number
+  message: string
+  days: number
+  mode?: 'manual' | 'auto'
+  result?: Record<string, unknown> | null
+  error?: string | null
+}
+
 /** 一只候选对样本池（已去掉它自己的全部样本）的统计 */
 export interface SimilarityStats {
   max_similarity: number | null
