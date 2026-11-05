@@ -136,12 +136,11 @@ def purge_expired() -> dict:
                 "daily_quotes": session.query(DailyQuote).filter(DailyQuote.trade_date < cutoff).delete(synchronize_session=False),
                 "calc_bars": session.query(CalcBar).filter(CalcBar.trade_date < calc_cutoff).delete(synchronize_session=False),
                 "archived_to_calc_bars": archived,
-                "daily_features": session.query(DailyFeature).filter(DailyFeature.trade_date < cutoff).delete(synchronize_session=False),
+                "daily_features": session.query(DailyFeature).filter(DailyFeature.trade_date < calc_cutoff).delete(synchronize_session=False),
                 "limit_up_patterns": session.query(LimitUpPattern).filter(LimitUpPattern.limit_up_date < cutoff).delete(synchronize_session=False),
                 "pattern_matches": session.query(PatternMatch).filter(PatternMatch.target_date < cutoff).delete(synchronize_session=False),
                 "skipped_records": session.query(SkippedRecord).filter(SkippedRecord.trade_date < cutoff).delete(synchronize_session=False),
                 "data_quality_errors": session.query(DataQualityError).filter(DataQualityError.trade_date < cutoff).delete(synchronize_session=False),
-                "trading_days": session.query(TradingDay).filter(TradingDay.trade_date < cutoff).delete(synchronize_session=False),
             }
             kept = [day.isoformat() for day in days if day >= cutoff]
     from backend.app.services.history_backfill import clear_calc_memory

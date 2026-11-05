@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from backend.app.core.clock import SHANGHAI
 from backend.app.core.config import data_dir
 from backend.app.core.database import session_scope
-from backend.app.models.tables import AiDailySummary, AiRanking, CalcBar, DailyQuote, Stock
+from backend.app.models.tables import AiDailySummary, AiRanking, CalcBar, DailyFeature, DailyQuote, Stock, TradingDay
 from backend.app.services import backups, data_cleanup
 from tests.test_api import _save, _series, weekdays
 
@@ -275,3 +275,66 @@ def test_vacuum_skips_when_disk_does_not_have_room(monkeypatch, client):
     assert vacuum["vacuum"] is False
     assert vacuum.get("skipped_disk_space") is True
     assert "磁盘空间不足" in vacuum["reason"]
+
+
+def test_purge_preserves_trading_days_and_pattern_features(monkeypatch, client):
+    fixed_today = date(2026, 6, 12)
+    monkeypatch.setattr(data_cleanup, "today", lambda: fixed_today)
+    from backend.app.core.calendar import previous_trading_day
+    from backend.app.core.config import calc_history_days
+
+    days = weekdays(120, end=fixed_today)
+    _seed_stock()
+    _save("600000", "浦发银行", "SSE", _series(days, limit_on={100}))
+    with session_scope() as session:
+        for day in days:
+            if session.get(TradingDay, day) is None:
+                session.add(TradingDay(trade_date=day, is_open=True, limit_up_count=0))
+        session.add(DailyFeature(stock_code="600000", trade_date=fixed_today - timedelta(days=90), features={"x": 1}))
+        session.add(DailyFeature(stock_code="600000", trade_date=fixed_today, features={"x": 2}))
+    before_trading_days = None
+    with session_scope() as session:
+        before_trading_days = session.query(TradingDay).count()
+    assert before_trading_days == len(days)
+
+    preview = data_cleanup.preview(60)
+    assert not any(row["label"] == "交易日历" for row in preview["tables"])
+
+    result = data_cleanup.execute(60)
+    with session_scope() as session:
+        assert session.query(TradingDay).count() == before_trading_days
+        assert session.query(DailyFeature).filter(DailyFeature.trade_date == fixed_today).count() == 1
+        # 旧特征也要保护到 calc_cutoff，不能只按 retention_days 的 60 自然日切。
+        calc_cutoff = data_cleanup._calc_cutoff(session)
+        assert session.query(DailyFeature).filter(DailyFeature.trade_date < calc_cutoff).count() == 0
+        assert session.query(DailyFeature).count() > 0
+    assert result["deleted"].get("交易日历") in (None, 0)
+
+
+def test_pattern_similarity_is_identical_before_and_after_purge(monkeypatch, client):
+    fixed_today = date(2026, 6, 12)
+    monkeypatch.setattr(data_cleanup, "today", lambda: fixed_today)
+    days = weekdays(120, end=fixed_today)
+    _seed_stock("600000", "浦发银行")
+    _seed_stock("000001", "平安银行")
+    _save("600000", "浦发银行", "SSE", _series(days, limit_on={100, 110}))
+    _save("000001", "平安银行", "SZSE", _series(days, limit_on=set(), start=8.0))
+
+    from backend.app.services.similarity_service import scan_market
+
+    as_of = days[-1]
+    with session_scope() as session:
+        before = scan_market(session, as_of, top=10, min_score=0, details=False)
+    with session_scope() as session:
+        before_trading_days = session.query(TradingDay).count()
+    # 相似度计算的会话缓存不要串到下一次。
+    data_cleanup.execute(60)
+    with session_scope() as session:
+        after = scan_market(session, as_of, top=10, min_score=0, details=False)
+        after_trading_days = session.query(TradingDay).count()
+
+    assert before["pool_dates"] == after["pool_dates"]
+    assert before["pool_size"] == after["pool_size"]
+    assert [item["code"] for item in before["items"]] == [item["code"] for item in after["items"]]
+    assert [item["max_similarity"] for item in before["items"]] == [item["max_similarity"] for item in after["items"]]
+    assert after_trading_days == before_trading_days

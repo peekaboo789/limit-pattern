@@ -518,6 +518,12 @@ logs/launcher.log
 - 个人微信只发纯文本，标题 + 正文合并、超长分段；token 只写不读、只显示「已设置」、不写日志；扫码会话保存到 `data/wechat_session.json`。
 - 新增接口 `GET /api/wechat/status`、`GET /api/wechat/qrcode`、`POST /api/wechat/test`。设置步骤见 [docs/wechat.md](docs/wechat.md)。
 
+## v0.7.5 清理任务保护交易日历与计算特征
+
+- 修复清理任务会删除旧交易日历的问题：交易日历现在永久保留，不再出现在手动/自动清理预览和删除结果里。
+- `stocks` 股票档案与 `daily_features` 形态特征不再只按保留天数删除，而是和 `CalcBar` 一样保护到形态计算窗口（`calc_cutoff`）；同时自动 `purge_expired` 也停止删除旧交易日历。
+- 回归测试：清理后交易日历行数不变；清理前后形态相似度结果一致。
+
 ## v0.7.4 设置页「删除 60 天前数据」（后台任务）
 
 - 设置 → 删除旧数据：先预览每个表/目录将删除的条数、文件数和占用空间，勾选二次确认后执行；执行前沿用现有 `data/backups/` 机制自动备份（保留最近 3 份），备份校验失败会中止删除。

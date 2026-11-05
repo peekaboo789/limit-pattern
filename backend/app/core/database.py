@@ -61,7 +61,7 @@ def reset_engine() -> None:
 
 
 def cleanup_indexes(engine=None) -> list[str]:
-    """v0.7.4：清理预览/删除用到的日期列索引。
+    """v0.7.5：清理预览/删除用到的日期列索引。
 
     老库 create_all 不会补模型后加的 Index；这些 SQL 在启动时统一补齐。
     失败只记录日志，不挡启动（下次启动会再尝试）。

@@ -69,12 +69,10 @@ def _table_plans(*, include_permanent: bool) -> list[tuple[str, object, str, str
     plans = [
         ("行情日线", tables.DailyQuote, "trade_date", None),
         ("补来的历史日线", tables.CalcBar, "trade_date", None),
-        ("形态特征", tables.DailyFeature, "trade_date", None),
         ("涨停明细", tables.LimitUpPattern, "limit_up_date", None),
         ("相似度匹配", tables.PatternMatch, "target_date", None),
         ("跳过记录", tables.SkippedRecord, "trade_date", None),
         ("数据质量错误", tables.DataQualityError, "trade_date", None),
-        ("交易日历", tables.TradingDay, "trade_date", None),
         ("盘中报警", tables.IntradayWatchAlert, "trade_date", None),
         ("信号事件", tables.SignalEvent, "signal_date", None),
         ("信号快照表", tables.SignalSnapshot, "trade_date", None),
@@ -89,10 +87,11 @@ def _table_plans(*, include_permanent: bool) -> list[tuple[str, object, str, str
     ]
     if include_permanent:
         plans.append(("AI 前 20 榜单", tables.AiRanking, "trade_date", None))
+    plans.append(("形态特征", tables.DailyFeature, "trade_date", None))
     return plans
 
 
-PERMANENT_PROTECTED = ("AI 前 20 榜单", "每日总结表")
+PERMANENT_PROTECTED = ("AI 前 20 榜单", "每日总结表", "交易日历", "股票档案", "形态特征")
 
 
 def _latest_quote_date(session) -> date | None:
@@ -122,6 +121,9 @@ def _table_count(session, label: str, model, column: str, kind: str | None, cuto
     column_obj = getattr(model, column)
     if label == "补来的历史日线" and calc_cutoff is not None:
         threshold = min(cutoff, calc_cutoff)
+        return session.query(model).filter(column_obj < threshold).count()
+    if label == "形态特征":
+        threshold = min(cutoff, calc_cutoff) if calc_cutoff is not None else cutoff
         return session.query(model).filter(column_obj < threshold).count()
     if kind == "datetime":
         return session.query(model).filter(column_obj < _datetime_cutoff(cutoff)).count()
@@ -266,7 +268,7 @@ def _file_plan_for_cutoff(cutoff: date) -> dict:
 
 
 def _protected_for(mode: str) -> list[str]:
-    protected = ["自选股", "设置", "账号/登录", "AI 模型配置", "企业微信/个人微信会话", "当前在用的程序版本"]
+    protected = ["交易日历", "股票档案", "形态特征", "自选股", "设置", "账号/登录", "AI 模型配置", "企业微信/个人微信会话", "当前在用的程序版本"]
     if mode == "auto":
         protected.extend(["AI 前 20 榜单", "每日总结表"])
     return protected
@@ -360,6 +362,9 @@ def _delete_table_rows(session, cutoff: date, calc_cutoff: date | None, include_
         if label == "行情日线":
             q = session.query(model).filter(column_obj < cutoff)
         elif label == "补来的历史日线":
+            threshold = min(cutoff, calc_cutoff) if calc_cutoff is not None else cutoff
+            q = session.query(model).filter(column_obj < threshold)
+        elif label == "形态特征":
             threshold = min(cutoff, calc_cutoff) if calc_cutoff is not None else cutoff
             q = session.query(model).filter(column_obj < threshold)
         elif kind == "datetime":
