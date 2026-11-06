@@ -1,5 +1,5 @@
 import { ApiError } from '@/api/http'
-import type { Health, Settings, SummaryDocument, SyncStatus } from '@/api/types'
+import type { CouncilProgress, CouncilSession, Health, Settings, SummaryDocument, SyncStatus } from '@/api/types'
 import {
   DATA_DATE,
   buildScan,
@@ -199,6 +199,71 @@ function generateSummary(date: string): SummaryDocument {
   return document
 }
 
+const councilSessions: CouncilSession[] = [
+  {
+    id: 1,
+    stock_code: '600519',
+    stock_name: '贵州茅台',
+    eval_date: DATA_DATE,
+    status: 'done',
+    participants: [{ id: 'm1', name: 'DeepSeek', model: 'deepseek-chat' }, { id: 'm2', name: 'Qwen', model: 'qwen-plus' }],
+    evidence: { local: { code: '600519', name: '贵州茅台' }, web: [{ status: 'ok', source: 'eastmoney_spot' }] },
+    statements: [
+      { index: 0, speaker: 'DeepSeek', model: 'deepseek-chat', content: '本地行情与联网快照基本一致。', error: '' },
+      { index: 1, speaker: 'Qwen', model: 'qwen-plus', content: '{"up_probability":54,"confidence":"medium","summary":"测试总结"}', error: '' },
+    ],
+    conclusion: {
+      up_probability: 54,
+      confidence: 'medium',
+      verified: ['收盘价一致'],
+      conflicts_or_unverified: [],
+      agreements: ['本地与联网一致'],
+      disagreements: [],
+      bullish: ['收盘价一致'],
+      bearish: [],
+      risks: ['示例风险'],
+      cne6_notes: ['Momentum 未给出'],
+      summary: '模拟讨论：证据基本一致，次日上涨概率为估计。',
+      disclaimer: '这是讨论会估计，不计入系统综合评分，不是确定预测，不是投资建议。',
+    },
+    error: '',
+    created_at: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+  },
+]
+let councilProgress: CouncilProgress = { running: false, phase: 'idle', session_id: null, stock: null, stage: '空闲', current_model: '', done: 0, total: 0, last_status: '', error: '' }
+let councilOrder: string[] = ['m1', 'm2']
+
+function councilList(): { items: CouncilSession[] } {
+  return { items: councilSessions }
+}
+
+function councilRun(body: Record<string, unknown>): { session_id: number; started: boolean; participants: CouncilSession['participants'] } {
+  const code = String(body.code ?? '')
+  if (!/^\d{6}$/.test(code)) throw new ApiError(422, '股票代码应为 6 位数字')
+  const participants = [{ id: 'm1', name: 'DeepSeek', model: 'deepseek-chat' }, { id: 'm2', name: 'Qwen', model: 'qwen-plus' }]
+  councilProgress = { running: true, phase: 'verifying_web', session_id: 2, stock: code, stage: '联网核对', current_model: '', done: 0, total: 2, last_status: '正在联网核对', error: '' }
+  return { session_id: 2, started: true, participants }
+}
+
+function councilDetail(id: number): CouncilSession {
+  if (id === 1) return councilSessions[0]
+  return {
+    id,
+    stock_code: councilProgress.stock ?? '600519',
+    stock_name: '贵州茅台',
+    eval_date: DATA_DATE,
+    status: councilProgress.running ? 'running' : 'done',
+    participants: [{ id: 'm1', name: 'DeepSeek', model: 'deepseek-chat' }, { id: 'm2', name: 'Qwen', model: 'qwen-plus' }],
+    evidence: { local: { code: councilProgress.stock ?? '600519' }, web: [] },
+    statements: [],
+    conclusion: null,
+    error: '',
+    created_at: new Date().toISOString(),
+    finished_at: null,
+  }
+}
+
 function handle(method: string, pathname: string, params: URLSearchParams, init?: RequestInit): unknown {
   if (method === 'GET' && pathname === '/api/health') return { ...health }
   if (method === 'GET' && pathname === '/api/settings') return cloneSettings()
@@ -249,6 +314,18 @@ function handle(method: string, pathname: string, params: URLSearchParams, init?
   if (generate && method === 'POST') return generateSummary(generate[1] ?? '')
   const detail = pathname.match(/^\/api\/summaries\/(\d{4}-\d{2}-\d{2})$/)
   if (detail && method === 'GET') return summaryFor(detail[1] ?? '')
+  if (method === 'POST' && pathname === '/api/council/run') return councilRun(readBody(init) as Record<string, unknown>)
+  if (method === 'GET' && pathname === '/api/council/progress') return { ...councilProgress }
+  if (method === 'GET' && pathname === '/api/council/history') return councilList()
+  if (method === 'GET' && pathname === '/api/council') return councilList()
+  if (method === 'GET' && pathname === '/api/council/profile-order') return { profile_ids: councilOrder }
+  if (method === 'PUT' && pathname === '/api/council/profile-order') {
+    const body = readBody(init) as { profile_ids?: string[] }
+    councilOrder = body.profile_ids ?? councilOrder
+    return { profile_ids: councilOrder }
+  }
+  const councilDetailMatch = pathname.match(/^\/api\/council\/(\d+)$/)
+  if (councilDetailMatch && method === 'GET') return councilDetail(Number(councilDetailMatch[1] ?? 0))
   throw new ApiError(404, '接口不存在')
 }
 

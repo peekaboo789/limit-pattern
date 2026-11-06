@@ -20,6 +20,7 @@ HELP_BODY = "\n".join([
     "⭐ 自选：自选 / 异动 / 导出自选",
     "  加自选 代码或名称（如 加自选 600519、加自选 茅台、加自选 gzmt）",
     "  删自选 代码或名称（如 删自选 600519）",
+    "🤖 多模型：开会验证 代码或名称 / 多模型验证 代码或名称 / 讨论验证 代码或名称",
     "🖥 其他：状态 / 检查更新",
     "也可以直接点对话框底部的菜单。",
 ])
@@ -41,7 +42,9 @@ ALIASES = [
     ("切换AI", "切换AI"), ("切换模型", "切换AI"), ("AI列表", "切换AI"), ("模型列表", "切换AI"), ("模型", "切换AI"),
     ("采集当前行情", "采集"), ("采集", "采集"), ("同步行情", "同步"), ("同步", "同步"),
     ("今日总结", "总结"), ("总结", "总结"), ("系统状态", "状态"), ("状态", "状态"),
-    ("检查更新", "检查更新"), ("更新", "检查更新"), ("帮助", "帮助"), ("菜单", "帮助"),
+    ("检查更新", "检查更新"), ("更新", "检查更新"),
+    ("开会验证", "开会验证"), ("多模型验证", "开会验证"), ("讨论验证", "开会验证"),
+    ("帮助", "帮助"), ("菜单", "帮助"),
     ("信号报告", "信号报告"), ("信号有效性", "信号报告"), ("最新信号", "最新信号"), ("盯盘状态", "盯盘状态"),
 ]
 
@@ -223,6 +226,72 @@ def start_capture_ai(reply: Reply | None):
     return None
 
 
+def start_council(arg: str, reply: Reply | None = None):
+    """先回已开始，后台跑完再回一句简洁结果；完整过程在网页查看。"""
+    if not arg:
+        return "🤖 多模型讨论", "请带上股票代码或名称，例如：开会验证 600519"
+
+    def job():
+        from backend.app.services.council import service
+
+        try:
+            result = service.start(arg)
+        except (ValueError, LookupError) as exc:
+            return "❌ 讨论没开始", str(exc)
+        except RuntimeError as exc:
+            return "⏳ 讨论没开始", str(exc)
+        session_id = result["session_id"]
+        deadline = _time.monotonic() + 3600
+        row = None
+        while _time.monotonic() < deadline:
+            _time.sleep(3)
+            row = service.get(session_id)
+            if row and row["status"] in ("done", "failed"):
+                break
+        if row is None:
+            return "🤖 多模型讨论", "讨论状态没取到，请在网页查看"
+        if row["status"] == "failed":
+            return "❌ 多模型讨论", row.get("error") or "讨论失败"
+        conclusion = row.get("conclusion") or {}
+        prob = conclusion.get("up_probability")
+        confidence = {"low": "低", "medium": "中", "high": "高"}.get(conclusion.get("confidence"), "低")
+        summary = conclusion.get("summary") or ""
+        disagree = conclusion.get("disagreements") or []
+        risks = conclusion.get("risks") or []
+        parts = [
+            f"名称/代码：{row['stock_name']} {row['stock_code']}",
+            f"次日上涨概率：{prob}%（信心 {confidence}）",
+        ]
+        if summary:
+            parts.append(f"综述：{summary}")
+        if disagree:
+            parts.append("主要分歧：" + "；".join(disagree[:2]))
+        if risks:
+            parts.append("风险：" + "；".join(risks[:2]))
+        parts.append("这是讨论会估计，不计入综合评分，不是投资建议。完整过程请在网页「多模型讨论验证」查看。")
+        return "🤖 多模型讨论完成", "\n".join(parts)
+
+    if reply is None:
+        return job()
+
+    def run_job():
+        try:
+            reply(*job())
+        except Exception as exc:  # noqa: BLE001
+            reply("❌ 多模型讨论失败", str(exc)[:300])
+
+    participants = []
+    try:
+        from backend.app.services.council import service
+
+        profiles = service._valid_profiles(None)
+        participants = [f"{p['name'] or p['model']}" for p in profiles]
+    except Exception:  # noqa: BLE001
+        pass
+    start_text = "已开始多模型讨论验证，正在联网核对公开行情/新闻/公告；参会模型：" + ("、".join(participants) if participants else "使用已保存顺序") + "。完成后推结果给你"
+    threading.Thread(target=run_job, name="wecom-council", daemon=True).start()
+    return "⏳ 已开始", start_text
+
 def run(cmd: str, arg: str = "", reply: Reply | None = None, user: str = "") -> tuple[str, str]:
     from backend.app.services import watchlist_service as ws
 
@@ -235,6 +304,8 @@ def run(cmd: str, arg: str = "", reply: Reply | None = None, user: str = "") -> 
 
     if cmd == "帮助":
         return "📖 可用指令", HELP_BODY
+    if cmd == "开会验证":
+        return start_council(arg, reply)
     if cmd == "":
         return "🤔 没看懂", f"「{arg[:20]}」不是指令。\n{HELP_BODY}"
     if cmd == "榜单":

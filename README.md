@@ -14,6 +14,7 @@
 6. [配置](#配置)
 7. [目录结构](#目录结构)
 8. [接口](#接口)
+9. [多模型讨论验证](#多模型讨论验证)
 
 更细的口径在 [docs/rules.md](docs/rules.md)，字段和路径在 [docs/api.md](docs/api.md)，每日总结的 JSON 在 [docs/summary_schema.md](docs/summary_schema.md)。
 
@@ -297,6 +298,17 @@ AI 区：模型解读是算出来的状态，地址、模型和密钥都有才�
 
 端口默认 8765，被占用就往后加。没装 WebView2 时弹出中文说明，并改用系统浏览器打开同一个地址。数据、日志、总结和导出都在 `%LOCALAPPDATA%\LimitPattern`，不放在程序目录里，避免拷到只读位置后写不进去。
 
+## 多模型讨论验证
+
+新增「多模型讨论验证」：对一只股票，系统先做本地证据 + 联网核对，再让多个已配置模型按顺序发言，最后一位主席总结并估算下一交易日收盘上涨概率。
+
+- 概率含义：下一交易日收盘相对评估日收盘上涨的概率，不是涨停概率；0–100，旁标低/中/高信心。
+- 不计入系统综合评分，不改变榜单排名，也不是买入建议。
+- 至少两个已填密钥的模型才能开会。可在讨论页勾选并排序，最后一名是总结主席；默认顺序保存在 `ai_council_profile_ids`，不会切换当前 `ai_active_profile`。
+- 联网只做可验证的公开行情/新闻/公告快照，逐条带来源 URL、抓取时间和结构化摘要；失败会记录原因并继续，只用本地数据也能完成讨论。
+- 完整过程保存在 `ai_council_sessions`，可查询历史；不保存 API Key。
+- 官方 EXE / 在线更新升到 v0.7.11 即可使用。企业微信可发「开会验证 600519」「多模型验证 茅台」「讨论验证 000001」。
+
 ## 快速上手
 
 ### Windows 桌面程序
@@ -381,7 +393,7 @@ logs/launcher.log
 
 基址 `http://127.0.0.1:8765`。成功时直接返回 JSON。失败时 HTTP 4xx/5xx，正文是 `{"detail": "中文说明"}`。日期是 `YYYY-MM-DD`，股票代码是 6 位。
 
-常用路径：`/api/health`、`/api/settings`、`/api/sync`、`/api/sync/status`、`/api/limitups`、`/api/pool`、`/api/kline`、`/api/similarity`、`/api/scan`、`/api/summaries`、`/api/export`、`/api/ai-ranking`、`/api/ai-ranking/generate`、`/api/ai-ranking/dates`、`/api/monitor`、`/api/monitor/events`、`/api/calendar`、`/api/snapshot/status`、`/api/backtest`、`/api/next-day-pool`。
+常用路径：`/api/health`、`/api/settings`、`/api/sync`、`/api/sync/status`、`/api/limitups`、`/api/pool`、`/api/kline`、`/api/similarity`、`/api/scan`、`/api/summaries`、`/api/export`、`/api/ai-ranking`、`/api/ai-ranking/generate`、`/api/ai-ranking/dates`、`/api/monitor`、`/api/monitor/events`、`/api/calendar`、`/api/snapshot/status`、`/api/backtest`、`/api/next-day-pool`、`/api/council/run`、`/api/council/progress`、`/api/council/history`。
 
 每个路径的查询参数和字段见 [docs/api.md](docs/api.md)。
 
@@ -402,6 +414,10 @@ logs/launcher.log
 - 榜单表格可展开看分项、风险扣分和风险提示；TXT 导出包含这些列。每日总结新增「市场复盘」（情绪、高度、炸板、龙头形态）。
 
 > 本条是历史 changelog：该提示词权重框架（25/20/15/15/15/10）已不在运行路径。现行提示词用综合评分权重 35/20/15/15/15，模型只是解读器（见「AI 前 20 榜单」与 v0.7.10）。
+
+## v0.7.11
+
+- 新增多模型讨论验证：本地证据 + 联网核对 → 多模型顺序发言 → 主席估算次日上涨概率。讨论会结论不计入综合评分。
 
 ## v0.7.10
 

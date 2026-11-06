@@ -9,6 +9,7 @@ import PoolView from '@/views/PoolView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import SimilarityView from '@/views/SimilarityView.vue'
 import SummaryView from '@/views/SummaryView.vue'
+import CouncilView from '@/views/CouncilView.vue'
 import WatchlistView from '@/views/WatchlistView.vue'
 import { createRouter, createWebHistory } from 'vue-router'
 
@@ -36,6 +37,7 @@ export const router = createRouter({
     { path: '/signals', name: 'signals', component: SignalsView, meta: { title: '信号有效性' } },
     { path: '/pool', name: 'pool', component: PoolView, meta: { title: '涨停池' } },
     { path: '/summaries', name: 'summaries', component: SummaryView, meta: { title: '每日总结' } },
+    { path: '/council', name: 'council', component: CouncilView, meta: { title: '多模型讨论验证' } },
     { path: '/settings', name: 'settings', component: SettingsView, meta: { title: '设置' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

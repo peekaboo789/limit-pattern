@@ -28,6 +28,19 @@
 
 `GET /api/export?type=scan|similarity|pool|summary&date=YYYY-MM-DD` 返回带 BOM 的 UTF-8 文本，并在数据目录的 `exports/` 留一份副本。`similarity` 还要带 `code`。
 
+## 多模型讨论验证（v0.7.11）
+
+`POST /api/council/run`，正文 `{"code":"600519","date":"YYYY-MM-DD","profile_ids":["id1","id2"]}`。`date` 可省略（默认最新行情日），`profile_ids` 可省略（用设置里的 `ai_council_profile_ids`，否则按已填密钥配置顺序）。至少两个已填密钥模型，否则 422；已在跑返回 409。
+
+- `GET /api/council/progress`：`running`、`phase`、`session_id`、`stock`、`stage`、`current_model`、`done`、`total`、`last_status`、`error`。
+- `GET /api/council`：最新一场；`GET /api/council/{id}`：指定一场。
+- `GET /api/council/history?code=&date=&limit=`：历史记录。
+- `GET /api/council/profile-order` / `PUT /api/council/profile-order {"profile_ids":[...]}`：保存默认开会顺序。
+
+每场记录含股票、评估日、参会模型（id/name/model，不含密钥）、证据包、逐条发言、主席结构化结论、创建/完成时间。主席结论必含 `up_probability`（0–100，系统钳制）、`confidence`（low/medium/high）、`verified`、`conflicts_or_unverified`、`agreements`、`disagreements`、`bullish`、`bearish`、`risks`、`cne6_notes`、`summary`、`disclaimer`。
+
+讨论会概率不计入综合评分，不改变榜单排名；这是估计，不是买入建议。
+
 ## 前 20 榜单（v0.4.0：系统综合评分 + AI 解读）
 
 公式见 `docs/formulas/`。排名只看系统综合评分，AI 是解读器。

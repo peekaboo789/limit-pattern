@@ -335,6 +335,28 @@ class SignalOutcome(Base):
     settled_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
+class AiCouncilSession(Base):
+    """多模型讨论验证：证据包、逐条发言、主席结构化结论。只存公开字段，不存 API Key。"""
+
+    __tablename__ = "ai_council_sessions"
+    __table_args__ = (
+        Index("ix_council_stock_day", "stock_code", "eval_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(6), index=True)
+    stock_name: Mapped[str] = mapped_column(String(64), default="")
+    eval_date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    participants: Mapped[list] = mapped_column(JSON, default=list)
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    statements: Mapped[list] = mapped_column(JSON, default=list)
+    conclusion: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class SignalShadowStatus(Base):
     """信号上线状态：影子 / 达标 / 上线 / 降权 / 停用。审计轨迹只增不改。"""
 

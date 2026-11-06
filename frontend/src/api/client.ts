@@ -25,6 +25,9 @@ import type { CaptureStatus, ManualResult, WatchCandidate, WatchItem, WatchMonit
   SignalReport,
   DataCleanupPreview,
   DataCleanupJob,
+  CouncilSession,
+  CouncilParticipant,
+  CouncilProgress,
 } from './types'
 import { defaultExportFilename, filenameFromDisposition } from '@/utils/saveFile'
 
@@ -124,6 +127,30 @@ export const api = {
 
   aiRankingProgress: () =>
     request<{ running: boolean; done: number; total: number; failed: number; split?: number; scored?: number; batch_size?: number }>('/api/ai-ranking/progress', {}, 5000),
+
+  councilRun: (body: { code: string; date?: string; profile_ids?: string[] }) =>
+    request<{ session_id: number; started: boolean; participants: CouncilParticipant[] }>('/api/council/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }, 30000),
+
+  councilProgress: () =>
+    request<CouncilProgress>('/api/council/progress', {}, 5000),
+
+  councilHistory: (params: { code?: string; date?: string; limit?: number } = {}) =>
+    request<{ items: CouncilSession[] }>(`/api/council/history${query({ code: params.code, date: params.date, limit: params.limit })}`),
+
+  councilLatest: () => request<{ items: CouncilSession[] }>('/api/council'),
+
+  councilGet: (id: number) => request<CouncilSession>(`/api/council/${id}`),
+
+  councilProfileOrder: () => request<{ profile_ids: string[] }>('/api/council/profile-order'),
+
+  councilSaveProfileOrder: (profile_ids: string[]) =>
+    request<{ profile_ids: string[] }>('/api/council/profile-order', {
+      method: 'PUT',
+      body: JSON.stringify({ profile_ids }),
+    }),
 
   clusterStatus: () => request<{ available: boolean; message: string }>('/api/cluster/status'),
 

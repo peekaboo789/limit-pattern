@@ -20,6 +20,7 @@ const items = [
   { name: 'signals', label: '信号有效性', to: '/signals' },
   { name: 'pool', label: '涨停池', to: '/pool' },
   { name: 'summaries', label: '每日总结', to: '/summaries' },
+  { name: 'council', label: '多模型讨论验证', to: '/council' },
   { name: 'settings', label: '设置', to: '/settings' },
 ]
 

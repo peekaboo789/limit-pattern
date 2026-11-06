@@ -677,3 +677,60 @@ export interface SignalReport {
   by_type: Record<string, SignalTypeReport>
   hold_labels: string[]
 }
+
+export interface CouncilParticipant {
+  id: string
+  name: string
+  model: string
+}
+
+export interface CouncilConclusion {
+  up_probability: number
+  confidence: 'low' | 'medium' | 'high'
+  verified: string[]
+  conflicts_or_unverified: string[]
+  agreements: string[]
+  disagreements: string[]
+  bullish: string[]
+  bearish: string[]
+  risks: string[]
+  cne6_notes: string[]
+  summary: string
+  disclaimer: string
+}
+
+export interface CouncilStatement {
+  index: number
+  speaker: string
+  model: string
+  content: string
+  error: string
+}
+
+export interface CouncilSession {
+  id: number
+  stock_code: string
+  stock_name: string
+  eval_date: string
+  status: 'running' | 'done' | 'failed'
+  participants: CouncilParticipant[]
+  evidence: Record<string, unknown>
+  statements: CouncilStatement[]
+  conclusion: CouncilConclusion | null
+  error: string
+  created_at: string
+  finished_at: string | null
+}
+
+export interface CouncilProgress {
+  running: boolean
+  phase: string
+  session_id: number | null
+  stock: string | null
+  stage: string
+  current_model: string
+  done: number
+  total: number
+  last_status: string
+  error: string
+}
