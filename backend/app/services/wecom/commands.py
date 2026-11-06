@@ -288,7 +288,7 @@ def start_council(arg: str, reply: Reply | None = None):
         participants = [f"{p['name'] or p['model']}" for p in profiles]
     except Exception:  # noqa: BLE001
         pass
-    start_text = "已开始多模型讨论验证，正在联网核对公开行情/新闻/公告；参会模型：" + ("、".join(participants) if participants else "使用已保存顺序") + "。完成后推结果给你"
+    start_text = "已开始多模型讨论验证，正在多源核对行情/K线/资金/交易/新闻公告/财报；参会模型：" + ("、".join(participants) if participants else "使用已保存顺序") + "。完成后推结果给你"
     threading.Thread(target=run_job, name="wecom-council", daemon=True).start()
     return "⏳ 已开始", start_text
 

@@ -1,46 +1,149 @@
-"""多模型讨论的联网核对：只做可验证的公开行情/新闻/公告快照，逐源降级，不把 HTML 整页塞进提示词。
+"""多模型讨论的联网证据采集：多源、30 个自然日窗口、按类别结构化。
 
-所有结果都是结构化摘要，字段含 source/url/fetched_at/status/digest；拿不到就写失败原因。
-估值、市盈率、盈利、股东、北向资金等输入里没有的数据严禁从接口里推出来。
+优先走公开 JSON/数据接口，HTML 只在接口不可用时解析关键字段；每条证据带
+source/url/fetched_at/status/category/window。单源失败只降级，不让整场讨论崩掉。
+没有拿到的字段明确写「未取到」或保留 None，不把接口没有的数字推出来。
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-from urllib.parse import quote
+import json
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta
 
 import httpx
 
 USER_AGENT = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
 PUSH2_URL = "https://push2.eastmoney.com/api/qt/stock/get"
-NEWS_URL = "https://search-api-web.eastmoney.com/search/jsonp"
 KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+TRENDS_URL = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
+FFLOW_URL = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+NEWS_URL = "https://search-api-web.eastmoney.com/search/jsonp"
+ANN_URL = "https://np-anotice-stock.eastmoney.com/api/security/ann"
+DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+F10_MAIN_TARGET_URL = "https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/MainTargetAjaxNew"
+F10_ZY_URL = "https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/ZYZBAjaxNew"
+
+CATEGORY_LABELS = {
+    "market": "行情与图形",
+    "market_intraday": "分时/分钟",
+    "capital": "资金与交易",
+    "trade": "大宗/回购/增减持/解禁",
+    "news": "资讯快讯",
+    "announcement": "公司公告",
+    "research": "研报观点",
+    "financial": "最新财报与财务分析",
+}
 
 
 def _client():
-    # 每个调用方用自己的短连接，避免线程间复用复杂化；连接/读超时都收紧到秒级。
-    return httpx.Client(timeout=httpx.Timeout(connect=3.0, read=5.0, write=3.0, pool=3.0), headers=USER_AGENT, follow_redirects=True)
+    # 每类调用使用自己的短连接；超时收紧到秒级，防止一次开会卡死。
+    return httpx.Client(
+        timeout=httpx.Timeout(connect=3.0, read=6.0, write=3.0, pool=3.0),
+        headers=USER_AGENT,
+        follow_redirects=True,
+    )
 
 
 def _market(code: str) -> str:
     return "1" if code.startswith(("6", "9")) else "0"
 
 
-def _ok(status: str, source: str, url: str, digest: dict | list | str | None, fetched_at: str) -> dict:
-    return {"status": status, "source": source, "url": url, "fetched_at": fetched_at, "digest": digest}
-
-
-def _fail(source: str, url: str, reason: str, fetched_at: str) -> dict:
-    return {"status": "failed", "source": source, "url": url, "fetched_at": fetched_at, "digest": {"reason": reason[:240]}}
+def _secucode(code: str) -> str:
+    market = _market(code)
+    return f"{code}.{'SH' if market == '1' else 'SZ'}"
 
 
 def _now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
+def _ok(category: str, source: str, url: str, digest: dict | list | str | None, fetched_at: str, window: dict | None = None) -> dict:
+    return {
+        "status": "ok",
+        "category": category,
+        "source": source,
+        "url": url,
+        "fetched_at": fetched_at,
+        "window": window,
+        "digest": digest,
+    }
+
+
+def _empty(category: str, source: str, url: str, note: str, fetched_at: str, window: dict | None = None) -> dict:
+    return {
+        "status": "empty",
+        "category": category,
+        "source": source,
+        "url": url,
+        "fetched_at": fetched_at,
+        "window": window,
+        "digest": {"note": note},
+    }
+
+
+def _fail(category: str, source: str, url: str, reason: str, fetched_at: str, window: dict | None = None) -> dict:
+    return {
+        "status": "failed",
+        "category": category,
+        "source": source,
+        "url": url,
+        "fetched_at": fetched_at,
+        "window": window,
+        "digest": {"reason": reason[:240]},
+    }
+
+
+def _window(end: date | None) -> dict:
+    stop = end or date.today()
+    start = stop - timedelta(days=30)
+    return {"start": start.isoformat(), "end": stop.isoformat(), "days": 31, "natural_days": True}
+
+
+def _text(response: httpx.Response, limit: int = 300000) -> str:
+    return (response.text or "")[:limit]
+
+
+def _num(value):
+    if value in (None, "", "-", "--"):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _date_str(value) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    return text[:10] if text else None
+
+
+def _compact_float(value) -> float | None:
+    value = _num(value)
+    return None if value is None else round(value, 4)
+
+
+def _first_row(payload: dict, key: str) -> dict:
+    data = payload.get("data") or {}
+    rows = data.get(key) or []
+    return rows[0] if rows else {}
+
+
+def _request_json(client: httpx.Client, url: str, params: dict, source: str, category: str, window: dict | None = None) -> dict:
+    response = client.get(url, params=params)
+    if response.status_code != 200:
+        return _fail(category, source, url, f"HTTP {response.status_code}", _now(), window)
+    try:
+        return response.json()
+    except Exception as exc:  # noqa: BLE001
+        return _fail(category, source, url, f"响应不是 JSON：{type(exc).__name__}", _now(), window)
+
+
 def fetch_spot(code: str) -> dict:
     """公开行情快照：与本地最近收盘/涨跌核对用。"""
-    url = PUSH2_URL
+    category, source, url = "market", "eastmoney_spot", PUSH2_URL
     try:
         with _client() as client:
             response = client.get(url, params={
@@ -50,88 +153,495 @@ def fetch_spot(code: str) -> dict:
                 "invt": 2,
             })
         if response.status_code != 200:
-            return _fail("eastmoney_spot", url, f"HTTP {response.status_code}", _now())
+            return _fail(category, source, url, f"HTTP {response.status_code}", _now())
         data = (response.json() or {}).get("data")
         if not data:
-            return _fail("eastmoney_spot", url, "接口没有返回快照", _now())
+            return _empty(category, source, url, "接口没有返回快照", _now())
         digest = {
             "code": str(data.get("f57") or code),
             "name": data.get("f58"),
-            "price": data.get("f43"),
-            "pct_chg": data.get("f170"),
-            "high": data.get("f44"),
-            "low": data.get("f45"),
-            "open": data.get("f46"),
-            "pre_close": data.get("f60"),
+            "price": _compact_float(data.get("f43")),
+            "pct_chg": _compact_float(data.get("f170")),
+            "high": _compact_float(data.get("f44")),
+            "low": _compact_float(data.get("f45")),
+            "open": _compact_float(data.get("f46")),
+            "pre_close": _compact_float(data.get("f60")),
+            "volume": _compact_float(data.get("f47")),
+            "amount": _compact_float(data.get("f48")),
         }
-        return _ok("ok", "eastmoney_spot", url, digest, _now())
-    except Exception as exc:  # noqa: BLE001 - 单源失败不能带崩整场
-        return _fail("eastmoney_spot", url, f"{type(exc).__name__}: {exc}", _now())
+        return _ok(category, source, url, digest, _now())
+    except Exception as exc:  # noqa: BLE001
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now())
 
 
-def fetch_news(code: str, limit: int = 6) -> dict:
-    """最近公开新闻/快讯标题。只保留标题、时间、来源、链接，当公开表述证据。"""
-    url = NEWS_URL
-    keyword = code
+def fetch_kline(code: str, end: date | None = None, limit: int = 35) -> dict:
+    """近约 30 个交易日日 K，含数值序列，供前端画图和模型阅读。"""
+    category, source, url = "market", "eastmoney_kline", KLINE_URL
+    window = _window(end)
+    try:
+        start = date.fromisoformat(window["start"]) if end else date.today() - timedelta(days=45)
+        params = {
+            "secid": f"{_market(code)}.{code}",
+            "klt": 101,
+            "fqt": 0,
+            "beg": start.strftime("%Y%m%d"),
+            "end": (end or date.today()).strftime("%Y%m%d"),
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+            "lmt": limit,
+        }
+        with _client() as client:
+            response = client.get(url, params=params)
+        if response.status_code != 200:
+            return _fail(category, source, url, f"HTTP {response.status_code}", _now(), window)
+        lines = ((response.json() or {}).get("data") or {}).get("klines") or []
+        bars = []
+        for line in lines:
+            parts = str(line).split(",")
+            if len(parts) < 11:
+                continue
+            bars.append({
+                "date": parts[0][:10],
+                "open": _compact_float(parts[1]),
+                "close": _compact_float(parts[2]),
+                "high": _compact_float(parts[3]),
+                "low": _compact_float(parts[4]),
+                "volume": _compact_float(parts[5]),
+                "amount": _compact_float(parts[6]),
+                "pct_chg": _compact_float(parts[8]),
+                "turnover_rate": _compact_float(parts[10]),
+            })
+        if not bars:
+            return _empty(category, source, url, "未取到日K线", _now(), window)
+        return _ok(category, source, url, {"count": len(bars), "bars": bars}, _now(), window)
+    except Exception as exc:  # noqa: BLE001
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now(), window)
+
+
+def fetch_intraday(code: str, ndays: int = 5) -> dict:
+    """近几日分时/分钟摘要，只保留条数和最近几条，不把整个分钟序列塞进提示词。"""
+    category, source, url = "market_intraday", "eastmoney_trends", TRENDS_URL
     try:
         params = {
-            "cb": "jQuery",
-            "param": '{"uid":"","keyword":"%s","type":["cmsArticleWebOld"],"client":"web","clientType":"web","clientVersion":"curr","param":{"cmsArticleWebOld":{"searchScope":"default","sort":"default","pageIndex":1,"pageSize":%d,"preTag":"","postTag":""}}}' % (keyword, limit),
+            "secid": f"{_market(code)}.{code}",
+            "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+            "ndays": min(max(ndays, 1), 5),
+            "iscr": 0,
         }
+        with _client() as client:
+            response = client.get(url, params=params)
+        if response.status_code != 200:
+            return _fail(category, source, url, f"HTTP {response.status_code}", _now())
+        data = (response.json() or {}).get("data") or {}
+        lines = data.get("trends") or []
+        last = []
+        for line in lines[-5:]:
+            parts = str(line).split(",")
+            if len(parts) < 8:
+                continue
+            last.append({
+                "datetime": parts[0],
+                "price": _compact_float(parts[2]),
+                "pct_chg": _compact_float(parts[3]),
+                "volume": _compact_float(parts[5]),
+                "amount": _compact_float(parts[6]),
+                "avg_price": _compact_float(parts[7]),
+            })
+        if not lines:
+            return _empty(category, source, url, "未取到分时/分钟数据", _now())
+        return _ok(category, source, url, {"points": len(lines), "last": last}, _now())
+    except Exception as exc:  # noqa: BLE001
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now())
+
+
+def fetch_capital_flow(code: str, end: date | None = None, limit: int = 35) -> dict:
+    """东财主力/超大单/大单/中单/小单日度资金流序列。"""
+    category, source, url = "capital", "eastmoney_capital_flow", FFLOW_URL
+    window = _window(end)
+    try:
+        params = {
+            "secid": f"{_market(code)}.{code}",
+            "klt": 101,
+            "lmt": limit,
+            "fields1": "f1,f2,f3,f7",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63",
+        }
+        with _client() as client:
+            response = client.get(url, params=params)
+        if response.status_code != 200:
+            return _fail(category, source, url, f"HTTP {response.status_code}", _now(), window)
+        lines = ((response.json() or {}).get("data") or {}).get("klines") or []
+        rows = []
+        for line in lines:
+            parts = str(line).split(",")
+            if len(parts) < 10:
+                continue
+            rows.append({
+                "date": parts[0],
+                "main_net": _compact_float(parts[1]),
+                "small_net": _compact_float(parts[2]),
+                "medium_net": _compact_float(parts[3]),
+                "large_net": _compact_float(parts[4]),
+                "super_net": _compact_float(parts[5]),
+                "main_net_pct": _compact_float(parts[6]),
+                "small_net_pct": _compact_float(parts[7]),
+                "medium_net_pct": _compact_float(parts[8]),
+                "large_net_pct": _compact_float(parts[9]),
+                "super_net_pct": _compact_float(parts[10]),
+            })
+        if not rows:
+            return _empty(category, source, url, "未取到资金流向", _now(), window)
+        return _ok(category, source, url, {"count": len(rows), "rows": rows}, _now(), window)
+    except Exception as exc:  # noqa: BLE001
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now(), window)
+
+
+def _dc_filter(field: str, code: str) -> str:
+    return f'({field}="{code}")'
+
+
+def _datacenter_rows(client: httpx.Client, report_name: str, filter_text: str, page_size: int, columns: str = "ALL") -> tuple[dict | None, list]:
+    """通用东财 DataCenter 查询。返回 (payload, rows)，网络/格式错误由调用方处理。"""
+    response = client.get(DATACENTER_URL, params={
+        "sortColumns": "DATE,REPORT_DATE,TRADE_DATE",
+        "sortTypes": "-1,-1,-1",
+        "pageSize": page_size,
+        "pageNumber": 1,
+        "reportName": report_name,
+        "columns": columns,
+        "source": "WEB",
+        "client": "WEB",
+        "filter": filter_text,
+    })
+    if response.status_code != 200:
+        raise RuntimeError(f"HTTP {response.status_code}")
+    payload = response.json()
+    rows = ((payload or {}).get("result") or {}).get("data") or []
+    return payload, rows
+
+
+def _latest_known_dates(rows: list, keys: tuple[str, ...], max_rows: int = 12) -> list:
+    """从未知字段名里挑出最近日期和值，不要求精确列名；尽量把行压小。"""
+    out = []
+    for row in rows[:max_rows]:
+        if not isinstance(row, dict):
+            continue
+        date_value = next((row.get(k) for k in keys if row.get(k)), None)
+        item = {"date": _date_str(date_value)}
+        for key, value in row.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                item[key] = _compact_float(value)
+            elif isinstance(value, str) and len(value) <= 80:
+                item[key] = value
+        out.append(item)
+    return out
+
+
+def fetch_lhb(code: str, end: date | None = None) -> dict:
+    """龙虎榜，近 30 天若出现过。"""
+    category, source, url = "capital", "eastmoney_lhb", DATACENTER_URL
+    window = _window(end)
+    try:
+        with _client() as client:
+            _payload, rows = _datacenter_rows(
+                client,
+                "RPT_DAILYBILLBOARD_DETAILSNEW",
+                _dc_filter("SECURITY_CODE", code),
+                10,
+            )
+        if not rows:
+            return _empty(category, source, url, "近 30 天未取到龙虎榜记录", _now(), window)
+        digest = _latest_known_dates(rows, ("TRADE_DATE", "DATE"), 10)
+        return _ok(category, source, url, {"count": len(rows), "rows": digest}, _now(), window)
+    except Exception as exc:  # noqa: BLE001
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now(), window)
+
+
+def fetch_margin(code: str, end: date | None = None) -> dict:
+    """融资融券。接口字段不稳定，逐源降级。"""
+    category, source, url = "capital", "eastmoney_margin", DATACENTER_URL
+    window = _window(end)
+    try:
+        with _client() as client:
+            _payload, rows = _datacenter_rows(client, "RPTA_WEB_RZRQ_GGMX", _dc_filter("SCOND_CODE", code), 30)
+        if not rows:
+            return _empty(category, source, url, "未取到融资融券记录", _now(), window)
+        return _ok(category, source, url, {"count": len(rows), "rows": _latest_known_dates(rows, ("DATE", "TRADE_DATE"), 30)}, _now(), window)
+    except Exception as exc:  # noqa: BLE001
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now(), window)
+
+
+def fetch_northbound(code: str, end: date | None = None) -> dict:
+    """沪深港通/北向持股，接口可能不公开或字段不同，失败明确标出。"""
+    category, source, url = "capital", "eastmoney_northbound", DATACENTER_URL
+    window = _window(end)
+    reason = ""
+    for report_name, field in (
+        ("RPT_MUTUAL_STOCK_NORTHSTA", "SECURITY_CODE"),
+        ("RPT_MUTUAL_HOLDSTOCKNORTH_STA", "SECURITY_CODE"),
+        ("RPTA_WEB_HSGT_HOLD", "SECURITY_CODE"),
+    ):
+        try:
+            with _client() as client:
+                _payload, rows = _datacenter_rows(client, report_name, _dc_filter(field, code), 30)
+            if rows:
+                return _ok(category, source, url, {"count": len(rows), "rows": _latest_known_dates(rows, ("DATE", "TRADE_DATE"), 30)}, _now(), window)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{report_name}: {type(exc).__name__}: {exc}"
+    return _fail(category, source, url, reason or "未取到北向/沪深港通持股", _now(), window)
+
+
+def fetch_block_trade(code: str, end: date | None = None) -> dict:
+    category, source, url = "trade", "eastmoney_block_trade", DATACENTER_URL
+    window = _window(end)
+    try:
+        with _client() as client:
+            _payload, rows = _datacenter_rows(client, "RPT_DATA_BLOCKTRADE", _dc_filter("SECURITY_CODE", code), 20)
+        if not rows:
+            return _empty(category, source, url, "近 30 天未取到大宗交易", _now(), window)
+        return _ok(category, source, url, {"count": len(rows), "rows": _latest_known_dates(rows, ("TRADE_DATE", "DATE"), 20)}, _now(), window)
+    except Exception as exc:  # noqa: BLE001
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now(), window)
+
+
+def fetch_repurchase(code: str, end: date | None = None) -> dict:
+    category, source, url = "trade", "eastmoney_repurchase", DATACENTER_URL
+    window = _window(end)
+    reason = ""
+    for report_name, field in (
+        ("RPT_APP_STOCKREPURCHASE", "SECURITY_CODE"),
+        ("RPT_SHARE_BONUS_DETAIL", "SECURITY_CODE"),
+    ):
+        try:
+            with _client() as client:
+                _payload, rows = _datacenter_rows(client, report_name, _dc_filter(field, code), 20)
+            if rows:
+                return _ok(category, source, url, {"count": len(rows), "rows": _latest_known_dates(rows, ("DATE", "REPORT_DATE"), 20)}, _now(), window)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{report_name}: {type(exc).__name__}: {exc}"
+    return _fail(category, source, url, reason or "未取到回购记录", _now(), window)
+
+
+def fetch_holder_change(code: str, end: date | None = None) -> dict:
+    category, source, url = "trade", "eastmoney_holder_change", DATACENTER_URL
+    window = _window(end)
+    reason = ""
+    for report_name, field in (
+        ("RPT_EXECUTIVE_HOLD_DETAILS", "SECURITY_CODE"),
+        ("RPT_HOLDERS_CHANGE_BOARD", "SECURITY_CODE"),
+    ):
+        try:
+            with _client() as client:
+                _payload, rows = _datacenter_rows(client, report_name, _dc_filter(field, code), 20)
+            if rows:
+                return _ok(category, source, url, {"count": len(rows), "rows": _latest_known_dates(rows, ("DATE", "CHANGE_DATE"), 20)}, _now(), window)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{report_name}: {type(exc).__name__}: {exc}"
+    return _fail(category, source, url, reason or "未取到增减持记录", _now(), window)
+
+
+def fetch_unlock(code: str, end: date | None = None) -> dict:
+    category, source, url = "trade", "eastmoney_unlock", DATACENTER_URL
+    window = _window(end)
+    reason = ""
+    for report_name, field in (
+        ("RPT_LIFT_STOCKDETIAL", "SECURITY_CODE"),
+        ("RPT_LIFT_STAGE", "SECURITY_CODE"),
+    ):
+        try:
+            with _client() as client:
+                _payload, rows = _datacenter_rows(client, report_name, _dc_filter(field, code), 20)
+            if rows:
+                return _ok(category, source, url, {"count": len(rows), "rows": _latest_known_dates(rows, ("DATE", "UNFREEZE_DATE"), 20)}, _now(), window)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{report_name}: {type(exc).__name__}: {exc}"
+    return _fail(category, source, url, reason or "未取到解禁记录", _now(), window)
+
+
+def fetch_news(code: str, limit: int = 12) -> dict:
+    """近 30 天公开新闻/快讯标题、时间、来源、链接。"""
+    category, source, url = "news", "eastmoney_news", NEWS_URL
+    window = _window(None)
+    keyword = code
+    params = {
+        "cb": "jQuery",
+        "param": json.dumps({
+            "uid": "",
+            "keyword": keyword,
+            "type": ["cmsArticleWebOld"],
+            "client": "web",
+            "clientType": "web",
+            "clientVersion": "curr",
+            "param": {"cmsArticleWebOld": {"searchScope": "default", "sort": "default", "pageIndex": 1, "pageSize": limit, "preTag": "", "postTag": ""}},
+        }, ensure_ascii=False),
+    }
+    try:
         with _client() as client:
             response = client.get(url, params=params)
         text = response.text or ""
         if response.status_code != 200 or "jQuery(" not in text:
-            return _fail("eastmoney_news", url, f"HTTP {response.status_code}" if response.status_code != 200 else "接口返回格式异常", _now())
-        import json as _json
-
-        payload = _json.loads(text[text.find("(") + 1 : text.rfind(")")])
+            return _fail(category, source, url, f"HTTP {response.status_code}" if response.status_code != 200 else "接口返回格式异常", _now(), window)
+        payload = json.loads(text[text.find("(") + 1 : text.rfind(")")])
         rows = ((((payload or {}).get("result") or {}).get("cmsArticleWebOld") or [])[:limit])
-        digest = [
-            {
+        digest = []
+        for row in rows:
+            item = {
                 "title": str(row.get("title") or row.get("Title") or "").strip(),
-                "date": str(row.get("date") or row.get("Date") or ""),
+                "date": str(row.get("date") or row.get("Date") or "")[:10],
                 "source": str(row.get("mediaName") or row.get("source") or ""),
                 "url": str(row.get("url") or row.get("Url") or ""),
             }
-            for row in rows
-        ]
-        digest = [row for row in digest if row["title"] or row["url"]]
-        return _ok("ok", "eastmoney_news", url, digest, _now())
+            if item["title"] or item["url"]:
+                digest.append(item)
+        if not digest:
+            return _empty(category, source, url, "未取到新闻/快讯", _now(), window)
+        return _ok(category, source, url, {"count": len(digest), "items": digest}, _now(), window)
     except Exception as exc:  # noqa: BLE001
-        return _fail("eastmoney_news", url, f"{type(exc).__name__}: {exc}", _now())
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now(), window)
 
 
-def fetch_announcements(code: str) -> dict:
-    """公开公告标题。接口不稳定时明确返回“未取到公告”。"""
-    url = "https://np-anotice-stock.eastmoney.com/api/security/ann"
+def fetch_announcements(code: str, limit: int = 12) -> dict:
+    """近 30 天公司公告标题、日期、链接。"""
+    category, source, url = "announcement", "eastmoney_announcements", ANN_URL
+    window = _window(None)
     try:
         with _client() as client:
             response = client.get(url, params={
                 "sr": "-1",
-                "page_size": 5,
+                "page_size": limit,
                 "page_index": 1,
                 "ann_type": "A",
                 "client_source": "web",
                 "stock_list": code,
             })
         if response.status_code != 200:
-            return _fail("eastmoney_announcements", url, f"HTTP {response.status_code}", _now())
-        data = (response.json() or {}).get("data") or {}
-        rows = data.get("list") or []
-        digest = [
-            {
+            return _fail(category, source, url, f"HTTP {response.status_code}", _now(), window)
+        rows = ((response.json() or {}).get("data") or {}).get("list") or []
+        digest = []
+        for row in rows:
+            item = {
                 "title": str(row.get("title") or "").strip(),
                 "notice_date": str(row.get("notice_date") or "").split(" ")[0],
-                "url": str(row.get("art_code") or ""),
+                "url": f"https://data.eastmoney.com/notices/detail/{code}/{row.get('art_code') or ''}.html" if row.get("art_code") else "",
             }
-            for row in rows
-        ]
-        digest = [row for row in digest if row["title"]]
-        return _ok("ok" if digest else "empty", "eastmoney_announcements", url, digest or "未取到公告", _now())
+            if item["title"]:
+                digest.append(item)
+        if not digest:
+            return _empty(category, source, url, "未取到公告", _now(), window)
+        return _ok(category, source, url, {"count": len(digest), "items": digest}, _now(), window)
     except Exception as exc:  # noqa: BLE001
-        return _fail("eastmoney_announcements", url, f"{type(exc).__name__}: {exc}", _now())
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now(), window)
 
 
-def collect(code: str) -> list[dict]:
-    return [fetch_spot(code), fetch_news(code), fetch_announcements(code)]
+def fetch_research(code: str, limit: int = 12) -> dict:
+    """公开研报观点摘要。数据源字段不稳定时只保留标题/机构/日期。"""
+    category, source, url = "research", "eastmoney_research", DATACENTER_URL
+    window = _window(None)
+    reason = ""
+    for report_name, field in (
+        ("RPT_RESEARCH_REPORT", "SECURITY_CODE"),
+        ("RPT_RESEARCHREPORT_NEW", "SECURITY_CODE"),
+        ("RPT_RESEARCH_REPORT_ORG", "SECURITY_CODE"),
+    ):
+        try:
+            with _client() as client:
+                _payload, rows = _datacenter_rows(client, report_name, _dc_filter(field, code), limit)
+            if rows:
+                digest = []
+                for row in rows[:limit]:
+                    title = row.get("TITLE") or row.get("TITLE_NAME") or row.get("REPORT_TITLE") or ""
+                    org = row.get("ORG_NAME") or row.get("ORG") or row.get("SNAME") or ""
+                    pub_date = row.get("PUBLISH_DATE") or row.get("DATE") or row.get("REPORT_DATE") or ""
+                    if title or org:
+                        digest.append({"title": str(title), "org": str(org), "date": _date_str(pub_date)})
+                if digest:
+                    return _ok(category, source, url, {"count": len(digest), "items": digest}, _now(), window)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{report_name}: {type(exc).__name__}: {exc}"
+    return _fail(category, source, url, reason or "未取到研报观点", _now(), window)
+
+
+def fetch_financial_main(code: str) -> dict:
+    """最新一份定期报告的主要财务指标（报告期、披露日期、营收/净利润/同比等真实字段）。"""
+    category, source, url = "financial", "eastmoney_financial_main", F10_MAIN_TARGET_URL
+    window = _window(None)
+    try:
+        with _client() as client:
+            response = client.get(url, params={"type": 0, "code": _secucode(code)})
+        if response.status_code != 200:
+            return _fail(category, source, url, f"HTTP {response.status_code}", _now(), window)
+        payload = response.json()
+        rows = payload.get("jbmx") or payload.get("data") or []
+        latest = rows[0] if rows else {}
+        if not latest:
+            return _empty(category, source, url, "未取到最新定期报告财务数据", _now(), window)
+        digest = {
+            "report_date": _date_str(latest.get("REPORT_DATE") or latest.get("DATE")),
+            "disclosure_date": _date_str(latest.get("NOTICE_DATE") or latest.get("UPDATE_DATE")),
+            "revenue": _compact_float(latest.get("TOTALOPERATEREVE")),
+            "revenue_yoy": _compact_float(latest.get("TOTALOPERATEREVETZ")),
+            "net_profit": _compact_float(latest.get("PARENTNETPROFIT")),
+            "net_profit_yoy": _compact_float(latest.get("PARENTNETPROFITTZ")),
+            "deducted_profit": _compact_float(latest.get("KCFJCXSYJLR")),
+            "eps": _compact_float(latest.get("BASICEPS") or latest.get("EPSJB")),
+            "roe": _compact_float(latest.get("ROEJQ") or latest.get("WEIGHTAVG_ROE")),
+            "gross_margin": _compact_float(latest.get("XSMLL") or latest.get("GROSS_PROFIT_RATIO")),
+            "debt_asset_ratio": _compact_float(latest.get("ZCFZL") or latest.get("DEBT_ASSET_RATIO")),
+            "operating_cash_flow": _compact_float(latest.get("JYXJLLJE")),
+            "source_note": "字段来自公开 F10 定期报告接口，未取到的字段为 null，不表示 0。",
+        }
+        return _ok(category, source, url, {"rows_seen": len(rows), "latest": digest}, _now(), window)
+    except Exception as exc:  # noqa: BLE001
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now(), window)
+
+
+def fetch_financial_zy(code: str) -> dict:
+    """最新主要指标接口补充 EPS/ROE/毛利率等，若有则并入证据，失败不算整场失败。"""
+    category, source, url = "financial", "eastmoney_financial_zy", F10_ZY_URL
+    window = _window(None)
+    try:
+        with _client() as client:
+            response = client.get(url, params={"type": 0, "code": _secucode(code)})
+        if response.status_code != 200:
+            return _fail(category, source, url, f"HTTP {response.status_code}", _now(), window)
+        rows = (response.json() or {}).get("zyzb") or []
+        latest = rows[0] if rows else {}
+        if not latest:
+            return _empty(category, source, url, "未取到主要财务指标", _now(), window)
+        digest = {
+            "report_date": _date_str(latest.get("REPORT_DATE") or latest.get("date")),
+            "eps": _compact_float(latest.get("EPSJB") or latest.get("BASICEPS")),
+            "roe": _compact_float(latest.get("ROEJQ") or latest.get("WEIGHTAVG_ROE")),
+            "gross_margin": _compact_float(latest.get("XSMLL") or latest.get("GROSS_PROFIT_RATIO")),
+            "net_margin": _compact_float(latest.get("XSJLL") or latest.get("NET_PROFIT_RATIO")),
+            "debt_asset_ratio": _compact_float(latest.get("ZCFZL") or latest.get("DEBT_ASSET_RATIO")),
+        }
+        return _ok(category, source, url, {"latest": digest}, _now(), window)
+    except Exception as exc:  # noqa: BLE001
+        return _fail(category, source, url, f"{type(exc).__name__}: {exc}", _now(), window)
+
+
+def collect(code: str, end: date | None = None) -> list[dict]:
+    """并发克制地按类别采集；每个源失败只降级。单个源超时秒级，最多 4 个并发。"""
+    calls = [
+        (lambda c=code: fetch_spot(c)),
+        (lambda c=code: fetch_kline(c, end)),
+        (lambda c=code: fetch_intraday(c)),
+        (lambda c=code: fetch_capital_flow(c, end)),
+        (lambda c=code: fetch_lhb(c, end)),
+        (lambda c=code: fetch_margin(c, end)),
+        (lambda c=code: fetch_northbound(c, end)),
+        (lambda c=code: fetch_block_trade(c, end)),
+        (lambda c=code: fetch_repurchase(c, end)),
+        (lambda c=code: fetch_holder_change(c, end)),
+        (lambda c=code: fetch_unlock(c, end)),
+        (lambda c=code: fetch_news(c)),
+        (lambda c=code: fetch_announcements(c)),
+        (lambda c=code: fetch_research(c)),
+        (lambda c=code: fetch_financial_main(c)),
+        (lambda c=code: fetch_financial_zy(c)),
+    ]
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(call) for call in calls]
+        return [future.result() for future in futures]

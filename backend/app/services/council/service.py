@@ -19,7 +19,7 @@ from backend.app.providers.markets import classify, is_in_scope, normalize_code,
 from backend.app.services import watchlist_service as ws
 from backend.app.services.ai_context import load_bars, market_context, stock_metrics
 from backend.app.services.score_model import QUANT_STANDARD_TEXT
-from backend.app.services.ranking_service import get_ranking
+from backend.app.services.ranking_service import get_ranking, pick_history
 from backend.app.services.similarity_service import similar_to
 from backend.app.core import ai_profiles
 
@@ -136,7 +136,7 @@ def _stock_name(session, code: str) -> str:
     return ws._result({"code": code, "name": ""}).get("name", "")
 
 
-def _local_bars(session, code: str, day: date, count: int = 6) -> list[dict]:
+def _local_bars(session, code: str, day: date, count: int = 35) -> list[dict]:
     rows = (
         session.query(DailyQuote)
         .filter(DailyQuote.stock_code == code, DailyQuote.trade_date <= day)
@@ -157,9 +157,50 @@ def _local_bars(session, code: str, day: date, count: int = 6) -> list[dict]:
             "volume": row.volume,
             "amount": row.amount,
             "turnover_rate": row.turnover_rate,
+            "amount_estimated": bool(row.amount_estimated),
+            "source": row.source,
             "is_limit_up": bool(row.is_limit_up),
+            "is_limit_down": bool(row.is_limit_down),
+            "limit_up_price": row.limit_up_price,
         })
     return out
+
+
+def _recent_trading_dates(session, day: date, count: int) -> list:
+    from backend.app.services.retention import quote_dates
+
+    dates = [d for d in quote_dates(session, as_of=day) if d <= day]
+    return dates[-count:] if dates else []
+
+
+def _local_history(session, code: str, day: date) -> dict:
+    """历史成功率/上榜次日表现，若历史榜单里有这只股票；没有就写清楚。"""
+    try:
+        from backend.app.services.ranking_service import pick_history
+
+        return pick_history(session, day, [code]).get(code) or {"available": False, "note": "历史榜单未收录这只股票"}
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "note": f"历史成功率未取到：{type(exc).__name__}: {exc}"}
+
+
+def _chart_bars(bars: list[dict]) -> list[dict]:
+    return [
+        {
+            "date": b.get("date"),
+            "open": b.get("open"),
+            "high": b.get("high"),
+            "low": b.get("low"),
+            "close": b.get("close"),
+            "volume": b.get("volume"),
+            "amount": b.get("amount"),
+            "amount_estimated": bool(b.get("amount_estimated")),
+            "pct_chg": b.get("pct_chg"),
+            "turnover_rate": b.get("turnover_rate"),
+            "is_limit_up": bool(b.get("is_limit_up")),
+        }
+        for b in bars
+        if b.get("date") and b.get("close") is not None
+    ]
 
 
 def _local_similarity(session, code: str, day: date) -> dict:
@@ -191,7 +232,9 @@ def build_evidence(session, code: str, name: str, day: date) -> dict:
     ranking = _local_ranking(session, day)
     rank_item = _rank_item(ranking, code) if ranking else None
     formula = (rank_item or {}).get("formula") or {}
-    local_bars = _local_bars(session, code, day)
+    local_bars = _local_bars(session, code, day, count=35)
+    history = _local_history(session, code, day)
+    dates30 = _recent_trading_dates(session, day, 30)
     return {
         "evaluated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "local": {
@@ -205,7 +248,12 @@ def build_evidence(session, code: str, name: str, day: date) -> dict:
             "similarity": sim,
             "in_ranking": bool(rank_item),
             "formula": formula,
+            "history": history,
+            "bars_30d": local_bars[-30:],
+            "chart": {"source": "local", "bars": _chart_bars(local_bars[-30:])},
         },
+        "window": {"start": (dates30[0].isoformat() if dates30 else day.isoformat()), "end": day.isoformat(),
+                   "trading_days": len(dates30), "note": "本地 30 个交易日证据窗口"},
         "market": market,
         "is_limit_up": bool(local_bars and local_bars[-1].get("is_limit_up")),
     }
@@ -217,6 +265,7 @@ def _evidence_text(code: str, name: str, day: date, evidence: dict, web: list[di
     local = evidence.get("local") or {}
     metrics = local.get("metrics") or {}
     sim = local.get("similarity") or {}
+    history = local.get("history") or {}
     line = stock_line({
         "code": code,
         "name": name,
@@ -234,6 +283,7 @@ def _evidence_text(code: str, name: str, day: date, evidence: dict, web: list[di
     # 榜单/相似度给不出时不要硬塞“今日”，用 stock_line 的 is_limit_up 由公式决定。
     lines = [
         f"评估日 {day.isoformat()}，股票 {code} {name}（{local.get('exchange')} {local.get('board') or ''}）。",
+        f"证据窗口：本地最近 {len(local.get('bars_30d') or [])} 个交易日；联网采集窗口默认近 30 个自然日。",
         LEGEND,
         line,
     ]
@@ -244,7 +294,15 @@ def _evidence_text(code: str, name: str, day: date, evidence: dict, web: list[di
     else:
         lines.append("市场环境：-")
     lines.append("\n[本地相似度] " + json.dumps(sim, ensure_ascii=False))
-    lines.append("\n[联网核对]")
+    lines.append("\n[本地历史表现] " + json.dumps(history, ensure_ascii=False))
+    lines.append("\n[本地最近 30 个交易日 K 线/数值]")
+    for bar in (local.get("bars_30d") or [])[-30:]:
+        lines.append(
+            f"{bar.get('date')} O{bar.get('open')} H{bar.get('high')} L{bar.get('low')} C{bar.get('close')} "
+            f"涨跌{bar.get('pct_chg')} 量{bar.get('volume')} 额{bar.get('amount')} 换手{bar.get('turnover_rate')} "
+            f"涨停{bar.get('is_limit_up')} 跌停{bar.get('is_limit_down')}"
+        )
+    lines.append("\n[联网证据] 按类别列出；status=failed/empty 是未取到，不是事实为 0。")
     for item in web:
         lines.append(json.dumps(item, ensure_ascii=False))
     return "\n".join(lines)
@@ -254,7 +312,8 @@ def _system_prompt() -> str:
     return (
         "你是一名与会分析师，只依据系统给出的证据包和此前发言发表看法。"
         "不得编造输入中没有的估值、市盈率、盈利、股东、北向资金或基本面数据；不得给买入/卖出建议或目标价；不得宣称必然涨停。"
-        "发现本地行情与联网快照不一致要明确指出。"
+        "发现本地行情与联网快照不一致要明确指出。已抓到的财报/资金/交易/新闻公告数字必须带来源、URL、抓取时间和报告期后才能引用。"
+        "证据中 status=failed 或 empty 的类别表示系统未取到，要写「未取到」，不能当作已验证事实。"
         + QUANT_STANDARD_TEXT
     )
 
@@ -263,6 +322,7 @@ def _chair_system_prompt() -> str:
     return (
         "你是讨论会主席，负责总结并估算下一交易日收盘相对评估日收盘上涨的概率。"
         "只依据证据包和全部发言；不得编造输入中没有的数据；不得给买入/卖出建议或目标价；不得宣称必然涨停。"
+        "已抓到的财报/资金/交易/新闻公告数字必须带来源和报告期；未取到的估值、市盈率、盈利预测必须写「未取到」，不能当成已验证事实。"
         + QUANT_STANDARD_TEXT
     )
 
@@ -417,16 +477,27 @@ def _update_progress(**kwargs) -> None:
 
 
 def _run(session_id: int, code: str, name: str, day: date, profiles: list[dict], evidence: dict) -> None:
+    statements: list[dict] = []
     try:
-        _update_progress(phase="verifying_web", stage="联网核对", last_status="正在联网核对公开行情/新闻/公告")
+        _update_progress(phase="verifying_web", stage="联网核对", last_status="正在多源核对行情/K线/资金/交易/新闻公告/财报")
         from backend.app.services.council import web_evidence
 
-        web = web_evidence.collect(code)
+        try:
+            web = web_evidence.collect(code, day)
+        except Exception as exc:  # noqa: BLE001 - 采集层异常也不能丢整场，保留本地证据继续
+            web = [{
+                "status": "failed",
+                "category": "collection",
+                "source": "council_web_collect",
+                "url": "",
+                "fetched_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "window": None,
+                "digest": {"reason": f"联网采集异常：{type(exc).__name__}: {exc}"[:240]},
+            }]
         evidence = dict(evidence)
         evidence["web"] = web
         evidence_text = _evidence_text(code, name, day, evidence, web)
 
-        statements: list[dict] = []
         total = len(profiles)
         for index, profile in enumerate(profiles):
             is_chair = index == total - 1

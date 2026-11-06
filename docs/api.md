@@ -37,7 +37,12 @@
 - `GET /api/council/history?code=&date=&limit=`：历史记录。
 - `GET /api/council/profile-order` / `PUT /api/council/profile-order {"profile_ids":[...]}`：保存默认开会顺序。
 
-每场记录含股票、评估日、参会模型（id/name/model，不含密钥）、证据包、逐条发言、主席结构化结论、创建/完成时间。主席结论必含 `up_probability`（0–100，系统钳制）、`confidence`（low/medium/high）、`verified`、`conflicts_or_unverified`、`agreements`、`disagreements`、`bullish`、`bearish`、`risks`、`cne6_notes`、`summary`、`disclaimer`。
+每场记录含股票、评估日、参会模型（id/name/model，不含密钥）、证据包、逐条发言、主席结构化结论、创建/完成时间。证据包分两层：
+
+- `local`：本地日 K、近 30 个交易日数值序列、指标、相似度、系统综合评分（若有）、历史成功率/上榜表现（若有）、市场环境；`local.chart.bars` 为前端可画的 30 日 K 线数据。
+- `web`：近 30 个自然日的多源结构化证据，每条带 `category`（market/market_intraday/capital/trade/news/announcement/research/financial）、`source`、`url`、`fetched_at`、`window`、`status`（ok/empty/failed）和 `digest`。失败/空源会明确记录原因，不编造缺失字段。
+
+主席结论必含 `up_probability`（0–100，系统钳制）、`confidence`（low/medium/high）、`verified`、`conflicts_or_unverified`、`agreements`、`disagreements`、`bullish`、`bearish`、`risks`、`cne6_notes`、`summary`、`disclaimer`。
 
 讨论会概率不计入综合评分，不改变榜单排名；这是估计，不是买入建议。
 

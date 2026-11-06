@@ -207,7 +207,45 @@ const councilSessions: CouncilSession[] = [
     eval_date: DATA_DATE,
     status: 'done',
     participants: [{ id: 'm1', name: 'DeepSeek', model: 'deepseek-chat' }, { id: 'm2', name: 'Qwen', model: 'qwen-plus' }],
-    evidence: { local: { code: '600519', name: '贵州茅台' }, web: [{ status: 'ok', source: 'eastmoney_spot' }] },
+    evidence: {
+      local: {
+        code: '600519',
+        name: '贵州茅台',
+        exchange: 'SSE',
+        board: 'main_board',
+        as_of: DATA_DATE,
+        chart: {
+          source: 'local',
+          bars: Array.from({ length: 20 }, (_, i) => {
+            const base = 1680 + i
+            const open = base + (i % 2 ? 4 : -3)
+            const close = base + (i % 3 ? 5 : -2)
+            return {
+              date: `2026-0${6 + Math.floor(i / 9)}-${String((i % 9) + 2).padStart(2, '0')}`,
+              open,
+              high: Math.max(open, close) + 6,
+              low: Math.min(open, close) - 6,
+              close,
+              volume: 18000000 + i * 400000,
+              amount: 3.1e9 + i * 4e7,
+              pct_chg: i % 4 === 0 ? -0.6 : 0.7,
+              turnover_rate: 0.2 + (i % 5) / 100,
+              is_limit_up: false,
+            }
+          }),
+        },
+        bars_30d: [],
+        history: { available: true, picks: 4, hit: 2, miss: 1, pending: 1 },
+      },
+      market: { date: DATA_DATE, stocks: 5123, up: 2980, down: 1950, limit_up: 61, limit_down: 3, broken: 9 },
+      web: [
+        { status: 'ok', category: 'market', source: 'eastmoney_spot', url: 'https://example.com/spot', fetched_at: new Date().toISOString(), window: { start: '2026-10-08', end: '2026-11-07', days: 31 }, digest: { code: '600519', name: '贵州茅台', price: 1694.05, pct_chg: 0.86 } },
+        { status: 'ok', category: 'capital', source: 'eastmoney_capital_flow', url: 'https://example.com/fflow', fetched_at: new Date().toISOString(), window: { start: '2026-10-08', end: '2026-11-07', days: 31 }, digest: { count: 20, rows: [{ date: '2026-11-06', main_net: 32400000, super_net: 18000000 }] } },
+        { status: 'empty', category: 'trade', source: 'eastmoney_block_trade', url: 'https://example.com/block', fetched_at: new Date().toISOString(), window: { start: '2026-10-08', end: '2026-11-07', days: 31 }, digest: { note: '近 30 天未取到大宗交易' } },
+        { status: 'ok', category: 'news', source: 'eastmoney_news', url: 'https://example.com/news', fetched_at: new Date().toISOString(), window: { start: '2026-10-08', end: '2026-11-07', days: 31 }, digest: { count: 3, items: [{ title: '示例新闻标题', date: '2026-11-06', source: '东方财富', url: 'https://example.com/a' }] } },
+        { status: 'ok', category: 'financial', source: 'eastmoney_financial_main', url: 'https://example.com/f10', fetched_at: new Date().toISOString(), window: { start: '2026-10-08', end: '2026-11-07', days: 31 }, digest: { latest: { report_date: '2026-09-30', disclosure_date: '2026-10-25', revenue: 92_760_000_000, revenue_yoy: 8.4, net_profit: 41_300_000_000, net_profit_yoy: 7.2, eps: 32.85, roe: 24.1, gross_margin: 91.9, debt_asset_ratio: 24.3 } } },
+      ],
+    },
     statements: [
       { index: 0, speaker: 'DeepSeek', model: 'deepseek-chat', content: '本地行情与联网快照基本一致。', error: '' },
       { index: 1, speaker: 'Qwen', model: 'qwen-plus', content: '{"up_probability":54,"confidence":"medium","summary":"测试总结"}', error: '' },

@@ -714,7 +714,7 @@ export interface CouncilSession {
   eval_date: string
   status: 'running' | 'done' | 'failed'
   participants: CouncilParticipant[]
-  evidence: Record<string, unknown>
+  evidence: CouncilEvidence
   statements: CouncilStatement[]
   conclusion: CouncilConclusion | null
   error: string
@@ -733,4 +733,52 @@ export interface CouncilProgress {
   total: number
   last_status: string
   error: string
+}
+
+export interface CouncilBar {
+  date: string
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number | null
+  volume: number | null
+  amount: number | null
+  amount_estimated?: boolean
+  pct_chg: number | null
+  turnover_rate?: number | null
+  is_limit_up?: boolean
+}
+
+export interface CouncilChart {
+  source: string
+  bars: CouncilBar[]
+}
+
+export interface CouncilLocalEvidence {
+  code: string
+  name?: string
+  exchange?: string | null
+  board?: string | null
+  as_of?: string
+  bars_30d?: CouncilBar[]
+  chart?: CouncilChart
+  history?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+export interface CouncilEvidence {
+  local?: CouncilLocalEvidence
+  market?: Record<string, unknown>
+  web?: CouncilWebEvidence[]
+  [key: string]: unknown
+}
+
+export interface CouncilWebEvidence {
+  status: 'ok' | 'empty' | 'failed'
+  category?: string
+  source: string
+  url?: string
+  fetched_at?: string
+  window?: { start?: string; end?: string; days?: number } | null
+  digest?: unknown
 }

@@ -90,7 +90,7 @@ def test_failed_web_still_uses_local(client, monkeypatch):
     _seed_quotes()
     from backend.app.services.council import service as council_service
 
-    def fake_collect(code):
+    def fake_collect(code, end=None):
         return [{"status": "failed", "source": "eastmoney_spot", "url": "https://example", "fetched_at": "now", "digest": {"reason": "模拟失败"}}]
 
     from backend.app.services.council import web_evidence as we_module
@@ -246,3 +246,103 @@ def test_web_evidence_mocked(monkeypatch):
     out = web_evidence.fetch_spot("600519")
     assert out["status"] == "failed"
     assert "no network" in out["digest"]["reason"]
+
+
+def _fake_response_json(payload, status_code: int = 200):
+    class Response:
+        def __init__(self, payload, status_code):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = payload if isinstance(payload, str) else ""
+        def json(self):
+            if isinstance(self._payload, str):
+                raise ValueError("not json")
+            return self._payload
+    return Response(payload, status_code)
+
+
+def test_collect_category_coverage_and_fallback(monkeypatch):
+    """16 类任务都应被调用；单个源失败或空结果不影响其它类别。"""
+    calls = []
+
+    def fake_client(*args, **kwargs):
+        calls.append(kwargs)
+        return _FakeClientWithDispatch()
+
+    class _FakeClientWithDispatch:
+        def __init__(self):
+            self.calls = 0
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def get(self, url, params=None):
+            self.calls += 1
+            if "fflow" in url:
+                return _fake_response_json({"data": {"klines": ["2026-11-06,1,2,3,4,5,6,7,8,9,10,11"]}})
+            if "datacenter-web" in url:
+                raise httpx.ConnectTimeout("timeout")
+            if "np-anotice" in url:
+                return _fake_response_json({"data": {"list": []}})
+            if "trends2" in url:
+                return _fake_response_json({"data": {"trends": []}})
+            if "F10" in url or "emweb" in url:
+                return _fake_response_json({"jbmx": [{"REPORT_DATE": "2026-09-30", "NOTICE_DATE": "2026-10-25", "TOTALOPERATEREVE": 1, "PARENTNETPROFIT": 2}], "zyzb": [{"REPORT_DATE": "2026-09-30", "EPSJB": 3}]})
+            if "kline" in url:
+                return _fake_response_json({"data": {"klines": ["2026-11-06,1,2,3,4,5,6,7,8,9,10,11"]}})
+            return _fake_response_json({"data": {}})
+
+    monkeypatch.setattr(web_evidence.httpx, "Client", fake_client)
+    items = web_evidence.collect("600519", date(2026, 11, 6))
+    assert len(items) == 16
+    statuses = [item["status"] for item in items]
+    assert statuses.count("ok") >= 3
+    assert "empty" in statuses
+    assert "failed" in statuses
+    assert any(item.get("category") == "market" for item in items)
+    assert any(item.get("category") == "capital" for item in items)
+    assert any(item.get("category") == "financial" for item in items)
+
+
+def test_collect_date_windows(monkeypatch):
+    """end 参数应落到近 30 个自然日窗口。"""
+    captured = {}
+
+    def fake_client(*args, **kwargs):
+        return _FakeClientWithCapture(captured)
+
+    class _FakeClientWithCapture:
+        def __init__(self, captured):
+            self.captured = captured
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def get(self, url, params=None):
+            self.captured[url] = params or {}
+            if "kline" in url:
+                return _fake_response_json({"data": {"klines": ["2026-11-06,1,2,3,4,5,6,7,8,9,10,11"]}})
+            return _fake_response_json({"data": {}})
+
+    monkeypatch.setattr(web_evidence.httpx, "Client", fake_client)
+    items = web_evidence.collect("600519", date(2026, 11, 6))
+    window = items[1]["window"]
+    assert window is not None
+    assert window["start"] == "2026-10-07"
+    assert window["end"] == "2026-11-06"
+    assert window["days"] == 31
+    assert any("kline" in url for url in captured)
+
+
+def test_build_evidence_chart_inputs(client):
+    """本地证据应带 30 日 bars 和前端可直接画的 chart bars。"""
+    day = _seed_quotes()
+    with session_scope() as session:
+        ev = service.build_evidence(session, "600519", "贵州茅台", day)
+    bars = ev["local"]["bars_30d"]
+    chart = ev["local"]["chart"]["bars"]
+    assert bars
+    assert len(bars) <= 30
+    assert chart
+    assert all({"date", "open", "high", "low", "close", "volume", "amount", "pct_chg"} <= set(bar) for bar in chart)
+    assert chart[0]["amount_estimated"] in (True, False)

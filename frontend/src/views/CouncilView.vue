@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { api, ApiError } from '@/api/client'
 import { request } from '@/api/http'
-import type { CouncilSession, CouncilProgress } from '@/api/types'
+import type { CouncilBar, CouncilEvidence, CouncilSession, CouncilProgress, CouncilWebEvidence } from '@/api/types'
+import KlineChart from '@/components/KlineChart.vue'
 import { computed, onMounted, ref } from 'vue'
 
 interface Prof { id: string; name: string; model: string; api_key_set: boolean; active: boolean }
@@ -122,6 +123,35 @@ function joinList(values: string[] | undefined) {
   return values?.length ? values.join('；') : '—'
 }
 
+function categoryLabel(category: string | undefined) {
+  return category ? ({ market: '行情与图形', market_intraday: '分时/分钟', capital: '资金与交易', trade: '大宗/回购/增减持/解禁', news: '资讯快讯', announcement: '公司公告', research: '研报观点', financial: '最新财报与财务分析' } as Record<string, string>)[category] ?? category : '其他'
+}
+
+function statusLabel(status: string) {
+  return status === 'ok' ? '已取到' : status === 'empty' ? '未取到' : '失败'
+}
+
+function groupedWeb(evidence: CouncilEvidence | null | undefined): [string, CouncilWebEvidence[]][] {
+  const groups = new Map<string, CouncilWebEvidence[]>()
+  for (const item of evidence?.web ?? []) {
+    const key = item.category ?? 'other'
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(item)
+  }
+  return [...groups.entries()].sort((a, b) => (a[0] === 'market' ? -1 : b[0] === 'market' ? 1 : a[0].localeCompare(b[0])))
+}
+
+function chartBars(evidence: CouncilEvidence | null | undefined): CouncilBar[] {
+  return evidence?.local?.chart?.bars ?? evidence?.local?.bars_30d ?? []
+}
+
+function digestText(digest: unknown): string {
+  if (digest == null) return '—'
+  if (typeof digest === 'string') return digest
+  if (Array.isArray(digest)) return digest.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join('；')
+  return JSON.stringify(digest, null, 2)
+}
+
 onMounted(async () => {
   await loadProfiles()
   await loadOrder()
@@ -229,8 +259,31 @@ onMounted(async () => {
         <p v-if="statement.error" class="alert">{{ statement.error }}</p>
         <pre v-else>{{ statement.content }}</pre>
       </div>
+      <h4>证据包</h4>
+      <div v-if="chartBars(row.evidence).length" class="chart-box">
+        <div class="chart-head">
+          <span>近 30 个交易日 K 线</span>
+          <span class="muted">{{ row.evidence.local?.chart?.source || '本地数据' }} · {{ chartBars(row.evidence).length }} 根</span>
+        </div>
+        <KlineChart :bars="chartBars(row.evidence) as any" :height="340" />
+      </div>
+      <div v-else class="hint">没有可展示的 K 线数值序列。</div>
+
+      <div v-for="[category, items] in groupedWeb(row.evidence)" :key="category" class="evidence-group">
+        <h5>{{ categoryLabel(category) }} <span class="muted">{{ items.length }} 源</span></h5>
+        <div v-for="(item, itemIndex) in items" :key="itemIndex" class="evidence-item">
+          <div class="evidence-item-head">
+            <b>{{ item.source }}</b>
+            <span class="status" :class="item.status">{{ statusLabel(item.status) }}</span>
+            <span class="muted">{{ item.fetched_at?.slice(0, 19).replace('T', ' ') || '—' }}</span>
+          </div>
+          <div v-if="item.window" class="muted">窗口：{{ item.window.start }} 至 {{ item.window.end }}（{{ item.window.days }} 天）</div>
+          <pre class="evidence">{{ digestText(item.digest) }}</pre>
+        </div>
+      </div>
+
       <details>
-        <summary>证据来源</summary>
+        <summary>完整证据 JSON</summary>
         <pre class="evidence">{{ JSON.stringify(row.evidence, null, 2) }}</pre>
       </details>
     </div>
@@ -249,4 +302,14 @@ onMounted(async () => {
 .statement { padding: 8px 0; border-bottom: 1px solid rgba(127,127,127,0.18); }
 pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 6px 0 0; }
 .evidence { max-height: 300px; overflow: auto; background: rgba(0,0,0,0.02); padding: 8px; }
+.chart-box { margin: 10px 0; padding: 8px; border: 1px solid rgba(127,127,127,0.25); border-radius: 4px; }
+.chart-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; margin-bottom: 6px; }
+.evidence-group { margin: 12px 0; }
+.evidence-group h5 { margin: 0 0 6px; font-size: 14px; }
+.evidence-item { padding: 8px; margin-bottom: 8px; background: rgba(0,0,0,0.02); border-radius: 4px; }
+.evidence-item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.status { padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+.status.ok { background: rgba(34,197,94,0.15); color: #16a34a; }
+.status.empty { background: rgba(234,179,8,0.12); color: #ca8a04; }
+.status.failed { background: rgba(239,68,68,0.12); color: #dc2626; }
 </style>
