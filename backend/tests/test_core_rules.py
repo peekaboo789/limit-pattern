@@ -17,6 +17,7 @@ from backend.app.services.score_model import (
     ITEMS,
     PROMPT_RUBRIC,
     PUBLIC_TEXTS,
+    QUANT_STANDARD_TEXT,
     WEIGHT_CAPITAL,
     WEIGHT_HISTORY,
     WEIGHT_PATTERN,
@@ -311,6 +312,13 @@ def test_formula_text_mentions_only_the_fixed_weights():
     for text in PUBLIC_TEXTS:
         assert "*" not in text
         assert "`" not in text
+    assert "解读器" in PROMPT_RUBRIC and "不要重新计算" in PROMPT_RUBRIC
+    assert "MSCI Barra" in PROMPT_RUBRIC and "CNE6" in PROMPT_RUBRIC
+    assert QUANT_STANDARD_TEXT in PROMPT_RUBRIC
+    assert "不得编造" in QUANT_STANDARD_TEXT
+    assert "官方 Barra 暴露" in QUANT_STANDARD_TEXT
+    assert "基本面" in QUANT_STANDARD_TEXT
+    assert QUANT_STANDARD_TEXT in PUBLIC_TEXTS
     assert WEIGHT_PATTERN == 0.35
     assert WEIGHT_TECHNICAL == 0.20
     assert WEIGHT_VOLUME == WEIGHT_CAPITAL == WEIGHT_HISTORY == 0.15

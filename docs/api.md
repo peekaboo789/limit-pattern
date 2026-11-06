@@ -38,7 +38,7 @@
 - `items[]`：`rank`、`code`、`name`、`board_name`、`composite_score`、`level`（强关注 / 高关注 / 观察 / 一般 / 低匹配，无信号为空串，页面显示「—」）、`contributions`（五项，缺项为 null）、`risk_penalty`、`formula`（`composite_score`、`weighted_score`、`level`、`contributions`、`risk_penalty`、`missing_items`、`weight_total`、`indicators`（七个输入指标）、`model_score`、`model_gap`、`has_signal`）、`model_score`、`model_gap`（= 模型分 − 综合评分）、`prediction_score`、`terms`、`band_lift`、`pick_history`（`picks`、`hit`、`miss`、`pending`、`avg_score`、`hit_rate`、`total`、`formula`）、`reason`（模型依据）、`risk`、`tags`、`max_similarity`、`avg_similarity`、`sample_count`、`high_similarity_count`、`band`、`is_limit_up`、`carry_rate`、`group_scores`、`best_match`、`top_matches`、`checks`。`ai_score` 保留为兼容字段，值等于 `composite_score`。
 - `GET /api/ai-ranking/dates`：`{"dates": [...]}`，新的在前。
 - `GET /api/ai-input?format=txt|md`：导出前 100 给外部 AI；每行带系统综合评分、等级、五项贡献、风险扣分和四个指标。
-- `POST /api/ai-ranking/import`：外部 AI 返回 `{"items":[{"code","score","reason","risk","tags"}]}`；系统为这些代码算综合评分并排序，外部 `score` 记为 `model_score`，显示 `model_gap`。旧格式（`sub`、`risk_deduct`）仍能解析，`sub` 取均值当模型分。
+- `POST /api/ai-ranking/import`：外部 AI 返回 `{"items":[{"code","score","reason","risk","tags"}]}`；系统为这些代码算综合评分，但按外部 AI 分排序（`order: "external"`），外部 `score` 记为 `model_score`，显示 `model_gap`。旧格式（`sub`、`risk_deduct`）仍能解析，`sub` 取均值当模型分。
 - `GET /api/export?type=ai_ranking&date=`：TXT，列为综合评分、等级、五项贡献、风险扣分、模型分、偏差、预测分等。
 
 ## 相似度字段（v0.4.0）

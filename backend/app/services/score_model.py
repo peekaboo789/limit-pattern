@@ -73,6 +73,17 @@ FORMULA_TEXT = (
     + f"，其余 {LOW_LEVEL}。近期涨停形态匹配率只展示，不参与加权。"
 )
 
+QUANT_STANDARD_TEXT = (
+    "机构级因子解读框架：以 MSCI Barra China Equity Model (CNE6) 风格维度作为重要解读框架。"
+    "只根据上面已提供的本地证据讨论可推断项：Momentum / 短期反转（近端收益、相对强弱、位置与趋势）、"
+    "Volatility（振幅、波动）、Liquidity（换手、量比、成交量与成交额）；"
+    "Size 只在确有板块或体量信息时提及，不得编造市值。"
+    "不得编造 Value / Quality / Growth / Dividend / Sentiment / 盈利 / 账面价值等因子：输入没有这些数据；"
+    "若提及任一此类项，必须同时说明本输入不含相应数据。"
+    "这不是官方 CNE6 暴露，不计算官方 Barra 暴露、描述子、自由流通或基本面因子；"
+    "不得改写或覆盖系统综合评分；不得预测确定涨停；不得给买入建议。"
+)
+
 ROLE_PREAMBLE = (
     "你是一名资深 A 股短线交易与涨停板研究员，多年复盘涨停板、连板、首板、炸板、分歧转一致、龙头股和情绪周期。"
     "评分模型由本系统给定，你不是打分器而是解读器。"
@@ -86,12 +97,13 @@ PROMPT_RUBRIC = (
     + "reason 要写成模型依据：在给定权重下你更信哪几项、哪一项的读数让你要偏离这个等级，不要复述字段清单。"
     + "capital_score 现在是 null：null 不是 0 分，是这一项无从谈起。pattern_match_rate 不在加权项里，可以拿它说事，但不要拿它改分。"
     + "不加入新闻、公告、基本面、消息，不预测确定涨停，不写买入建议或目标价。"
+    + QUANT_STANDARD_TEXT
 )
 
 NULL_RULE = "null 不是 0 分，也不是很低，它是这一项无从谈起。"
 CAPITAL_RULE = "资金分没有真实资金流数据，恒为 null，不写 0。"
 HISTORY_RULE = "历史成功率是相似涨停样本次日继续涨停的已发生频率，不是对这一只股票的预测。"
-PUBLIC_TEXTS = (ROLE_PREAMBLE, FORMULA_TEXT, PROMPT_RUBRIC, NULL_RULE, CAPITAL_RULE, HISTORY_RULE)
+PUBLIC_TEXTS = (ROLE_PREAMBLE, FORMULA_TEXT, PROMPT_RUBRIC, NULL_RULE, CAPITAL_RULE, HISTORY_RULE, QUANT_STANDARD_TEXT)
 
 
 def _clip(value: float, low: float = 0.0, high: float = 100.0) -> float:
