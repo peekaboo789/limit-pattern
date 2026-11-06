@@ -36,6 +36,15 @@ class Inbound:
 class BotChannel(Protocol):
     name: str
 
+    def mirror_recipient(self, cfg: dict | None = None) -> tuple[str | None, str]:
+        """返回 (镜像目标用户, 跳过原因)。
+
+        约定：
+        - 目标用户为空时，skip_reason 必须给出可排障的原因；
+        - 目标用户非空时，skip_reason 为空串；
+        - 未实现该可选方法的渠道默认不支持命令镜像。
+        """
+
     def enabled(self, raw: dict | None = None) -> bool: ...
 
     def ready(self, cfg: dict) -> bool: ...
@@ -179,7 +188,8 @@ def dispatch_polled() -> int:
 def command_reply(origin: BotChannel, cfg: dict, user: str, title: str, body: str) -> None:
     """命令回复统一出口：先回给来源渠道，来源是企业微信时再镜像到个人微信。
 
-    - 镜像条件：wechat 已启用、配置就绪、且已绑定管理员。任一不满足只跳过。
+    - 镜像条件：wechat 已启用、配置就绪、且会话里真实绑定管理员并有该管理员的
+      context_token；与「发送测试消息」的诚实守卫对齐。任一不满足只跳过并记原因。
     - 镜像失败只记 warning，绝不影响企业微信主回复。
     - 只在「命令 reply」路径调用；push_event 的 alert/ranking/summary/capture
       本身会 fan-out 到勾选事件的渠道，不经过这里，避免重复推送。
@@ -194,15 +204,37 @@ def command_reply(origin: BotChannel, cfg: dict, user: str, title: str, body: st
     try:
         wechat_ch = channel("wechat")
         wechat_cfg = wechat_ch.config()
-        if not (wechat_ch.enabled() and wechat_ch.ready(wechat_cfg)):
-            return
-        admin = wechat_ch.admins(wechat_cfg)
-        touser = admin[0] if admin else ""
+        touser, skip_reason = mirror_recipient(wechat_ch, wechat_cfg)
         if not touser:
+            logger.warning("wechat 命令回复镜像跳过：%s", skip_reason or "wechat_admin_not_bound")
             return
         wechat_ch.deliver(title, body, touser=touser, cfg=wechat_cfg)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("wechat 命令回复镜像失败：%s", exc)
+        logger.warning("wechat 命令回复镜像失败：wechat_deliver_failed: %s", exc)
+
+
+def mirror_recipient(ch: BotChannel, cfg: dict) -> tuple[str | None, str]:
+    """返回 (镜像目标用户, 跳过原因)。
+
+    - wechat_disabled：渠道未启用
+    - wechat_not_ready：渠道未登录 / 配置未就绪
+    - wechat_admin_not_bound：没有会话绑定的管理员，忽略设置白名单 fallback
+    - wechat_no_context_token：已绑定管理员但还没有该用户的 context_token
+    - 成功时跳过原因为空串
+    """
+    try:
+        return ch.mirror_recipient(cfg)
+    except AttributeError:
+        try:
+            if not ch.enabled():
+                return None, "wechat_disabled"
+            if not ch.ready(cfg):
+                return None, "wechat_not_ready"
+            return None, "wechat_admin_not_bound"
+        except Exception as exc:  # noqa: BLE001
+            return None, f"wechat_deliver_failed: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"wechat_deliver_failed: {exc}"
 
 
 def run_command(

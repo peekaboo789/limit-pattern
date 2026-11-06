@@ -65,6 +65,21 @@ class WeChatChannel:
     def admins(self, cfg: dict) -> list[str]:
         return [wechat_client.current_admin(cfg)] if wechat_client.current_admin(cfg) else []
 
+    def mirror_recipient(self, cfg: dict | None = None) -> tuple[str | None, str]:
+        cfg = cfg or self.config()
+        if not self.enabled():
+            return None, "wechat_disabled"
+        if not self.ready(cfg):
+            return None, "wechat_not_ready"
+        if not wechat_client.current_admin_bound(cfg):
+            return None, "wechat_admin_not_bound"
+        admin = wechat_client.current_admin(cfg)
+        if not admin:
+            return None, "wechat_admin_not_bound"
+        if not wechat_client.current_context_token(cfg, admin):
+            return None, "wechat_no_context_token"
+        return admin, ""
+
     def inbound(self, cfg: dict, text: str, user: str = "", menu_key: str = "") -> Inbound | None:
         return Inbound(channel=self.name, user=user, text=text, menu_key=menu_key)
 

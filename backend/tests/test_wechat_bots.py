@@ -231,11 +231,12 @@ class _FakeWeComChannel:
 class _FakeWeChatChannel:
     name = "wechat"
 
-    def __init__(self, enabled=True, ready=True, admin="wx-admin", deliver_error=None):
+    def __init__(self, enabled=True, ready=True, admin="wx-admin", deliver_error=None, context_token="ctx-1"):
         self.enabled_value = enabled
         self.ready_value = ready
         self.admin_value = admin
         self.deliver_error = deliver_error
+        self.context_token = context_token
         self.delivered = []
 
     def enabled(self, raw=None):
@@ -249,6 +250,17 @@ class _FakeWeChatChannel:
 
     def admins(self, cfg):
         return [self.admin_value] if self.admin_value else []
+
+    def mirror_recipient(self, cfg=None):
+        if not self.enabled_value:
+            return None, "wechat_disabled"
+        if not self.ready_value:
+            return None, "wechat_not_ready"
+        if not self.admin_value:
+            return None, "wechat_admin_not_bound"
+        if not self.context_token:
+            return None, "wechat_no_context_token"
+        return self.admin_value, ""
 
     def deliver(self, title, body, *, touser=None, cfg=None):
         if self.deliver_error:
@@ -309,6 +321,52 @@ def test_command_reply_skips_wechat_when_no_admin(monkeypatch):
 
     assert wecom.replies == [("标题", "正文")]
     assert wechat.delivered == []
+
+
+def test_command_reply_skips_wechat_when_whitelist_only(monkeypatch):
+    """管理员只来自设置白名单、并未真实绑定时不镜像，但企业微信仍成功。"""
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel(admin="whitelist-only", context_token="ctx-1")
+    wechat.mirror_recipient = lambda cfg=None: (None, "wechat_admin_not_bound")
+    _install_fake_wechat(monkeypatch, wechat)
+
+    router.command_reply(wecom, {}, "wecom-user", "标题", "正文")
+
+    assert wecom.replies == [("标题", "正文")]
+    assert wechat.delivered == []
+
+
+def test_command_reply_skips_wechat_when_no_context_token(monkeypatch):
+    """已绑定管理员但缺 context_token 时不镜像，企业微信仍成功。"""
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel(admin="wx-admin", context_token="")
+    _install_fake_wechat(monkeypatch, wechat)
+
+    router.command_reply(wecom, {}, "wecom-user", "标题", "正文")
+
+    assert wecom.replies == [("标题", "正文")]
+    assert wechat.delivered == []
+
+
+def test_command_reply_uses_bound_admin_not_wecom_user(monkeypatch):
+    """镜像 touser 是个人微信绑定的管理员，不是企业微信 userid。"""
+    wecom = _FakeWeComChannel()
+    wechat = _FakeWeChatChannel(admin="bound-admin")
+    _install_fake_wechat(monkeypatch, wechat)
+
+    router.command_reply(wecom, {}, "wecom-user", "标题", "正文")
+
+    assert wecom.replies == [("标题", "正文")]
+    assert wechat.delivered == [("bound-admin", "标题", "正文")]
+
+
+def test_mirror_recipient_reports_skip_reason(monkeypatch):
+    """辅助函数可直接断言四个跳过原因。"""
+    assert router.mirror_recipient(_FakeWeChatChannel(enabled=False), {}) == (None, "wechat_disabled")
+    assert router.mirror_recipient(_FakeWeChatChannel(ready=False), {}) == (None, "wechat_not_ready")
+    assert router.mirror_recipient(_FakeWeChatChannel(admin=""), {}) == (None, "wechat_admin_not_bound")
+    assert router.mirror_recipient(_FakeWeChatChannel(context_token=""), {}) == (None, "wechat_no_context_token")
+    assert router.mirror_recipient(_FakeWeChatChannel(admin="bound-admin"), {}) == ("bound-admin", "")
 
 
 def test_command_reply_wecom_success_when_mirror_fails(monkeypatch):

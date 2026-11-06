@@ -510,6 +510,12 @@ logs/launcher.log
 - 企业微信触发的所有命令回复（同步返回、`CAPTURE` / `CAPTURE_AI` / `SYNC` / `SIM_TOP` / `NEXT_POOL` / `RANK_REGEN` 等后台任务先回「已开始」再回最终结果，以及没权限 / 没看懂等同步结果）在个人微信已启用、已登录且已绑定管理员时，用相同标题 + 正文同步一份给个人微信管理员。
 - 命令回复统一经过 `bots.router.command_reply` 出口：来源是企业微信时才镜像，个人微信 → 企业微信不反向；镜像失败只记 warning，不影响企业微信主回复。事件推送（alert / ranking / summary / capture）仍走 `push_event` 自动分发，不在命令路径重复镜像。
 
+## v0.7.9 收紧企业微信→个人微信镜像守卫
+
+- 命令回复镜像与「发送测试消息」采用同一套绑定 / context_token 条件：个人微信已启用、已登录，且会话里真实绑定管理员并已有该管理员的 `context_token` 才投递；设置白名单 fallback 不再当作绑定管理员。
+- 目标用户固定为个人微信会话里真正绑定的管理员，不使用企业微信 userid。
+- 跳过或投递失败写入明确 warning：`wechat_disabled` / `wechat_not_ready` / `wechat_admin_not_bound` / `wechat_no_context_token` / `wechat_deliver_failed: <exc>`；镜像失败始终不影响企业微信主回复。
+
 ## v0.7.7 修复个人微信菜单序号错位 + 切换AI数字抢占
 
 - 菜单卡片从「每组从 1 重新编号」改为 1–15 跨组连续编号，卡片显示序号与 `wechat_menu_cmd` 扁平索引端到端一致，杜绝“看 1 点 6”串功能。
