@@ -116,6 +116,27 @@ final class APIClient: @unchecked Sendable {
             req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
+        return try await perform(req, path: path)
+    }
+
+    /// 原始字节请求，供 `/api/council/batch/preview` 直接上传 TXT 内容使用。
+    func rawData(_ method: String, _ path: String, body: Data, headers: [String: String] = [:], timeout: TimeInterval = 60) async throws -> (Data, HTTPURLResponse) {
+        var req = URLRequest(url: try url(path))
+        req.httpMethod = method
+        req.timeoutInterval = timeout
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        for (key, value) in headers { req.setValue(value, forHTTPHeaderField: key) }
+        req.httpBody = body
+        return try await perform(req, path: path)
+    }
+
+    func jsonData(_ method: String, _ path: String, body: Data, headers: [String: String] = [:], timeout: TimeInterval = 60) async throws -> JSON {
+        let (data, _) = try await rawData(method, path, body: body, headers: headers, timeout: timeout)
+        if data.isEmpty { return .null }
+        return try JSON.parse(data)
+    }
+
+    private func perform(_ req: URLRequest, path: String) async throws -> (Data, HTTPURLResponse) {
         let data: Data, resp: URLResponse
         do { (data, resp) = try await session.data(for: req) }
         catch let e as URLError {
