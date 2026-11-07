@@ -137,9 +137,9 @@ struct CouncilBatchView: View {
         councilStore.selectedOrder.count >= CouncilCore.requiredProfileCount && !store.starting
     }
 
-    private func importFile(_ result: Result<URL, Error>) async {
+    private func importFile(_ result: Result<[URL], Error>) async {
         do {
-            let url = try result.get()
+            guard let url = try result.get().first else { return }
             let accessing = url.startAccessingSecurityScopedResource()
             do {
                 let data = try Data(contentsOf: url, options: .mappedIfSafe)
