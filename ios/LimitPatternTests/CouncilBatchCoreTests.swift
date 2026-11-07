@@ -4,7 +4,7 @@ import XCTest
 final class CouncilBatchCoreTests: XCTestCase {
     private func sampleData(bom: Bool = false) -> Data {
         let body = "数据日期\t2026-11-06\n排名\t代码\t名称\t板块\t最相似样本\n1\t000001\t平安银行\t银行\tA\n2\t600519\t贵州茅台\t白酒\tB\n3\t000001\t平安银行重复\t银行\tA\n4\t601899\t紫金矿业\t有色\tC\n5\t300750\t宁德时代\t创业板\tD\n"
-        return Data((bom ? "\u{FEFF}" : "") + body, using: .utf8)!
+        return Data(((bom ? "\u{FEFF}" : "") + body).utf8)
     }
 
     func testPreviewPreservesLeadingZerosAndDateAndSkipsSimilarity() throws {
@@ -33,7 +33,7 @@ final class CouncilBatchCoreTests: XCTestCase {
         let text = rows.joined(separator: "\n")
         let json = try! CouncilBatchCore.preview(text: text, sourceName: "many.txt")
         XCTAssertEqual(json["counts"]["total"].int, 100)
-        XCTAssertTrue(json["errors"].last?["reason"].string?.contains("超过") == true)
+        XCTAssertTrue(json["errors"].array.last?["reason"].string?.contains("超过") == true)
     }
 
     func testIdempotencyKeyDependsOnSelectedCodesAndProfileOrder() throws {
