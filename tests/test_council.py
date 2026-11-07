@@ -674,3 +674,11 @@ def test_existing_council_table_gets_chat_columns():
         assert {"transcript", "progress"} <= {column["name"] for column in inspect(engine).get_columns("ai_council_sessions")}
     finally:
         engine.dispose()
+
+
+def test_council_new_run_loads_detail_before_history():
+    from pathlib import Path
+    text = Path("frontend/src/views/CouncilView.vue").read_text()
+    start = text[text.index("async function start()"):text.index("async function reconcileStale()")]
+    assert start.index("await loadSession(result.session_id)") < start.index("void loadSessions()")
+    assert "await loadSessions()" not in start

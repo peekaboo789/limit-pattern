@@ -143,11 +143,11 @@ async function start() {
     stopPolling()
     history.acceptNewSession(result.session_id)
     hint.value = `已开始讨论 #${result.session_id}，正在联网核对`
-    await loadSessions()
-    if (!alive) return
     expanded.value = result.session_id
-    await loadSession(result.session_id)
+    await loadSession(result.session_id) // Never wait for a potentially large history response first.
+    if (!alive) return
     beginPolling()
+    void loadSessions()
   } catch (reason) {
     error.value = reason instanceof ApiError ? reason.detail : '开始失败'
   } finally {
