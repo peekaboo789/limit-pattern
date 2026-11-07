@@ -108,7 +108,11 @@ final class CouncilBatchStore {
         guard !identityFingerprint.isEmpty else { return false }
         let generation = identityGeneration
         starting = true; defer { starting = false }
-        let codes = selectedCodes.map { preview["items"].array.compactMap { item in $0["code"].string.flatMap { code in selectedCodes?.contains(code) == true ? code : nil } } } ?? CouncilBatchCore.selectedCodes(preview)
+        let selectedSet = selectedCodes ?? Set(CouncilBatchCore.selectedCodes(preview))
+        let codes = preview["items"].array.compactMap { item -> String? in
+            guard let code = item["code"].string, selectedSet.contains(code) else { return nil }
+            return code
+        }
         let bodyItems = preview["items"].array.map { item in
             var object = item.object
             object["selected"] = .bool(selectedCodes?.contains(item["code"].text) ?? true)
