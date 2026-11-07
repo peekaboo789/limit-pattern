@@ -43,6 +43,21 @@ private func batchMockAPI(_ handler: @escaping (URLRequest) -> (Int, Data?)) -> 
     return api
 }
 
+private func requestBody(_ request: URLRequest) -> Data {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return Data() }
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while stream.hasBytesAvailable {
+        let read = stream.read(&buffer, maxLength: buffer.count)
+        if read <= 0 { break }
+        data.append(buffer, count: read)
+    }
+    return data
+}
+
 private func sampleBatch() -> JSON {
     JSON.object([
         "id": .number(11), "source_name": .string("ranking.txt"), "source_date": .string("2026-11-06"),
@@ -63,7 +78,7 @@ final class CouncilBatchStoreTests: XCTestCase {
     func testStartPayloadUsesSelectedItemsAndStableIdempotencyKey() async {
         let api = batchMockAPI { request in
             if request.url?.path == "/api/council/batch/start" {
-                let object = try! JSONSerialization.jsonObject(with: request.httpBody ?? Data())
+                let object = try! JSONSerialization.jsonObject(with: requestBody(request))
                 let json = JSON.from(object)
                 XCTAssertEqual(json["eval_date"].string, "2026-11-06")
                 XCTAssertEqual(json["profile_ids"].array.count, 2)
