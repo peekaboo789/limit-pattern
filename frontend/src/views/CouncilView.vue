@@ -4,7 +4,9 @@ import type { CouncilBar, CouncilEvidence, CouncilSession, CouncilProgress, Coun
 import KlineChart from '@/components/KlineChart.vue'
 import CouncilSourcesPanel from '@/components/CouncilSourcesPanel.vue'
 import CouncilMessageContent from '@/components/CouncilMessageContent.vue'
+import CouncilChatWindow from '@/components/CouncilChatWindow.vue'
 import { chatMessages, transcriptItems, publicContent, councilIdentity, createChatScroll, shouldSendKey, clearSubmittedDraft, currentStage, conversationStatus } from '@/composables/councilChat'
+import { compactWindowMessages } from '@/composables/councilWindow'
 import { useCouncilHistory, createCouncilPoll } from '@/composables/useCouncilHistory'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
@@ -27,7 +29,7 @@ const detailHint = ref<Record<number, string>>({})
 const evidenceOpen = ref<Record<string, boolean>>({})
 
 const history = useCouncilHistory(api)
-const { sessions, expanded, opening, loading, error, detailError, detailLoading, detailReady, deleting, deleteError, loadSessions, loadSession, replaceSession } = history
+const { sessions, expanded, opening, loading, error, detailError, detailReady, deleting, deleteError, loadSessions, loadSession, replaceSession } = history
 let alive = true
 let pollFailures = 0
 const poller = createCouncilPoll(async (current) => {
@@ -48,7 +50,18 @@ const poller = createCouncilPoll(async (current) => {
 function beginPolling() { if (!alive) return; pollFailures = 0; poller.start() }
 function stopPolling() { poller.stop() }
 async function refresh() { await loadSessions(); if (!alive) return; if (expanded.value) await loadSession(expanded.value); beginPolling() }
+function rememberChat() {
+  trackScroll()
+  const row=activeRow.value;if(!row)return
+  const key=draftKey(row),editor=document.getElementById(`opinion-${row.id}`)
+  // Closing by pointer can unmount an IME editor before compositionend is delivered.
+  if(composing.value[key] && editor instanceof HTMLTextAreaElement)userInput.value[key]=editor.value
+  composing.value[key]=false;compositionEnded.set(key,Date.now())
+}
+function closeChat() { rememberChat(); history.close() }
 async function open(row: CouncilSession) {
+  if(expanded.value===row.id){document.querySelector<HTMLElement>('[data-council-window]')?.focus({preventScroll:true});return}
+  rememberChat()
   await history.open(row)
   if (alive && expanded.value === row.id && (row.status === 'running' || progress.value?.running)) beginPolling()
 }
@@ -78,8 +91,13 @@ const unread = ref(0)
 const following = ref(true)
 let chatViewport: HTMLElement | null = null
 let restoring = false
+let viewportObserver:ResizeObserver|null=null
 const anchors = new Map<string, {key:string;offset:number}>()
-function bindChatViewport(element: unknown) { chatViewport = element instanceof HTMLElement ? element : null }
+function bindChatViewport(element: unknown) {
+  const next=element instanceof HTMLElement?element:null;if(next===chatViewport)return
+  viewportObserver?.disconnect();viewportObserver=null;chatViewport=next
+  if(next && typeof ResizeObserver!=='undefined'){viewportObserver=new ResizeObserver(()=>{if(alive&&activeKey.value)restoreScroll(activeKey.value)});viewportObserver.observe(next)}
+}
 function trackScroll() {
   if (!chatViewport || !activeKey.value || restoring || opening.value===expanded.value) return
   const el=chatViewport,key=activeKey.value
@@ -170,6 +188,7 @@ async function start() {
     stopPolling()
     history.acceptNewSession(result.session_id)
     hint.value = `已开始讨论 #${result.session_id}，正在联网核对`
+    rememberChat()
     expanded.value = result.session_id
     opening.value = result.session_id
     await loadSession(result.session_id) // Never wait for a potentially large history response first.
@@ -322,7 +341,7 @@ function digestText(digest: unknown): string {
   return JSON.stringify(digest, null, 2)
 }
 
-onUnmounted(() => { alive = false; stopPolling(); history.dispose() })
+onUnmounted(() => { alive = false; viewportObserver?.disconnect(); stopPolling(); history.dispose() })
 
 onMounted(async () => {
   await Promise.allSettled([
@@ -409,7 +428,7 @@ onMounted(async () => {
             <td>{{ confidenceLabel(row.conclusion?.confidence) }}</td>
             <td>{{ statusText(row) }}</td>
             <td class="muted">{{ displayTime(row.created_at) }}{{ row.timezone ? `（${row.timezone}）` : '' }}</td>
-            <td class="right"><button class="btn btn-ghost" type="button" @click.stop="open(row)" @keydown.enter.stop>{{ expanded === row.id ? '收起' : '详情' }}</button>
+            <td class="right"><button class="btn btn-ghost" type="button" @click.stop="open(row)" @keydown.enter.stop>{{ expanded === row.id ? '查看聊天' : '打开聊天' }}</button>
               <button class="btn btn-ghost" type="button" :disabled="deleting[row.id] || row.status === 'running' || speakingBusy[row.id]" :title="row.status === 'running' ? '运行中的讨论不能删除' : '永久删除本场讨论'" @click.stop="removeSession(row)" @keydown.enter.stop>{{ deleting[row.id] ? '删除中…' : '删除' }}</button>
               <span v-if="deleteError[row.id]" class="alert" role="alert">{{ deleteError[row.id] }}</span></td>
           </tr>
@@ -417,9 +436,47 @@ onMounted(async () => {
       </table>
     </div>
 
-    <div v-for="row in sessions.filter((item) => expanded === item.id)" :key="'detail-' + row.id" class="council-detail">
-      <p v-if="detailLoading[row.id]" class="hint" role="status">正在加载最新对话…</p>
-      <p v-if="detailError[row.id]" class="alert" role="alert">{{ detailError[row.id] }} <button class="btn btn-ghost" @click="retryDetail(row.id)">重试加载</button></p>
+    <Teleport to="body">
+    <CouncilChatWindow v-for="row in sessions.filter((item) => expanded === item.id)" :key="draftKey(row)" :details-ready="readyFor(row)" :title="`${row.stock_name} ${row.stock_code} · 讨论群`" @close="closeChat" @before-resize="trackScroll" @resized="restoreScroll(draftKey(row))">
+      <template #meta>{{ row.eval_date }} · {{ row.participants.length }} 位模型 · {{ opening===row.id ? '读取最新对话' : statusText(row) }} · 北京时间</template>
+      <template #risk>
+        <b>{{ readyFor(row) ? probabilityText(row) : '正在读取最新结果' }}</b> · 主观估计未经校准，非投资建议。证据不足不展示数字。
+        <span v-if="readyFor(row) && row.evidence.quality?.critical_missing?.length"> 缺少 {{ row.evidence.quality.critical_missing.length }} 项关键证据，请查看详情。</span>
+      </template>
+      <section class="group-chat" aria-label="多模型群聊" :aria-busy="opening === row.id">
+        <div v-if="row.status==='running'" class="chat-current" aria-live="off">{{ opening===row.id ? '读取最新对话' : statusText(row) }}<template v-if="row.status==='running' && opening!==row.id"> · {{ currentStage(row).label }}<span v-if="currentStage(row).seconds != null"> · 本阶段 {{ currentStage(row).seconds }} 秒</span></template><span v-if="row.duration_seconds != null"> · 本场累计 {{ durationText(row) }}</span></div>
+        <div class="chat-viewport" :ref="bindChatViewport" @scroll="trackScroll">
+          <p class="chat-notice">展示真实处理状态与可公开分析、依据和疑点，不展示或伪造模型内部思考链。</p>
+          <p v-if="opening === row.id" class="chat-empty" role="status">正在读取本场最新对话…</p>
+          <p v-else-if="!readyFor(row)" class="chat-empty">{{ detailError[row.id] ? '最新详情未加载，未展示列表中的旧对话；请点击重试。' : '等待最新详情…' }}</p>
+          <p v-else-if="!transcriptItems(row).length" class="chat-empty">{{ emptyConversation(row) }}</p>
+          <template v-for="message in (readyFor(row) ? compactWindowMessages(chatMessages(row)) : [])" :key="message.key">
+            <div v-if="message.kind === 'system'" class="chat-system" :data-message-key="message.key">{{ message.content }} <small>{{ displayTime(message.time) }}</small></div>
+            <article v-else class="chat-message" :data-message-key="message.key" :class="{ mine: message.kind === 'user', chair: message.kind === 'chairman' }">
+              <div class="chat-avatar" aria-hidden="true">{{ message.kind === 'user' ? '我' : message.name.slice(0, 2) }}</div>
+              <div class="chat-message-body"><div class="chat-name">{{ message.name }} <span v-if="message.kind === 'chairman'">· 主持人</span> <small>{{ displayTime(message.time) }}</small></div>
+                <div class="chat-bubble" :class="{ 'chat-error': message.error }"><CouncilMessageContent :text="message.error || (message.kind==='user' ? message.content : publicContent(message.content)) || '未返回可公开的分析文本'" /></div>
+                <details v-if="message.model || message.elapsed != null" class="chat-meta"><summary>模型 / 耗时</summary>{{ message.model }} · {{ message.elapsed == null ? '未记录耗时' : `${(message.elapsed / 1000).toFixed(1)} 秒` }}</details>
+              </div>
+            </article>
+          </template>
+        </div>
+        <div v-if="!following && readyFor(row)" class="chat-jump"><button class="btn btn-ghost" @click="goBottom">{{ unread ? `${unread} 条新消息 · ` : '' }}回到底部</button></div>
+        <div class="chat-composer">
+          <div class="chat-controls"><label>点名 <select v-model="selectedSpeaker[row.id]" aria-label="选择发言模型"><option disabled value="">选择模型</option><option v-for="p in keyProfiles" :key="p.id" :value="p.id">{{ p.name || p.model }}</option></select></label>
+            <button class="btn btn-ghost" :disabled="!readyFor(row) || busyFor(row) || !selectedSpeaker[row.id]" @click="askSpeaker(row.id)">{{ speakingFor === row.id ? '处理中…' : '发言 / 续轮' }}</button>
+            <button class="btn btn-ghost" :disabled="!readyFor(row) || busyFor(row)" title="请主持人总结" @click="askChair(row)">主持总结</button></div>
+          <label class="sr-only" :for="`opinion-${row.id}`">我的意见</label>
+          <textarea :id="`opinion-${row.id}`" v-model="userInput[draftKey(row)]" maxlength="4000" rows="2" placeholder="说说你的意见、补充证据或疑问…" @compositionstart="composing[draftKey(row)] = true" @compositionend="endComposition(row)" @keydown="composerKey($event,row)" />
+          <p v-if="row.status==='running' || progress?.running" class="chat-notice">{{ row.status==='running' || progress?.session_id===row.id ? '本场模型' : '其他会话' }}正在处理，当前只能保留草稿；完成后可发送意见。</p>
+          <p class="composer-help">{{ !readyFor(row) ? '详情加载后可发送，当前输入只保留本场草稿' : busyFor(row) ? '处理中 Enter 换行，草稿可继续编辑' : 'Enter 发送 · Shift+Enter 换行 · 中文选词不发送' }}<span v-if="speakingBusy[row.id] && speakingFor!==row.id"> · 意见正在保存，请勿重复发送</span></p>
+          <div class="chat-send-row"><span>{{ (userInput[draftKey(row)] || '').length }}/4000 · 意见会持久保存</span><button class="btn" :disabled="!readyFor(row) || busyFor(row) || !(userInput[draftKey(row)] || '').trim()" @click="addUserMessage(row.id)">{{ speakingBusy[row.id] && speakingFor!==row.id ? '保存中…' : '发送意见' }}</button></div>
+          <p v-if="error" class="alert" role="alert">{{ error }} <button class="btn btn-ghost" @click="refresh">重试刷新</button></p><p v-if="detailError[row.id]" class="alert" role="alert">{{ detailError[row.id] }} <button class="btn btn-ghost" @click="retryDetail(row.id)">重试加载</button></p><p v-if="detailHint[row.id]" class="hint">{{ detailHint[row.id] }}</p>
+        </div>
+      </section>
+
+      <template #details>
+      <details class="window-system-history"><summary>完整阶段 / 状态 / 时间记录（展开）</summary><div v-for="message in chatMessages(row).filter(item=>item.kind==='system')" :key="message.key" class="chat-system">{{ message.content }} · {{ displayTime(message.time) }}</div><div v-for="(event,index) in row.progress?.events || []" :key="index" class="muted">{{ event.stage || event.phase }} · {{ event.model || '' }} · {{ displayTime(event.started_at) }} → {{ displayTime(event.finished_at) }}</div></details>
       <h3>{{ row.stock_name }} {{ row.stock_code }} · {{ row.eval_date }}</h3>
       <div class="muted">评估时间：{{ displayTime(row.created_at) }}（{{ row.timezone || 'Asia/Shanghai' }}）<template v-if="durationText(row)"> · 耗时：{{ durationText(row) }}</template></div>
       <div v-if="row.error && opening !== row.id" class="alert">{{ row.error }}</div>
@@ -440,39 +497,6 @@ onMounted(async () => {
         </div>
         </details>
       </template>
-
-      <section class="group-chat" aria-label="多模型群聊" :aria-busy="opening === row.id">
-        <div class="group-chat-head"><b>{{ row.stock_name }} · 讨论群</b><span>{{ row.participants.length }} 位模型 · 北京时间</span></div>
-        <div class="chat-current" aria-live="off">{{ opening===row.id ? '读取最新对话' : statusText(row) }}<template v-if="row.status==='running' && opening!==row.id"> · {{ currentStage(row).label }}<span v-if="currentStage(row).seconds != null"> · 本阶段 {{ currentStage(row).seconds }} 秒</span></template><span v-if="row.duration_seconds != null"> · 本场累计 {{ durationText(row) }}</span></div>
-        <div class="chat-viewport" :ref="bindChatViewport" @scroll="trackScroll">
-          <p class="chat-notice">展示真实处理状态与可公开分析、依据和疑点，不展示或伪造模型内部思考链。</p>
-          <p v-if="opening === row.id" class="chat-empty" role="status">正在读取本场最新对话…</p>
-          <p v-else-if="!readyFor(row)" class="chat-empty">{{ detailError[row.id] ? '最新详情未加载，未展示列表中的旧对话；请点击重试。' : '等待最新详情…' }}</p>
-          <p v-else-if="!transcriptItems(row).length" class="chat-empty">{{ emptyConversation(row) }}</p>
-          <template v-for="message in (readyFor(row) ? chatMessages(row) : [])" :key="message.key">
-            <div v-if="message.kind === 'system'" class="chat-system" :data-message-key="message.key">{{ message.content }} <small>{{ displayTime(message.time) }}</small></div>
-            <article v-else class="chat-message" :data-message-key="message.key" :class="{ mine: message.kind === 'user', chair: message.kind === 'chairman' }">
-              <div class="chat-avatar" aria-hidden="true">{{ message.kind === 'user' ? '我' : message.name.slice(0, 2) }}</div>
-              <div class="chat-message-body"><div class="chat-name">{{ message.name }} <span v-if="message.kind === 'chairman'">· 主持人</span> <small>{{ displayTime(message.time) }}</small></div>
-                <div class="chat-bubble" :class="{ 'chat-error': message.error }"><CouncilMessageContent :text="message.error || (message.kind==='user' ? message.content : publicContent(message.content)) || '未返回可公开的分析文本'" /></div>
-                <details v-if="message.model || message.elapsed != null" class="chat-meta"><summary>模型 / 耗时</summary>{{ message.model }} · {{ message.elapsed == null ? '未记录耗时' : `${(message.elapsed / 1000).toFixed(1)} 秒` }}</details>
-              </div>
-            </article>
-          </template>
-        </div>
-        <div v-if="!following && readyFor(row)" class="chat-jump"><button class="btn btn-ghost" @click="goBottom">{{ unread ? `${unread} 条新消息 · ` : '' }}回到底部</button></div>
-        <div class="chat-composer">
-          <div class="chat-controls"><label>点名 <select v-model="selectedSpeaker[row.id]" aria-label="选择发言模型"><option disabled value="">选择模型</option><option v-for="p in keyProfiles" :key="p.id" :value="p.id">{{ p.name || p.model }}</option></select></label>
-            <button class="btn btn-ghost" :disabled="!readyFor(row) || busyFor(row) || !selectedSpeaker[row.id]" @click="askSpeaker(row.id)">{{ speakingFor === row.id ? '处理中…' : '请该模型发言 / 续轮' }}</button>
-            <button class="btn btn-ghost" :disabled="!readyFor(row) || busyFor(row)" @click="askChair(row)">请主持人总结</button></div>
-          <label class="sr-only" :for="`opinion-${row.id}`">我的意见</label>
-          <textarea :id="`opinion-${row.id}`" v-model="userInput[draftKey(row)]" maxlength="4000" rows="3" placeholder="说说你的意见、补充证据或疑问…" @compositionstart="composing[draftKey(row)] = true" @compositionend="endComposition(row)" @keydown="composerKey($event,row)" />
-          <p v-if="row.status==='running' || progress?.running" class="chat-notice">{{ row.status==='running' || progress?.session_id===row.id ? '本场模型' : '其他会话' }}正在处理，当前只能保留草稿；完成后可发送意见。</p>
-          <p class="composer-help">{{ !readyFor(row) ? '详情加载后可发送，当前输入只保留本场草稿' : busyFor(row) ? '处理中 Enter 换行，草稿可继续编辑' : 'Enter 发送 · Shift+Enter 换行 · 中文选词不发送' }}<span v-if="speakingBusy[row.id] && speakingFor!==row.id"> · 意见正在保存，请勿重复发送</span></p>
-          <div class="chat-send-row"><span>{{ (userInput[draftKey(row)] || '').length }}/4000 · 意见保存后，后续模型与主持人都能看到</span><button class="btn" :disabled="!readyFor(row) || busyFor(row) || !(userInput[draftKey(row)] || '').trim()" @click="addUserMessage(row.id)">{{ speakingBusy[row.id] && speakingFor!==row.id ? '保存中…' : '发送意见' }}</button></div>
-          <p v-if="detailError[row.id]" class="alert" role="alert">{{ detailError[row.id] }}</p><p v-if="detailHint[row.id]" class="hint">{{ detailHint[row.id] }}</p>
-        </div>
-      </section>
 
       <details class="council-evidence" :open="!!evidenceOpen[draftKey(row)]" @toggle="evidenceOpen[draftKey(row)] = ($event.currentTarget as HTMLDetailsElement).open"><summary>证据摘要与来源（默认折叠）</summary>
       <template v-if="evidenceOpen[draftKey(row)]">
@@ -516,7 +540,9 @@ onMounted(async () => {
       </details>
       </template>
       </details>
-    </div>
+      </template>
+    </CouncilChatWindow>
+    </Teleport>
   </section>
 </template>
 
@@ -564,4 +590,9 @@ pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 6p
 @media(max-width:640px) { .chat-viewport { padding:10px; }.chat-message-body { max-width:85%; }.group-chat-head { flex-direction:column; }.chat-send-row span { max-width:65%; } }
 .chat-current{padding:8px 16px;font-size:12px;border-bottom:1px solid #89939c33;overflow-wrap:anywhere}.chat-empty{padding:28px 12px;text-align:center;opacity:.7}.chat-jump{text-align:center;padding:4px;background:var(--bg,#fff)}.composer-help{font-size:11px;opacity:.7;margin:6px 0}.council-evidence,.council-conclusion{margin:12px 0}.council-evidence>summary,.council-conclusion>summary{cursor:pointer;font-size:13px}.chat-composer textarea{min-height:70px;max-height:180px}.chat-viewport{overflow-anchor:auto}
 @media(max-width:640px){.chat-viewport{height:44vh;min-height:220px}.chat-composer{padding:10px}.chat-controls select{max-width:100%}.chat-controls label{width:100%}.chat-send-row{align-items:flex-end}.chat-name small{display:block;margin-left:0}}
+</style>
+
+<style scoped>
+.group-chat{display:flex;flex:1;flex-direction:column;min-height:0;min-width:0;width:100%;height:100%;margin:0;border:0;border-radius:0}.chat-viewport{flex:1;height:auto;min-height:0;padding:12px;overflow:auto}.chat-current{flex-shrink:0;padding:5px 10px;max-height:45px;overflow:auto}.chat-composer{flex-shrink:0;padding:8px;max-height:70%;overflow:auto}.chat-controls{gap:5px;margin-bottom:5px;display:grid;grid-template-columns:minmax(0,1fr) auto auto}.chat-controls label{display:flex;gap:4px;align-items:center;min-width:0;width:auto;font-size:12px}.chat-controls select{min-width:0;width:100%;max-width:100%;font-size:12px}.chat-controls .btn{font-size:11px;padding:6px}.chat-composer textarea{resize:none;min-height:52px;max-height:84px;padding:6px;font-size:13px}.chat-send-row{margin-top:4px;align-items:center}.chat-send-row span{font-size:10px;max-width:65%}.chat-send-row .btn{font-size:12px;padding:6px 10px}.composer-help{margin:3px 0;font-size:10px}.chat-composer .chat-notice{margin:3px 0;max-width:100%;font-size:11px;text-align:left}.chat-composer .alert,.chat-composer .hint{max-height:48px;overflow:auto;margin:4px 0;font-size:11px}.chat-jump{flex-shrink:0;padding:2px}.chat-jump .btn{font-size:11px;padding:4px}.chat-message{margin:14px 0;gap:7px}.chat-avatar{width:30px;height:30px;flex-basis:30px;border-radius:7px}.chat-bubble{padding:8px 10px;font-size:13px;line-height:1.6}.chat-message-body{max-width:84%}.chat-name small{display:block;margin-left:0}
+@media(max-width:600px){.chat-viewport{height:auto;min-height:0;padding:9px}.chat-controls label{width:auto}.chat-composer{padding:7px}}
 </style>

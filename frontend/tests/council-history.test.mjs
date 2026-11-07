@@ -81,3 +81,10 @@ test('dispose aborts actual GET/list signals and suppresses late responses', asy
   const pending=(_arg,signal)=>{signals.push(signal);return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('cancelled','AbortError'))))}
   const h=setup({councilGet:pending,councilHistory:pending});const p=h.loadSessions(),q=h.loadSession(1);h.dispose();await Promise.all([p,q]);assert.equal(signals.every(s=>s.aborted),true);assert.equal(h.sessions.value.length,0)
 })
+
+test('close only closes UI/cancels stale detail; running record survives and reopening fetches latest',async()=>{
+ const first=deferred();let calls=0,signal;const h=setup({councilGet:async(id,s)=>{signal=s;if(++calls===1)return first.promise;return row(id,'new reply after reopening','running')}})
+ await h.loadSessions();const pending=h.open(row(1,'old','running'));h.close();assert.equal(signal.aborted,true);assert.equal(h.expanded.value,null);assert.equal(h.opening.value,null);assert.equal(h.sessions.value.length,2)
+ const reopen=h.open(row(1,'old','running'));await reopen;first.resolve(row(1,'stale'));await pending
+ assert.equal(calls,2);assert.equal(h.expanded.value,1);assert.equal(h.sessions.value[0].transcript[0].content,'new reply after reopening');assert.equal(h.sessions.value[0].status,'running')
+})

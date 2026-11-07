@@ -94,6 +94,10 @@ export function useCouncilHistory(api: HistoryApi) {
       if(requests.get(id)===controller)requests.delete(id)
     }
   }
+  function close() {
+    if (expanded.value !== null) cancelDetail(expanded.value)
+    expanded.value = null; opening.value = null
+  }
   async function open(row: CouncilSession) {
     if (expanded.value !== null) cancelDetail(expanded.value)
     if (expanded.value === row.id) { expanded.value = null; opening.value=null; return }
@@ -142,7 +146,7 @@ export function useCouncilHistory(api: HistoryApi) {
   function cancelDetail(id: number) { requests.get(id)?.abort();requests.delete(id);tickets.set(id,(tickets.get(id)||0)+1);detailLoading.value[id]=false }
   function dispose() { disposed = true; ++historyTicket; listRequest?.abort(); requests.forEach(request=>request.abort()); requests.clear(); expanded.value = null }
   return { sessions, expanded, opening, loading, error, detailError, detailLoading, detailReady, deleting, deleteError, isDeleted: (id: number) => deleted.has(id),
-    loadSessions, loadSession, replaceSession, open, deleteSession, acceptNewSession, dispose }
+    loadSessions, loadSession, replaceSession, open, close, deleteSession, acceptNewSession, dispose }
 }
 
 /** setTimeout AFTER each request completes: no overlapping interval requests or leaked restart. */
