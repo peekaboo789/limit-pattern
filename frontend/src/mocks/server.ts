@@ -274,7 +274,22 @@ const councilSessions: CouncilSession[] = [
   },
 ]
 const councilTemplate = structuredClone(councilSessions[0]!)
-let nextCouncilId = Math.max(...councilSessions.map(item => item.id)) + 1
+// Opt-in display acceptance fixtures. No real websites, models or user history are accessed.
+const councilDisplayDemo = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('council_demo') === 'display'
+let councilDemoFirstFailure = true
+if (councilDisplayDemo) {
+  const make = (id:number,name:string,status:CouncilSession['status'],count:number):CouncilSession => ({
+    ...structuredClone(councilTemplate),id,stock_name:`显示验收·${name}`,status,conclusion:null,error:'',
+    created_at:`2026-11-07T13:00:00.${id}Z`,finished_at:status==='running'?null:'2026-11-07T13:10:00Z',
+    statements:[],transcript:Array.from({length:count},(_,index)=>({seq:index+1,kind:index%3===0?'user':'model',speaker:index%3===0?'我':'演示模型',model:'mock',content:index===count-1?'演示长回复：\n|数据|说明|\n|---|---|\n|EPS|仅演示|\n```python\nprint("演示代码，不执行")\n```\n[公开来源示例](https://example.com)\n<img src=x onerror=alert(1)>（应作为文字显示）':`第${index+1}条演示消息。不是实际股票分析。\n这里保留换行，用于滚动和会话切换验收。`,status:'done',started_at:new Date(Date.parse('2026-11-07T13:00:00Z')+index*1000).toISOString()})),
+    progress:{phase:status==='running'?'verifying_web':status==='failed'?'failed':'done',stage:status==='running'?'采集公开证据（演示）':'演示会话',current_model:'',events:[]},
+  })
+  const failed=make(93,'无发言失败','failed',0);failed.error='演示失败：采集超时；并非真实接口错误'
+  const partial=make(94,'部分完成','failed',3);partial.error='演示：第二位模型超时，已完成发言保留'
+  councilSessions.unshift(make(90,'长对话','done',28),make(91,'会话乙','done',3),make(92,'采集中无发言','running',0),failed,partial,make(95,'首次加载失败可重试','done',3),make(96,'空会话','done',0))
+}
+if(typeof window!=='undefined' && new URLSearchParams(window.location.search).get('council_demo')==='empty')councilSessions.splice(0)
+let nextCouncilId = Math.max(0,...councilSessions.map(item => item.id)) + 1
 let councilProgress: CouncilProgress = { running: false, phase: 'idle', session_id: null, stock: null, stage: '空闲', current_model: '', done: 0, total: 0, last_status: '', error: '' }
 let councilOrder: string[] = ['m1', 'm2']
 
@@ -298,13 +313,15 @@ function councilRun(body: Record<string, unknown>): { session_id: number; starte
   if (!/^\d{6}$/.test(code)) throw new ApiError(422, '股票代码应为 6 位数字')
   const template = councilTemplate
   const row: CouncilSession = { ...structuredClone(template), id: nextCouncilId++, stock_code: code, eval_date: String(body.date || DATA_DATE), status: 'running', transcript: [], statements: [], conclusion: null, error: '', created_at: new Date().toISOString(), finished_at: null }
+  row.progress={phase:'verifying_web',stage:'联网核对（演示）',current_model:'',events:[]}
   councilSessions.unshift(row)
   councilProgress = { running: true, phase: 'verifying_web', session_id: row.id, stock: code, stage: '联网核对（演示数据）', current_model: '', done: 0, total: 2, last_status: '仅为模拟演示，未访问真实网站或模型', error: '' }
   setTimeout(() => {
+    row.progress={phase:'done',stage:'演示完成',current_model:'',events:[]}
     row.status = 'done'; row.conclusion = structuredClone(template.conclusion); row.finished_at = new Date().toISOString()
     row.transcript = [{ seq: 1, kind: 'model', speaker: '演示模型', model: 'mock', content: '这是模拟分析，不是真实联网或模型结果。', status: 'done', started_at: row.finished_at }]
     councilProgress = { ...councilProgress, running: false, phase: 'done', stage: '演示完成', done: 2 }
-  }, 1200)
+  }, 3600)
   return { session_id: row.id, started: true, participants: row.participants }
 }
 
@@ -418,9 +435,15 @@ function handle(method: string, pathname: string, params: URLSearchParams, init?
     if (councilProgress.session_id === id) councilProgress = { ...councilProgress, session_id: null, running: false, phase: 'idle' }
     return { deleted: true, session_id: id }
   }
-  if (councilDetailMatch && method === 'GET') return structuredClone(councilDetail(Number(councilDetailMatch[1] ?? 0)))
+  if (councilDetailMatch && method === 'GET') {
+    if(councilDisplayDemo && Number(councilDetailMatch[1])===95 && councilDemoFirstFailure){councilDemoFirstFailure=false;throw new ApiError(503,'演示：首次详情加载失败，点击重试后恢复')}
+    return structuredClone(councilDetail(Number(councilDetailMatch[1] ?? 0)))
+  }
   const councilSpeakMatch = pathname.match(/^\/api\/council\/(\d+)\/(speak|user-message)$/)
-  if (councilSpeakMatch && method === 'POST') return councilConversation(Number(councilSpeakMatch[1] ?? 0), councilSpeakMatch[2] || '', readBody(init) as Record<string, unknown>)
+  if (councilSpeakMatch && method === 'POST') {
+    if(councilDisplayDemo && councilSpeakMatch[2]==='user-message' && (readBody(init) as {text?:string}).text==='[模拟保存失败]')throw new ApiError(503,'演示：保存失败，意见未写入，草稿应保留')
+    return structuredClone(councilConversation(Number(councilSpeakMatch[1] ?? 0), councilSpeakMatch[2] || '', readBody(init) as Record<string, unknown>))
+  }
   throw new ApiError(404, '接口不存在')
 }
 
@@ -437,7 +460,7 @@ export function currentSummary(date: string): SummaryDocument {
 
 export async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
-  await wait(140, init?.signal)
+  await wait(councilDisplayDemo && method==='POST' && /\/council\/\d+\/user-message/.test(path) ? 1000 : 140, init?.signal)
   const url = new URL(path, 'http://127.0.0.1')
   return handle(method, url.pathname, url.searchParams, init) as T
 }

@@ -72,5 +72,5 @@ jobs:
             npm install
           fi
           npm run build
-          node --experimental-strip-types --test tests/council-history.test.mjs
+          node --experimental-strip-types --test tests/council-history.test.mjs tests/council-chat.test.mjs tests/council-message-render.test.mjs
           test -f dist/index.html

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { api, ApiError } from '@/api/client'
-import type { CouncilBar, CouncilEvidence, CouncilSession, CouncilProgress, CouncilTranscriptEntry, CouncilWebEvidence } from '@/api/types'
+import type { CouncilBar, CouncilEvidence, CouncilSession, CouncilProgress, CouncilWebEvidence } from '@/api/types'
 import KlineChart from '@/components/KlineChart.vue'
 import CouncilSourcesPanel from '@/components/CouncilSourcesPanel.vue'
+import CouncilMessageContent from '@/components/CouncilMessageContent.vue'
+import { chatMessages, transcriptItems, publicContent, councilIdentity, createChatScroll, shouldSendKey, clearSubmittedDraft, currentStage, conversationStatus } from '@/composables/councilChat'
 import { useCouncilHistory, createCouncilPoll } from '@/composables/useCouncilHistory'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
@@ -17,12 +19,15 @@ const hint = ref('')
 const progress = ref<CouncilProgress | null>(null)
 const speakingFor = ref<number | null>(null)
 const selectedSpeaker = ref<Record<number, string>>({})
-const userInput = ref<Record<number, string>>({})
+const userInput = ref<Record<string, string>>({})
+const composing = ref<Record<string, boolean>>({})
+const compositionEnded = new Map<string, number>()
 const speakingBusy = ref<Record<number, boolean>>({})
 const detailHint = ref<Record<number, string>>({})
+const evidenceOpen = ref<Record<string, boolean>>({})
 
 const history = useCouncilHistory(api)
-const { sessions, expanded, loading, error, detailError, detailLoading, deleting, deleteError, loadSessions, loadSession, replaceSession } = history
+const { sessions, expanded, opening, loading, error, detailError, detailLoading, detailReady, deleting, deleteError, loadSessions, loadSession, replaceSession } = history
 let alive = true
 let pollFailures = 0
 const poller = createCouncilPoll(async (current) => {
@@ -52,7 +57,7 @@ async function removeSession(row: CouncilSession) {
   if (speakingBusy.value[row.id] || row.status === 'running') return
   const removed = await history.deleteSession(row.id, () => window.confirm(`确定永久删除 ${row.stock_name} ${row.stock_code}（${row.eval_date}）的讨论 #${row.id}？对话与证据不可恢复。`))
   if (removed) {
-    delete userInput.value[row.id]; delete selectedSpeaker.value[row.id]
+    delete userInput.value[draftKey(row)]; delete evidenceOpen.value[draftKey(row)]; chatScroll.remove(draftKey(row)); delete selectedSpeaker.value[row.id]
     delete detailHint.value[row.id]; delete speakingBusy.value[row.id]
     if (progress.value?.session_id === row.id) progress.value = null
     stopPolling(); beginPolling()
@@ -63,37 +68,59 @@ const keyProfiles = computed(() => profiles.value.filter((p) => p.api_key_set))
 const selected = computed(() => order.value.filter((id) => keyProfiles.value.some((p) => p.id === id)))
 const canStart = computed(() => !!stock.value.trim() && selected.value.length >= 2 && !starting.value && !progress.value?.running)
 
-function transcriptItems(row: CouncilSession): CouncilTranscriptEntry[] {
-  return row.transcript?.length ? row.transcript : row.statements.map((item, index) => ({
-    seq: index + 1,
-    kind: 'model' as const,
-    profile_id: null,
-    speaker: item.speaker,
-    model: item.model,
-    round: null,
-    content: item.content,
-    error: item.error,
-    status: item.error ? 'failed' as const : 'done' as const,
-    started_at: null,
-    finished_at: null,
-    elapsed_ms: null,
-  }))
-}
-
-interface ChatMessage { key: string; kind: string; content: string; name: string; time: string | null; error?: string; model?: string; elapsed?: number | null }
-function publicContent(text: string) { return (text || '').replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim() }
-function chatMessages(row: CouncilSession): ChatMessage[] {
-  const messages: ChatMessage[] = transcriptItems(row).map(item => ({ key: `speech-${item.seq}`, kind: item.kind, content: item.content || '', name: item.kind === 'user' ? '我' : (item.speaker || item.model || '模型'), time: item.started_at || null, error: item.error, model: item.model, elapsed: item.elapsed_ms }))
-  ;(row.progress?.events || []).forEach((event, index) => messages.push({ key: `stage-${index}-${event.started_at}`, kind: 'system', name: '系统', content: `${event.stage || event.phase || '处理中'}${event.model ? ` · ${event.model}` : ''}${event.finished_at ? '' : (event.model ? ' · 正在处理，可能包含思考；不展示内部推理' : ' · 正在处理，请稍候')}`, time: event.started_at || null }))
-  if (row.error) messages.push({ key: 'session-error', kind: 'system', name: '系统', content: `失败 / 超时：${row.error}`, time: row.finished_at })
-  return messages.sort((a, b) => (Date.parse(a.time || '') || 0) - (Date.parse(b.time || '') || 0))
-}
+const draftKey = councilIdentity
+const readyFor = (row:CouncilSession) => opening.value!==row.id && detailReady.value[row.id]===(row.created_at || 'legacy')
+const busyFor = (row:CouncilSession) => row.status==='running' || !!speakingBusy.value[row.id] || !!progress.value?.running
+const activeRow = computed(() => sessions.value.find(row => row.id === expanded.value))
+const activeKey = computed(() => activeRow.value ? draftKey(activeRow.value) : '')
+const chatScroll = createChatScroll()
+const unread = ref(0)
+const following = ref(true)
 let chatViewport: HTMLElement | null = null
-let followChat = true
+let restoring = false
+const anchors = new Map<string, {key:string;offset:number}>()
 function bindChatViewport(element: unknown) { chatViewport = element instanceof HTMLElement ? element : null }
-function trackScroll() { if (chatViewport) followChat = chatViewport.scrollHeight - chatViewport.scrollTop - chatViewport.clientHeight < 90 }
-watch(expanded, () => { followChat = true })
-watch(() => { const row = sessions.value.find(item => item.id === expanded.value); return row ? chatMessages(row).map(message => `${message.key}:${message.content}`).join('|') : '' }, async () => { await nextTick(); if (followChat && chatViewport) chatViewport.scrollTop = chatViewport.scrollHeight })
+function trackScroll() {
+  if (!chatViewport || !activeKey.value || restoring || opening.value===expanded.value) return
+  const el=chatViewport,key=activeKey.value
+  chatScroll.scroll(key,el.scrollHeight,el.scrollTop,el.clientHeight)
+  const rect=el.getBoundingClientRect()
+  const anchor=[...el.querySelectorAll<HTMLElement>('[data-message-key]')].find(item=>item.getBoundingClientRect().bottom>rect.top)
+  if(anchor)anchors.set(key,{key:anchor.dataset.messageKey || '',offset:anchor.getBoundingClientRect().top-rect.top})
+  following.value=chatScroll.state(key).follow;unread.value=chatScroll.state(key).unread
+}
+function restoreScroll(key:string) {
+  if(!chatViewport || activeKey.value!==key || opening.value===expanded.value)return
+  const el=chatViewport,state=chatScroll.state(key),anchor=anchors.get(key)
+  restoring=true
+  if(state.follow)el.scrollTop=el.scrollHeight
+  else {
+    el.scrollTop=state.top
+    const found=anchor&&[...el.querySelectorAll<HTMLElement>('[data-message-key]')].find(item=>item.dataset.messageKey===anchor.key)
+    if(found&&anchor)el.scrollTop+=found.getBoundingClientRect().top-el.getBoundingClientRect().top-anchor.offset
+  }
+  following.value=state.follow;unread.value=state.unread
+  restoring=false
+}
+function goBottom() { if(!activeKey.value || !chatViewport)return;chatScroll.bottom(activeKey.value);chatViewport.scrollTop=chatViewport.scrollHeight;trackScroll() }
+watch(activeKey,key=>{const state=key?chatScroll.state(key):null;following.value=state?.follow ?? true;unread.value=state?.unread ?? 0},{flush:'sync'})
+watch([activeKey, opening], async () => { const key=activeKey.value;await nextTick();if(alive&&key)restoreScroll(key) })
+watch(() => activeRow.value ? chatMessages(activeRow.value).map(item=>`${item.key}:${item.content}:${item.error || ''}`).join('|') : '', async () => {
+  const key=activeKey.value,row=activeRow.value;if(!key||!row)return
+  chatScroll.messages(key,chatMessages(row).filter(item=>item.kind!=='system'&&(item.content||item.error)).map(item=>item.key))
+  await nextTick();if(alive)restoreScroll(key)
+}, {flush:'post'})
+function endComposition(row:CouncilSession) {const key=draftKey(row);composing.value[key]=false;compositionEnded.set(key,Date.now())}
+function composerKey(event:KeyboardEvent,row:CouncilSession) {
+  const key=draftKey(row)
+  if(!shouldSendKey(event,!!composing.value[key],Date.now()-(compositionEnded.get(key)||0)))return
+  if(!readyFor(row)||busyFor(row))return // Busy Enter remains a newline in the draft.
+  event.preventDefault();void addUserMessage(row.id)
+}
+function emptyConversation(row:CouncilSession) {
+  if(row.status==='running')return `${row.progress?.stage || '正在准备证据'}；尚无模型发言，请查看阶段状态。`
+  return row.status==='failed'?'本场尚未取得发言；失败原因已显示，可在会话空闲后点名续轮。':'暂无发言，可输入意见或点名模型开始对话。'
+}
 async function askChair(row: CouncilSession) { const chair = row.participants[row.participants.length - 1]; if (!chair) return; selectedSpeaker.value[row.id] = chair.id; await askSpeaker(row.id) }
 
 async function loadProfiles() {
@@ -144,6 +171,7 @@ async function start() {
     history.acceptNewSession(result.session_id)
     hint.value = `已开始讨论 #${result.session_id}，正在联网核对`
     expanded.value = result.session_id
+    opening.value = result.session_id
     await loadSession(result.session_id) // Never wait for a potentially large history response first.
     if (!alive) return
     beginPolling()
@@ -225,15 +253,14 @@ function durationText(row: CouncilSession): string {
   return `${minutes} 分 ${seconds % 60} 秒`
 }
 
-function statusText(row: CouncilSession): string {
-  if (row.status === 'done') return row.conclusion ? '完成' : '待主持人总结'
-  if (row.status === 'failed') return '失败'
-  return '进行中'
-}
+function statusText(row: CouncilSession) { return conversationStatus(row) }
 
 async function addUserMessage(id: number) {
-  if (speakingBusy.value[id] || progress.value?.running) return
-  const text = userInput.value[id]?.trim()
+  if (opening.value===id || speakingBusy.value[id] || progress.value?.running) return
+  const row=sessions.value.find(item=>item.id===id)
+  if(!row||!readyFor(row)||busyFor(row))return
+  const key=draftKey(row),submitted=userInput.value[key] || ''
+  const text = submitted.trim()
   if (!text) {
     detailError.value[id] = '意见不能为空'
     return
@@ -248,18 +275,21 @@ async function addUserMessage(id: number) {
   try {
     const updated = await api.councilUserMessage(id, text)
     if (!alive) return
+    if(updated.id!==id)throw new Error('响应会话不匹配')
     replaceSession(updated)
-    userInput.value[id] = ''
+    userInput.value[key] = clearSubmittedDraft(userInput.value[key] || '',submitted)
     detailHint.value[id] = '用户意见已写入对话'
   } catch (reason) {
-    if (alive) detailError.value[id] = reason instanceof ApiError ? reason.detail : '写入失败'
+    if (alive) detailError.value[id] = reason instanceof ApiError && reason.status < 500 ? reason.detail : `${reason instanceof ApiError ? reason.detail : '保存请求未获确认'}；请先重试加载确认是否已写入，再决定是否重发。草稿已保留。`
   } finally {
     if (alive) speakingBusy.value[id] = false
   }
 }
 
 async function askSpeaker(id: number) {
-  if (speakingBusy.value[id] || progress.value?.running) return
+  if (opening.value===id || speakingBusy.value[id] || progress.value?.running) return
+  const row=sessions.value.find(item=>item.id===id)
+  if(!row||!readyFor(row)||busyFor(row))return
   const profileId = selectedSpeaker.value[id]
   if (!profileId) {
     detailError.value[id] = '请选择要发言的模型'
@@ -273,6 +303,7 @@ async function askSpeaker(id: number) {
   try {
     const updated = await api.councilSpeak(id, profileId)
     if (!alive) return
+    if(updated.id!==id)throw new Error('响应会话不匹配')
     replaceSession(updated)
     await loadSession(id)
     if (!alive) return
@@ -391,11 +422,12 @@ onMounted(async () => {
       <p v-if="detailError[row.id]" class="alert" role="alert">{{ detailError[row.id] }} <button class="btn btn-ghost" @click="retryDetail(row.id)">重试加载</button></p>
       <h3>{{ row.stock_name }} {{ row.stock_code }} · {{ row.eval_date }}</h3>
       <div class="muted">评估时间：{{ displayTime(row.created_at) }}（{{ row.timezone || 'Asia/Shanghai' }}）<template v-if="durationText(row)"> · 耗时：{{ durationText(row) }}</template></div>
-      <div v-if="row.error" class="alert">{{ row.error }}</div>
-      <template v-if="row.conclusion">
+      <div v-if="row.error && opening !== row.id" class="alert">{{ row.error }}</div>
+      <template v-if="row.conclusion && readyFor(row)">
         <p class="hint">下一交易日收盘上涨估计：<b>{{ probabilityText(row) }}</b>，信心：{{ confidenceLabel(row.conclusion.confidence) }}。{{ row.conclusion.disclaimer }}</p>
         <p class="hint">{{ row.conclusion.probability_notice || '模型主观估计，未经统计校准，不是实测上涨频率。' }}</p>
         <p v-if="row.conclusion.probability_reason" class="alert">{{ row.conclusion.probability_reason }}</p>
+        <details class="council-conclusion"><summary>主持人结论与依据（展开）</summary>
         <details v-if="row.conclusion.probability_audit"><summary>概率单位 / 原始值与规范化依据（不擅改历史值）</summary><pre>{{ JSON.stringify(row.conclusion.probability_audit, null, 2) }}</pre></details>
         <p class="hint">综述：{{ row.conclusion.summary || '—' }}</p>
         <div class="detail-grid">
@@ -406,35 +438,44 @@ onMounted(async () => {
           <div><b>风险</b><p>{{ joinList(row.conclusion.risks) }}</p></div>
           <div><b>CNE6 因子</b><p>{{ joinList(row.conclusion.cne6_notes) }}</p></div>
         </div>
+        </details>
       </template>
 
-      <section class="group-chat" aria-label="多模型群聊">
+      <section class="group-chat" aria-label="多模型群聊" :aria-busy="opening === row.id">
         <div class="group-chat-head"><b>{{ row.stock_name }} · 讨论群</b><span>{{ row.participants.length }} 位模型 · 北京时间</span></div>
+        <div class="chat-current" aria-live="off">{{ opening===row.id ? '读取最新对话' : statusText(row) }}<template v-if="row.status==='running' && opening!==row.id"> · {{ currentStage(row).label }}<span v-if="currentStage(row).seconds != null"> · 本阶段 {{ currentStage(row).seconds }} 秒</span></template><span v-if="row.duration_seconds != null"> · 本场累计 {{ durationText(row) }}</span></div>
         <div class="chat-viewport" :ref="bindChatViewport" @scroll="trackScroll">
           <p class="chat-notice">展示真实处理状态与可公开分析、依据和疑点，不展示或伪造模型内部思考链。</p>
-          <template v-for="message in chatMessages(row)" :key="message.key">
-            <div v-if="message.kind === 'system'" class="chat-system" role="status">{{ message.content }} <small>{{ displayTime(message.time) }}</small></div>
-            <article v-else class="chat-message" :class="{ mine: message.kind === 'user', chair: message.kind === 'chairman' }">
+          <p v-if="opening === row.id" class="chat-empty" role="status">正在读取本场最新对话…</p>
+          <p v-else-if="!readyFor(row)" class="chat-empty">{{ detailError[row.id] ? '最新详情未加载，未展示列表中的旧对话；请点击重试。' : '等待最新详情…' }}</p>
+          <p v-else-if="!transcriptItems(row).length" class="chat-empty">{{ emptyConversation(row) }}</p>
+          <template v-for="message in (readyFor(row) ? chatMessages(row) : [])" :key="message.key">
+            <div v-if="message.kind === 'system'" class="chat-system" :data-message-key="message.key">{{ message.content }} <small>{{ displayTime(message.time) }}</small></div>
+            <article v-else class="chat-message" :data-message-key="message.key" :class="{ mine: message.kind === 'user', chair: message.kind === 'chairman' }">
               <div class="chat-avatar" aria-hidden="true">{{ message.kind === 'user' ? '我' : message.name.slice(0, 2) }}</div>
               <div class="chat-message-body"><div class="chat-name">{{ message.name }} <span v-if="message.kind === 'chairman'">· 主持人</span> <small>{{ displayTime(message.time) }}</small></div>
-                <div class="chat-bubble" :class="{ 'chat-error': message.error }">{{ message.error || publicContent(message.content) || '未返回可公开的分析文本' }}</div>
+                <div class="chat-bubble" :class="{ 'chat-error': message.error }"><CouncilMessageContent :text="message.error || (message.kind==='user' ? message.content : publicContent(message.content)) || '未返回可公开的分析文本'" /></div>
                 <details v-if="message.model || message.elapsed != null" class="chat-meta"><summary>模型 / 耗时</summary>{{ message.model }} · {{ message.elapsed == null ? '未记录耗时' : `${(message.elapsed / 1000).toFixed(1)} 秒` }}</details>
               </div>
             </article>
           </template>
         </div>
+        <div v-if="!following && readyFor(row)" class="chat-jump"><button class="btn btn-ghost" @click="goBottom">{{ unread ? `${unread} 条新消息 · ` : '' }}回到底部</button></div>
         <div class="chat-composer">
           <div class="chat-controls"><label>点名 <select v-model="selectedSpeaker[row.id]" aria-label="选择发言模型"><option disabled value="">选择模型</option><option v-for="p in keyProfiles" :key="p.id" :value="p.id">{{ p.name || p.model }}</option></select></label>
-            <button class="btn btn-ghost" :disabled="speakingBusy[row.id] || !!progress?.running || !selectedSpeaker[row.id]" @click="askSpeaker(row.id)">{{ speakingFor === row.id ? '处理中…' : '请该模型发言 / 续轮' }}</button>
-            <button class="btn btn-ghost" :disabled="speakingBusy[row.id] || !!progress?.running" @click="askChair(row)">请主持人总结</button></div>
+            <button class="btn btn-ghost" :disabled="!readyFor(row) || busyFor(row) || !selectedSpeaker[row.id]" @click="askSpeaker(row.id)">{{ speakingFor === row.id ? '处理中…' : '请该模型发言 / 续轮' }}</button>
+            <button class="btn btn-ghost" :disabled="!readyFor(row) || busyFor(row)" @click="askChair(row)">请主持人总结</button></div>
           <label class="sr-only" :for="`opinion-${row.id}`">我的意见</label>
-          <textarea :id="`opinion-${row.id}`" v-model="userInput[row.id]" maxlength="4000" rows="3" placeholder="说说你的意见、补充证据或疑问…（Ctrl / ⌘ + Enter 发送）" @keydown.ctrl.enter.prevent="addUserMessage(row.id)" @keydown.meta.enter.prevent="addUserMessage(row.id)" />
-          <p v-if="progress?.running" class="chat-notice">当前模型正在处理，草稿会保留；完成后可发送意见并续轮。</p>
-          <div class="chat-send-row"><span>{{ (userInput[row.id] || '').length }}/4000 · 意见保存后，后续模型与主持人都能看到</span><button class="btn" :disabled="speakingBusy[row.id] || !!progress?.running || !(userInput[row.id] || '').trim()" @click="addUserMessage(row.id)">发送意见</button></div>
+          <textarea :id="`opinion-${row.id}`" v-model="userInput[draftKey(row)]" maxlength="4000" rows="3" placeholder="说说你的意见、补充证据或疑问…" @compositionstart="composing[draftKey(row)] = true" @compositionend="endComposition(row)" @keydown="composerKey($event,row)" />
+          <p v-if="row.status==='running' || progress?.running" class="chat-notice">{{ row.status==='running' || progress?.session_id===row.id ? '本场模型' : '其他会话' }}正在处理，当前只能保留草稿；完成后可发送意见。</p>
+          <p class="composer-help">{{ !readyFor(row) ? '详情加载后可发送，当前输入只保留本场草稿' : busyFor(row) ? '处理中 Enter 换行，草稿可继续编辑' : 'Enter 发送 · Shift+Enter 换行 · 中文选词不发送' }}<span v-if="speakingBusy[row.id] && speakingFor!==row.id"> · 意见正在保存，请勿重复发送</span></p>
+          <div class="chat-send-row"><span>{{ (userInput[draftKey(row)] || '').length }}/4000 · 意见保存后，后续模型与主持人都能看到</span><button class="btn" :disabled="!readyFor(row) || busyFor(row) || !(userInput[draftKey(row)] || '').trim()" @click="addUserMessage(row.id)">{{ speakingBusy[row.id] && speakingFor!==row.id ? '保存中…' : '发送意见' }}</button></div>
           <p v-if="detailError[row.id]" class="alert" role="alert">{{ detailError[row.id] }}</p><p v-if="detailHint[row.id]" class="hint">{{ detailHint[row.id] }}</p>
         </div>
       </section>
 
+      <details class="council-evidence" :open="!!evidenceOpen[draftKey(row)]" @toggle="evidenceOpen[draftKey(row)] = ($event.currentTarget as HTMLDetailsElement).open"><summary>证据摘要与来源（默认折叠）</summary>
+      <template v-if="evidenceOpen[draftKey(row)]">
       <h4>证据摘要</h4>
       <div v-if="row.evidence.quality" class="hint">实际取到 {{ row.evidence.quality.successful_source_count }}/{{ row.evidence.quality.source_count }} 个来源；有效空记录 {{ row.evidence.quality.source_status_counts.empty || 0 }}；接口故障 {{ row.evidence.quality.source_status_counts.failed || 0 }}。不是缺失补零，也不代表估计已经校准。<p v-for="missing in row.evidence.quality.critical_missing" :key="missing">缺项：{{ missing }}</p></div>
       <p v-if="evidenceSummary(row.evidence)" class="hint">{{ evidenceSummary(row.evidence) }}</p>
@@ -472,6 +513,8 @@ onMounted(async () => {
       <details>
         <summary>完整证据 JSON（默认折叠）</summary>
         <pre class="evidence">{{ JSON.stringify(row.evidence, null, 2) }}</pre>
+      </details>
+      </template>
       </details>
     </div>
   </section>
@@ -515,8 +558,10 @@ pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 6p
 .chat-message { display:flex; gap:10px; margin:20px 0; align-items:flex-start; }.chat-message.mine { flex-direction:row-reverse; }
 .chat-avatar { flex:0 0 36px; width:36px; height:36px; border-radius:10px; display:grid; place-items:center; background:#3f6d9d; color:white; font-size:12px; }.mine .chat-avatar { background:#398455; }.chair .chat-avatar { background:#946f28; }
 .chat-message-body { max-width:82%; min-width:0; }.mine .chat-message-body { text-align:right; }.chat-name { font-size:12px; margin-bottom:6px; opacity:.8; }.chat-name small { margin-left:8px; }
-.chat-bubble { padding:12px 15px; border-radius:3px 12px 12px; background:rgba(127,127,127,.10); white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.7; text-align:left; }.mine .chat-bubble { background:#c4eccd; color:#193b22; border-radius:12px 3px 12px 12px; }.chat-error { border:1px solid #b85050; }.chat-meta { margin-top:6px; text-align:left; }
-.chat-composer { position:sticky; bottom:0; background:var(--bg,#fff); padding:14px; border-top:1px solid rgba(127,127,127,.2); }.chat-controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }.chat-controls select { max-width:220px; }
+.chat-bubble { white-space:normal; padding:12px 15px; border-radius:3px 12px 12px; background:rgba(127,127,127,.10); overflow-wrap:anywhere; line-height:1.7; text-align:left; }.mine .chat-bubble { background:#c4eccd; color:#193b22; border-radius:12px 3px 12px 12px; }.chat-error { border:1px solid #b85050; }.chat-meta { margin-top:6px; text-align:left; }
+.chat-composer { position:relative; background:var(--bg,#fff); padding:14px; border-top:1px solid rgba(127,127,127,.2); }.chat-controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }.chat-controls select { max-width:220px; }
 .chat-composer textarea { width:100%; resize:vertical; box-sizing:border-box; border:1px solid rgba(127,127,127,.35); border-radius:7px; background:transparent; color:inherit; padding:10px; font:inherit; }.chat-send-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:8px; }.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
 @media(max-width:640px) { .chat-viewport { padding:10px; }.chat-message-body { max-width:85%; }.group-chat-head { flex-direction:column; }.chat-send-row span { max-width:65%; } }
+.chat-current{padding:8px 16px;font-size:12px;border-bottom:1px solid #89939c33;overflow-wrap:anywhere}.chat-empty{padding:28px 12px;text-align:center;opacity:.7}.chat-jump{text-align:center;padding:4px;background:var(--bg,#fff)}.composer-help{font-size:11px;opacity:.7;margin:6px 0}.council-evidence,.council-conclusion{margin:12px 0}.council-evidence>summary,.council-conclusion>summary{cursor:pointer;font-size:13px}.chat-composer textarea{min-height:70px;max-height:180px}.chat-viewport{overflow-anchor:auto}
+@media(max-width:640px){.chat-viewport{height:44vh;min-height:220px}.chat-composer{padding:10px}.chat-controls select{max-width:100%}.chat-controls label{width:100%}.chat-send-row{align-items:flex-end}.chat-name small{display:block;margin-left:0}}
 </style>

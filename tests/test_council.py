@@ -644,9 +644,10 @@ def test_phase_events_persist_and_survive_refresh(client):
 def test_group_chat_ui_contract():
     from pathlib import Path
     text = Path("frontend/src/views/CouncilView.vue").read_text()
-    for feature in ("group-chat", "chat-avatar", "chat-bubble", "chat-composer", "chat-system", "发送意见", "请主持人总结", "followChat", "await loadSession(id)"):
+    for feature in ("group-chat", "chat-avatar", "chat-bubble", "chat-composer", "chat-system", "发送意见", "请主持人总结", "createChatScroll", "await loadSession(id)"):
         assert feature in text
-    assert 'position:sticky' in text
+    # Composer follows the independently scrolling viewport in normal flow: no overlay.
+    assert '.chat-composer { position:relative;' in text
     assert '<summary>完整证据 JSON（默认折叠）</summary>' in text
     assert '不展示或伪造模型内部思考链' in text
 

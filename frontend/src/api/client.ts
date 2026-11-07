@@ -137,14 +137,14 @@ export const api = {
   councilProgress: () =>
     request<CouncilProgress>('/api/council/progress', {}, 5000),
 
-  councilHistory: (params: { code?: string; date?: string; limit?: number } = {}) =>
-    request<{ items: CouncilSession[] }>(`/api/council/history${query({ code: params.code, date: params.date, limit: params.limit })}`),
+  councilHistory: (params: { code?: string; date?: string; limit?: number } = {}, signal?: AbortSignal) =>
+    request<{ items: CouncilSession[] }>(`/api/council/history${query({ code: params.code, date: params.date, limit: params.limit })}`, { signal, cache: 'no-store' }),
 
   councilLatest: () => request<{ items: CouncilSession[] }>('/api/council'),
 
   councilDelete: (id: number) => request<{ deleted: boolean; session_id: number }>(`/api/council/${id}`, { method: 'DELETE' }),
 
-  councilGet: (id: number) => request<CouncilSession>(`/api/council/${id}`),
+  councilGet: (id: number, signal?: AbortSignal) => request<CouncilSession>(`/api/council/${id}`, { signal, cache: 'no-store' }),
 
   councilProfileOrder: () => request<{ profile_ids: string[] }>('/api/council/profile-order'),
 

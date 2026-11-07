@@ -2,8 +2,8 @@ import { ref } from 'vue'
 import type { CouncilSession } from '../api/types'
 
 interface HistoryApi {
-  councilHistory: (params: { limit: number }) => Promise<{ items: CouncilSession[] }>
-  councilGet: (id: number) => Promise<CouncilSession>
+  councilHistory: (params: { limit: number }, signal?: AbortSignal) => Promise<{ items: CouncilSession[] }>
+  councilGet: (id: number, signal?: AbortSignal) => Promise<CouncilSession>
   councilDelete: (id: number) => Promise<unknown>
 }
 function message(reason: unknown, fallback: string) {
@@ -17,6 +17,7 @@ export function useCouncilHistory(api: HistoryApi) {
   const loading = ref(false)
   const error = ref('')
   const detailError = ref<Record<number, string>>({})
+  const detailReady = ref<Record<number, string>>({})
   const detailLoading = ref<Record<number, boolean>>({})
   const deleting = ref<Record<number, boolean>>({})
   const deleted = new Map<number, string | null>()
@@ -24,12 +25,16 @@ export function useCouncilHistory(api: HistoryApi) {
   const versions = new Map<number, number>()
   const tickets = new Map<number, number>()
   const loads = new Map<number, number>()
+  const requests = new Map<number, AbortController>()
+  let listRequest: AbortController | null = null
+  const opening = ref<number | null>(null)
   let revision = 0
   let historyTicket = 0
   let disposed = false
 
   function replaceSession(row: CouncilSession) {
     if (disposed || deleted.has(row.id)) return
+    detailReady.value[row.id] = row.created_at || 'legacy'
     versions.set(row.id, ++revision)
     tickets.set(row.id, (tickets.get(row.id) || 0) + 1)
     const index = sessions.value.findIndex(item => item.id === row.id)
@@ -38,11 +43,13 @@ export function useCouncilHistory(api: HistoryApi) {
   }
   async function loadSessions() {
     if (disposed) return
+    listRequest?.abort()
+    listRequest = new AbortController()
     const ticket = ++historyTicket
     const stamp = revision
     loading.value = true
     try {
-      const data = await api.councilHistory({ limit: 100 })
+      const data = await api.councilHistory({ limit: 100 }, listRequest.signal)
       if (disposed || ticket !== historyTicket) return
       const current = new Map(sessions.value.map(row => [row.id, row]))
       const rows = data.items.filter(row => {
@@ -67,25 +74,31 @@ export function useCouncilHistory(api: HistoryApi) {
   }
   async function loadSession(id: number) {
     if (disposed || deleted.has(id)) return
+    requests.get(id)?.abort()
+    const controller = new AbortController()
+    requests.set(id, controller)
     const ticket = (tickets.get(id) || 0) + 1
     tickets.set(id, ticket)
     loads.set(id, ticket)
     detailLoading.value[id] = true
     detailError.value[id] = ''
     try {
-      const row = await api.councilGet(id)
+      const row = await api.councilGet(id, controller.signal)
       if (disposed || deleted.has(id) || tickets.get(id) !== ticket) return
       replaceSession(row)
     } catch (reason) {
       if (!disposed && !deleted.has(id) && tickets.get(id) === ticket) detailError.value[id] = message(reason, '会话加载失败，请重试')
     } finally {
       // A replacement invalidates this ticket; only an actual newer GET keeps loading alive.
-      if (!disposed && loads.get(id) === ticket) detailLoading.value[id] = false
+      if (!disposed && loads.get(id) === ticket) { detailLoading.value[id] = false; if(opening.value===id)opening.value=null }
+      if(requests.get(id)===controller)requests.delete(id)
     }
   }
   async function open(row: CouncilSession) {
-    if (expanded.value === row.id) { expanded.value = null; return }
+    if (expanded.value !== null) cancelDetail(expanded.value)
+    if (expanded.value === row.id) { expanded.value = null; opening.value=null; return }
     expanded.value = row.id
+    opening.value = row.id
     await loadSession(row.id) // Completed history is refreshed too, not just running rows.
   }
   async function deleteSession(id: number, confirm: () => boolean) {
@@ -96,6 +109,8 @@ export function useCouncilHistory(api: HistoryApi) {
     try {
       await api.councilDelete(id)
       if (disposed) return false
+      cancelDetail(id)
+      listRequest?.abort()
       deleted.set(id, sessions.value.find(row => row.id === id)?.created_at ?? null)
       ++historyTicket // Any pre-delete list snapshot is now stale.
       loading.value = false
@@ -106,6 +121,7 @@ export function useCouncilHistory(api: HistoryApi) {
       delete deleteError.value[id]
       delete detailError.value[id]
       delete detailLoading.value[id]
+      delete detailReady.value[id]
       return true
     } catch (reason) {
       if (!disposed) { deleteError.value[id] = message(reason, '删除失败，记录已保留，请重试'); detailError.value[id] = deleteError.value[id] }
@@ -118,12 +134,14 @@ export function useCouncilHistory(api: HistoryApi) {
     // SQLite may reuse the highest deleted INTEGER PK. Only an explicit new-run response
     // may remove its tombstone; invalidate every request from the former incarnation.
     deleted.delete(id)
+    delete detailReady.value[id]
     tickets.set(id, (tickets.get(id) || 0) + 1)
     versions.set(id, ++revision)
     ++historyTicket
   }
-  function dispose() { disposed = true; ++historyTicket; expanded.value = null }
-  return { sessions, expanded, loading, error, detailError, detailLoading, deleting, deleteError, isDeleted: (id: number) => deleted.has(id),
+  function cancelDetail(id: number) { requests.get(id)?.abort();requests.delete(id);tickets.set(id,(tickets.get(id)||0)+1);detailLoading.value[id]=false }
+  function dispose() { disposed = true; ++historyTicket; listRequest?.abort(); requests.forEach(request=>request.abort()); requests.clear(); expanded.value = null }
+  return { sessions, expanded, opening, loading, error, detailError, detailLoading, detailReady, deleting, deleteError, isDeleted: (id: number) => deleted.has(id),
     loadSessions, loadSession, replaceSession, open, deleteSession, acceptNewSession, dispose }
 }
 

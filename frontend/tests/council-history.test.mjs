@@ -68,3 +68,16 @@ test('history discovers a different reused id created in another tab; old delete
   await h.loadSessions();await h.deleteSession(1,()=>true);await h.loadSessions();assert.equal(h.sessions.value.length,0)
   fresh=true;await h.loadSessions();assert.equal(h.sessions.value.length,1)
 })
+
+test('switch cancels old GET, failure never marks a list snapshot fresh, retry recovers', async () => {
+  const signals=[];let fail=true
+  const h=setup({councilGet:async(id,signal)=>{signals.push(signal);if(id===1)return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('cancelled','AbortError'))));if(fail)throw Error('network');return row(id,'fresh B')}})
+  await h.loadSessions();const old=h.open(row(1));await h.open(row(2));await old
+  assert.equal(signals[0].aborted,true);assert.equal(h.expanded.value,2);assert.equal(h.detailReady.value[2],undefined);assert.equal(h.detailError.value[1],'')
+  fail=false;await h.loadSession(2);assert.equal(h.detailReady.value[2],row(2).created_at);assert.equal(h.opening.value,null)
+})
+test('dispose aborts actual GET/list signals and suppresses late responses', async () => {
+  const signals=[]
+  const pending=(_arg,signal)=>{signals.push(signal);return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('cancelled','AbortError'))))}
+  const h=setup({councilGet:pending,councilHistory:pending});const p=h.loadSessions(),q=h.loadSession(1);h.dispose();await Promise.all([p,q]);assert.equal(signals.every(s=>s.aborted),true);assert.equal(h.sessions.value.length,0)
+})
