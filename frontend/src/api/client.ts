@@ -152,6 +152,20 @@ export const api = {
       body: JSON.stringify({ profile_ids }),
     }),
 
+  councilModels: () => request<{ items: { id: string; name: string; model: string; api_key_set: boolean; active: boolean }[] }>('/api/council/models'),
+
+  councilUserMessage: (id: number, text: string) =>
+    request<CouncilSession>(`/api/council/${id}/user-message`, { method: 'POST', body: JSON.stringify({ text }) }, 30000),
+
+  councilSpeak: (id: number, profile_id: string, round?: number) =>
+    request<CouncilSession>(`/api/council/${id}/speak`, {
+      method: 'POST',
+      body: JSON.stringify({ profile_id, round }),
+    }, 135000),
+
+  councilReconcileStale: () =>
+    request<{ terminated: number }>('/api/council/reconcile-stale', { method: 'POST' }, 5000),
+
   clusterStatus: () => request<{ available: boolean; message: string }>('/api/cluster/status'),
 
   cluster: (date?: string) => request<ClusterResult>(`/api/cluster${query({ date })}`),

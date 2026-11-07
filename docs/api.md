@@ -155,3 +155,12 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 - 完整增删改仍用 `/api/ai/profiles`（v0.5.2）。
 - `GET /api/ai-ranking/progress` 新增 `model, partial, retried, errors{原因:次数}, last_error`；榜单里 `batches` 同样带这些字段，另有 `error_summary`。`failed` 只数完全没拿到结果的原始批次。
 - `POST /api/ai/test`、`/api/ai/profiles/test` 返回新增 `provider, scoring_ok, scoring_ms, scoring_count, scoring_error`（2 只虚构股票的真实打分）。
+
+
+### 讨论会对话与恢复（v0.7.12）
+- `GET /api/council/history`：历史列表；`GET /api/council/{id}`：证据、进度事件及按序transcript。
+- `GET /api/council/models`：可用模型公开信息，不返回密钥。
+- `POST /api/council/{id}/user-message`：`{"text":"我的意见"}`，1–4000字；持久化，后续发言可见。
+- `POST /api/council/{id}/speak`：`{"profile_id":"已配置模型ID","round":2}`，指定模型续轮；最后一位原参会模型为主持人。调用等待有120秒总上限，客户端等待135秒并同时轮询。并发操作返回409，失败发言保留并可继续重试。
+- `POST /api/council/reconcile-stale`：终止进程重启遗留running记录，不终止本进程正在工作的讨论。
+- `progress.events` 保存阶段/模型与时间；transcript保存公开发言、用户意见、失败原因和耗时。时间返回显式UTC+8。密钥被脱敏，隐藏think段不进入公开发言。补充意见或非主持人续轮会清空旧结论，需再次请主持人总结。

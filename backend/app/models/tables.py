@@ -351,6 +351,8 @@ class AiCouncilSession(Base):
     participants: Mapped[list] = mapped_column(JSON, default=list)
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     statements: Mapped[list] = mapped_column(JSON, default=list)
+    transcript: Mapped[list] = mapped_column(JSON, default=list)
+    progress: Mapped[dict] = mapped_column(JSON, default=dict)
     conclusion: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

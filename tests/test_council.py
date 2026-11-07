@@ -401,3 +401,281 @@ def test_build_evidence_chart_inputs(client):
     assert chart
     assert all({"date", "open", "high", "low", "close", "volume", "amount", "pct_chg"} <= set(bar) for bar in chart)
     assert chart[0]["amount_estimated"] in (True, False)
+
+
+def _seed_session(day, status="done", profiles=None, evidence=None, statements=None):
+    from backend.app.models.tables import AiCouncilSession
+    with session_scope() as session:
+        row = AiCouncilSession(
+            stock_code="600519", stock_name="贵州茅台", eval_date=day, status=status,
+            participants=profiles or [{"id": "a", "name": "甲", "model": "m-a"}, {"id": "b", "name": "主席", "model": "m-b"}],
+            evidence=evidence or {}, statements=statements or [], transcript=[], conclusion=None, error="",
+        )
+        session.add(row)
+        session.commit()
+        return row.id
+
+
+def _fake_web():
+    return [{"status": "failed", "category": "market", "source": "eastmoney_spot", "url": "https://x",
+             "fetched_at": "now", "window": None, "digest": {"reason": "mock"}}]
+
+
+def test_speaker_timeout_is_bounded(client, monkeypatch):
+    """单个模型超时必须终止整场并持久化失败原因，不能无限转圈。"""
+    from backend.app.services.council import service as council_service
+    from backend.app.services.council import web_evidence as we_module
+    from backend.app.core.ai_client import AiTimeout
+
+    day = _seed_quotes()
+    monkeypatch.setattr(we_module, "collect", lambda code, end=None: _fake_web())
+    monkeypatch.setattr(we_module, "fetch_kline", lambda code, end=None, limit=35: {"status": "empty", "category": "market",
+                     "source": "eastmoney_kline", "url": "https://x", "fetched_at": "now", "window": None, "digest": {"note": "mock"}})
+    def fake_run_speaker(profile, system, prompt):
+        raise AiTimeout("读取超时：连续 60 秒没有新数据")
+    monkeypatch.setattr(council_service, "_run_speaker", fake_run_speaker)
+    profiles = [{"id": "a", "name": "甲", "model": "m-a"}, {"id": "b", "name": "主席", "model": "m-b"}]
+    sid = _seed_session(day, status="running")
+    with session_scope() as session:
+        ev = council_service.build_evidence(session, "600519", "贵州茅台", day)
+    council_service._run(sid, "600519", "贵州茅台", day, profiles, ev)
+    with session_scope() as session:
+        row = session.query(AiCouncilSession).filter(AiCouncilSession.id == sid).one()
+        assert row.status == "failed"
+        assert "超时" in row.error
+        assert row.finished_at is not None
+        assert row.transcript
+        assert row.transcript[0]["error"]
+
+
+def test_each_speaker_persisted_in_transcript(client, monkeypatch):
+    """每个模型完成后立即写 DB；后续失败不丢前面的 transcript。"""
+    from backend.app.services.council import service as council_service
+    from backend.app.services.council import web_evidence as we_module
+
+    day = _seed_quotes()
+    monkeypatch.setattr(we_module, "collect", lambda code, end=None: _fake_web())
+    monkeypatch.setattr(we_module, "fetch_kline", lambda code, end=None, limit=35: {"status": "empty", "category": "market",
+                     "source": "eastmoney_kline", "url": "https://x", "fetched_at": "now", "window": None, "digest": {"note": "mock"}})
+    def fake_run_speaker(profile, system, prompt):
+        if profile["id"] == "b":
+            raise RuntimeError("HTTP 429")
+        return "甲的发言"
+    monkeypatch.setattr(council_service, "_run_speaker", fake_run_speaker)
+    profiles = [{"id": "a", "name": "甲", "model": "m-a"}, {"id": "b", "name": "主席", "model": "m-b"}]
+    sid = _seed_session(day, status="running")
+    with session_scope() as session:
+        ev = council_service.build_evidence(session, "600519", "贵州茅台", day)
+    council_service._run(sid, "600519", "贵州茅台", day, profiles, ev)
+    with session_scope() as session:
+        row = session.query(AiCouncilSession).filter(AiCouncilSession.id == sid).one()
+        assert len(row.transcript) == 2
+        assert row.transcript[0]["content"] == "甲的发言"
+        assert row.transcript[1]["error"]
+        assert row.status == "failed"
+
+
+def test_reconcile_stale_running_session(client):
+    """进程重启后的遗留 running 会话要安全终止。"""
+    day = _seed_quotes()
+    sid = _seed_session(day, status="running")
+    assert service.reconcile_stale_sessions() == 1
+    with session_scope() as session:
+        row = session.query(AiCouncilSession).filter(AiCouncilSession.id == sid).one()
+        assert row.status == "failed"
+        assert "重启" in row.error
+
+
+def test_manual_speak_rejects_while_active(client, monkeypatch):
+    """会话在自动开会/其它模型发言时，手动续轮必须拒绝并发。"""
+    day = _seed_quotes()
+    sid = _seed_session(day, status="running")
+    service._mark_active(sid)
+    try:
+        with pytest.raises(RuntimeError) as exc:
+            service.speak(sid, "a")
+        assert "正在自动开会" in str(exc.value) or "已有模型发言" in str(exc.value)
+    finally:
+        service._unmark_active(sid)
+
+
+def test_user_message_and_manual_speaker_enter_prompt(client, monkeypatch):
+    """用户意见要进入后续模型 prompt，主席也应看到完整 transcript。"""
+    from backend.app.services.council import service as council_service
+    from backend.app.services.council import web_evidence as we_module
+
+    day = _seed_quotes()
+    monkeypatch.setattr(we_module, "collect", lambda code, end=None: _fake_web())
+    monkeypatch.setattr(we_module, "fetch_kline", lambda code, end=None, limit=35: {"status": "empty", "category": "market",
+                     "source": "eastmoney_kline", "url": "https://x", "fetched_at": "now", "window": None, "digest": {"note": "mock"}})
+    seen = []
+    def fake_run_speaker(profile, system, prompt):
+        seen.append((profile["id"], prompt))
+        if profile["id"] == "b":
+            return '{"up_probability": 60,"confidence":"medium","verified":[],"conflicts_or_unverified":[],"agreements":[],"disagreements":[],"bullish":[],"bearish":[],"risks":[],"cne6_notes":[],"summary":"主席读到了","disclaimer":"测试"}'
+        return "甲的发言"
+    monkeypatch.setattr(council_service, "_run_speaker", fake_run_speaker)
+    by_id = {"a": {"id": "a", "name": "甲", "model": "m-a", "api_key_set": True},
+             "b": {"id": "b", "name": "主席", "model": "m-b", "api_key_set": True}}
+    monkeypatch.setattr(council_service, "_profile_by_id", lambda pid: by_id[pid])
+    profiles = [{"id": "a", "name": "甲", "model": "m-a"}, {"id": "b", "name": "主席", "model": "m-b"}]
+    sid = _seed_session(day, status="running")
+    with session_scope() as session:
+        ev = council_service.build_evidence(session, "600519", "贵州茅台", day)
+    council_service._run(sid, "600519", "贵州茅台", day, profiles, ev)
+    updated = council_service.add_user_message(sid, "用户补充：注意ST风险")
+    assert any(item["kind"] == "user" and "ST" in item["content"] for item in updated["transcript"])
+    updated = council_service.speak(sid, "a", round_no=2)
+    assert updated["status"] == "done"
+    assert len(seen) == 3
+    assert "用户补充：注意ST风险" in seen[-1][1]
+    # 主席应能读到完整 transcript：手动让主席总结，prompt 需包含用户意见与所有前序发言
+    updated = council_service.speak(sid, "b", round_no=2)
+    assert len(seen) == 4
+    assert "用户补充：注意ST风险" in seen[-1][1]
+    assert "甲的发言" in seen[-1][1]
+
+
+def test_payload_uses_shanghai_timezone_and_duration(client):
+    """时间输出统一为 Asia/Shanghai 标签，且给出 duration_seconds。"""
+    day = _seed_quotes()
+    sid = _seed_session(day, status="done", statements=[{"index": 0, "speaker": "甲", "model": "m-a", "content": "x", "error": ""}])
+    payload = service.get(sid)
+    assert payload["timezone"] == "Asia/Shanghai"
+    assert payload["created_at"]
+    assert not payload["created_at"].endswith("Z")
+    assert "duration_seconds" in payload
+
+
+def test_small_local_kline_supplemented_by_public(client, monkeypatch):
+    """本地只有少量 K 线时，公开源补到可用范围，只含评估日及以前。"""
+    from backend.app.services.council import service as council_service
+    from backend.app.services.council import web_evidence as we_module
+
+    day = _seed_quotes()
+    monkeypatch.setattr(we_module, "collect", lambda code, end=None: _fake_web())
+    public_bars = [
+        {"date": "2026-06-08", "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10, "amount": 100,
+         "pct_chg": 1.0, "turnover_rate": 0.2, "is_limit_up": False, "is_limit_down": False},
+        {"date": "2026-06-12", "open": 2, "high": 3, "low": 1.5, "close": 2.5, "volume": 10, "amount": 100,
+         "pct_chg": 1.0, "turnover_rate": 0.2, "is_limit_up": False, "is_limit_down": False},
+    ]
+    monkeypatch.setattr(we_module, "fetch_kline", lambda code, end=None, limit=35: {
+        "status": "ok", "category": "market", "source": "eastmoney_kline", "url": "https://x", "fetched_at": "now",
+        "window": None, "digest": {"count": len(public_bars), "bars": public_bars}})
+    with session_scope() as session:
+        ev = council_service.build_evidence(session, "600519", "贵州茅台", day)
+    web = _fake_web() + [we_module.fetch_kline("600519", day)]
+    ev = council_service.finalize_evidence(ev, web, day)
+    kline = ev["kline"]
+    assert kline["local_count"] < 30
+    assert kline["public_count"] == 2
+    assert len(kline["merged_bars"]) >= len(ev["local"]["bars_30d"])
+    assert all(bar["date"] <= day.isoformat() for bar in kline["merged_bars"])
+    assert "本地近 30 个交易日只有" in kline["missing_reason"]
+    assert kline["chart"]["bars"]
+
+
+def test_scrub_removes_fake_api_key():
+    """统一脱敏：假密钥不得进入错误/发言回显。"""
+    assert "sk-***" in service._scrub("错误 sk-abcdefgh1234")
+    assert service._scrub("Bearer abcdefgh1234567890").lower().startswith("bearer ***")
+
+
+def test_council_models_endpoint_not_shadowed(client):
+    """静态 /models 路由必须在动态 /{session_id} 之前注册。"""
+    r = client.get("/api/council/models")
+    assert r.status_code == 200
+    assert "items" in r.json()
+
+
+def test_user_message_endpoint_validates_and_scrubs(client, monkeypatch):
+    """用户意见 API：空/超长校验；持久化后不回显密钥。"""
+    day = _seed_quotes()
+    sid = _seed_session(day, status="done")
+    r = client.post(f"/api/council/{sid}/user-message", json={"text": ""})
+    assert r.status_code == 409
+    r = client.post(f"/api/council/{sid}/user-message", json={"text": "x" * 4001})
+    assert r.status_code == 409
+    r = client.post(f"/api/council/{sid}/user-message", json={"text": "意见包含 sk-abcdefgh1234 的假密钥"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert any(item["kind"] == "user" and "sk-***" in item["content"] for item in payload["transcript"])
+    assert "sk-abcdefgh1234" not in json.dumps(payload)
+
+
+def test_wall_clock_timeout_includes_internal_retries(monkeypatch):
+    import threading
+    release = threading.Event()
+    monkeypatch.setattr(service, "COUNCIL_SPEAKER_TOTAL_SECONDS", 0.02)
+    monkeypatch.setattr(service, "_chat_for", lambda profile: lambda *_: release.wait(1))
+    try:
+        with pytest.raises(TimeoutError, match="总时限"):
+            service._run_speaker({"id": "test"}, "system", "prompt")
+    finally:
+        release.set()
+
+
+def test_running_session_is_not_replaced(client, monkeypatch):
+    monkeypatch.setitem(service._PROGRESS, "running", True)
+    with pytest.raises(RuntimeError, match="已经有一场"):
+        service.start("600759")
+
+
+def test_configured_nonstandard_key_scrubbed_recursively(monkeypatch):
+    key = "fake-private-provider-token-123456"
+    monkeypatch.setattr(service.ai_profiles, "public", lambda: {"items": [{"id": "x"}]})
+    monkeypatch.setattr(service.ai_profiles, "settings_for", lambda _: {"ai_api_key": key})
+    result = service._sanitize({"transcript": [{"content": key}], "api_key": key, "error": key})
+    assert key not in json.dumps(result)
+    assert "api_key" not in result
+
+
+def test_private_think_text_not_in_public_speech(monkeypatch):
+    monkeypatch.setattr(service, "_chat_for", lambda _: lambda *_: "<think>private hidden reasoning</think>公开依据与疑点")
+    assert service._run_speaker({"id": "fake"}, "system", "prompt") == "公开依据与疑点"
+
+
+def test_phase_events_persist_and_survive_refresh(client):
+    sid = _seed_session(_seed_quotes(), status="done")
+    service._persist_fields(sid, progress={"phase": "verifying_web", "stage": "联网核对"})
+    service._persist_fields(sid, progress={"phase": "speaking", "stage": "发言中", "current_model": "甲"})
+    events = service.get(sid)["progress"]["events"]
+    assert len(events) == 2
+    assert events[0]["finished_at"]
+    assert events[1]["model"] == "甲"
+
+
+def test_group_chat_ui_contract():
+    from pathlib import Path
+    text = Path("frontend/src/views/CouncilView.vue").read_text()
+    for feature in ("group-chat", "chat-avatar", "chat-bubble", "chat-composer", "chat-system", "发送意见", "请主持人总结", "followChat", "await loadSession(progress.value.session_id)"):
+        assert feature in text
+    assert 'position:sticky' in text
+    assert '<summary>完整证据 JSON（默认折叠）</summary>' in text
+    assert '不展示或伪造模型内部思考链' in text
+
+
+def test_profile_order_route_not_shadowed(client):
+    assert client.get("/api/council/profile-order").status_code == 200
+
+
+def test_legacy_statements_preserved_when_user_adds_opinion(client):
+    sid = _seed_session(_seed_quotes(), status="failed")
+    service._persist_fields(sid, statements=[{"speaker": "旧模型", "model": "old", "content": "旧发言不能丢", "error": ""}])
+    result = service.add_user_message(sid, "我的新意见")
+    assert result["transcript"][0]["content"] == "旧发言不能丢"
+    assert result["transcript"][1]["content"] == "我的新意见"
+
+
+def test_existing_council_table_gets_chat_columns():
+    from sqlalchemy import create_engine, inspect, text
+    from backend.app.core.database import upgrade_existing_tables
+    engine = create_engine("sqlite:///:memory:")
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE ai_council_sessions (id INTEGER PRIMARY KEY, status TEXT)"))
+        upgrade_existing_tables(engine)
+        assert {"transcript", "progress"} <= {column["name"] for column in inspect(engine).get_columns("ai_council_sessions")}
+    finally:
+        engine.dispose()

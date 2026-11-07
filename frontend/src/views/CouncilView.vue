@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { api, ApiError } from '@/api/client'
-import { request } from '@/api/http'
-import type { CouncilBar, CouncilEvidence, CouncilSession, CouncilProgress, CouncilWebEvidence } from '@/api/types'
+import type { CouncilBar, CouncilEvidence, CouncilSession, CouncilProgress, CouncilTranscriptEntry, CouncilWebEvidence } from '@/api/types'
 import KlineChart from '@/components/KlineChart.vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 interface Prof { id: string; name: string; model: string; api_key_set: boolean; active: boolean }
 
@@ -19,13 +18,52 @@ const hint = ref('')
 const progress = ref<CouncilProgress | null>(null)
 const expanded = ref<number | null>(null)
 const polling = ref<number | null>(null)
+const speakingFor = ref<number | null>(null)
+const selectedSpeaker = ref<Record<number, string>>({})
+const userInput = ref<Record<number, string>>({})
+const speakingBusy = ref<Record<number, boolean>>({})
+const detailError = ref<Record<number, string>>({})
+const detailHint = ref<Record<number, string>>({})
 
 const keyProfiles = computed(() => profiles.value.filter((p) => p.api_key_set))
 const selected = computed(() => order.value.filter((id) => keyProfiles.value.some((p) => p.id === id)))
-const canStart = computed(() => !!stock.value.trim() && selected.value.length >= 2 && !starting.value)
+const canStart = computed(() => !!stock.value.trim() && selected.value.length >= 2 && !starting.value && !progress.value?.running)
+
+function transcriptItems(row: CouncilSession): CouncilTranscriptEntry[] {
+  return row.transcript?.length ? row.transcript : row.statements.map((item, index) => ({
+    seq: index + 1,
+    kind: 'model' as const,
+    profile_id: null,
+    speaker: item.speaker,
+    model: item.model,
+    round: null,
+    content: item.content,
+    error: item.error,
+    status: item.error ? 'failed' as const : 'done' as const,
+    started_at: null,
+    finished_at: null,
+    elapsed_ms: null,
+  }))
+}
+
+interface ChatMessage { key: string; kind: string; content: string; name: string; time: string | null; error?: string; model?: string; elapsed?: number | null }
+function publicContent(text: string) { return (text || '').replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim() }
+function chatMessages(row: CouncilSession): ChatMessage[] {
+  const messages: ChatMessage[] = transcriptItems(row).map(item => ({ key: `speech-${item.seq}`, kind: item.kind, content: item.content || '', name: item.kind === 'user' ? '我' : (item.speaker || item.model || '模型'), time: item.started_at || null, error: item.error, model: item.model, elapsed: item.elapsed_ms }))
+  ;(row.progress?.events || []).forEach((event, index) => messages.push({ key: `stage-${index}-${event.started_at}`, kind: 'system', name: '系统', content: `${event.stage || event.phase || '处理中'}${event.model ? ` · ${event.model}` : ''}${event.finished_at ? '' : (event.model ? ' · 正在处理，可能包含思考；不展示内部推理' : ' · 正在处理，请稍候')}`, time: event.started_at || null }))
+  if (row.error) messages.push({ key: 'session-error', kind: 'system', name: '系统', content: `失败 / 超时：${row.error}`, time: row.finished_at })
+  return messages.sort((a, b) => (Date.parse(a.time || '') || 0) - (Date.parse(b.time || '') || 0))
+}
+let chatViewport: HTMLElement | null = null
+let followChat = true
+function bindChatViewport(element: unknown) { chatViewport = element instanceof HTMLElement ? element : null }
+function trackScroll() { if (chatViewport) followChat = chatViewport.scrollHeight - chatViewport.scrollTop - chatViewport.clientHeight < 90 }
+watch(expanded, () => { followChat = true })
+watch(() => { const row = sessions.value.find(item => item.id === expanded.value); return row ? chatMessages(row).map(message => `${message.key}:${message.content}`).join('|') : '' }, async () => { await nextTick(); if (followChat && chatViewport) chatViewport.scrollTop = chatViewport.scrollHeight })
+async function askChair(row: CouncilSession) { const chair = row.participants[row.participants.length - 1]; if (!chair) return; selectedSpeaker.value[row.id] = chair.id; await askSpeaker(row.id) }
 
 async function loadProfiles() {
-  const data = await request<{ items: Prof[] }>('/api/ai/profiles')
+  const data = await api.councilModels()
   profiles.value = data.items
 }
 
@@ -37,12 +75,23 @@ async function loadOrder() {
 async function loadSessions() {
   loading.value = true
   try {
-    const data = await api.councilLatest()
+    const data = await api.councilHistory({ limit: 100 })
     sessions.value = data.items
   } catch (reason) {
     error.value = reason instanceof ApiError ? reason.detail : '讨论记录加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function loadSession(id: number) {
+  try {
+    const data = await api.councilGet(id)
+    const index = sessions.value.findIndex((row) => row.id === id)
+    if (index >= 0) sessions.value[index] = data
+    else sessions.value.unshift(data)
+  } catch (reason) {
+    detailError.value[id] = reason instanceof ApiError ? reason.detail : '会话刷新失败'
   }
 }
 
@@ -94,7 +143,8 @@ async function beginPolling() {
   polling.value = window.setInterval(async () => {
     try {
       progress.value = await api.councilProgress()
-      if (progress.value && !progress.value.running) {
+      if (progress.value?.session_id) await loadSession(progress.value.session_id)
+      if (progress.value && !progress.value.running && speakingFor.value === null) {
         stopPolling()
         await loadSessions()
       }
@@ -102,6 +152,15 @@ async function beginPolling() {
       /* 忽略轮询错误 */
     }
   }, 1500)
+}
+
+async function reconcileStale() {
+  try {
+    const result = await api.councilReconcileStale()
+    hint.value = result.terminated ? `已终止 ${result.terminated} 场遗留运行中会话` : '没有遗留运行中会话'
+  } catch (reason) {
+    error.value = reason instanceof ApiError ? reason.detail : '终止遗留会话失败'
+  }
 }
 
 function stopPolling() {
@@ -117,6 +176,7 @@ function confidenceLabel(value: string | null | undefined) {
 
 function open(row: CouncilSession) {
   expanded.value = expanded.value === row.id ? null : row.id
+  if (expanded.value === row.id && row.status === 'running') loadSession(row.id)
 }
 
 function joinList(values: string[] | undefined) {
@@ -142,7 +202,91 @@ function groupedWeb(evidence: CouncilEvidence | null | undefined): [string, Coun
 }
 
 function chartBars(evidence: CouncilEvidence | null | undefined): CouncilBar[] {
-  return evidence?.local?.chart?.bars ?? evidence?.local?.bars_30d ?? []
+  return evidence?.kline?.chart?.bars ?? evidence?.local?.chart?.bars ?? evidence?.local?.bars_30d ?? []
+}
+
+function evidenceSummary(evidence: CouncilEvidence | null | undefined): string {
+  if (!evidence?.kline) return ''
+  const kline = evidence.kline
+  const reason = kline.missing_reason || ''
+  const summary = `本地 ${kline.local_count} 根 / 公开 ${kline.public_count} 根，预期约 ${kline.expected_trading_days ?? 30} 个交易日`
+  return reason ? `${summary}。${reason}` : summary
+}
+
+function displayTime(value: string | null | undefined): string {
+  if (!value) return '—'
+  const instant = new Date(/(?:Z|[+-]\d\d:\d\d)$/.test(value) ? value : `${value}Z`)
+  return Number.isNaN(instant.getTime()) ? value : instant.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false })
+}
+
+function durationText(row: CouncilSession): string {
+  if (row.duration_seconds == null) return ''
+  const seconds = Math.round(row.duration_seconds)
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes} 分 ${seconds % 60} 秒`
+}
+
+function statusText(row: CouncilSession): string {
+  if (row.status === 'done') return row.conclusion ? '完成' : '待主持人总结'
+  if (row.status === 'failed') return '失败'
+  return '进行中'
+}
+
+function replaceSession(updated: CouncilSession) {
+  const index = sessions.value.findIndex((row) => row.id === updated.id)
+  if (index >= 0) sessions.value[index] = updated
+  else sessions.value.unshift(updated)
+}
+
+async function addUserMessage(id: number) {
+  if (speakingBusy.value[id] || progress.value?.running) return
+  const text = userInput.value[id]?.trim()
+  if (!text) {
+    detailError.value[id] = '意见不能为空'
+    return
+  }
+  if (text.length > 4000) {
+    detailError.value[id] = '意见最多 4000 字'
+    return
+  }
+  speakingBusy.value[id] = true
+  detailError.value[id] = ''
+  detailHint.value[id] = ''
+  try {
+    const updated = await api.councilUserMessage(id, text)
+    replaceSession(updated)
+    userInput.value[id] = ''
+    detailHint.value[id] = '用户意见已写入对话'
+  } catch (reason) {
+    detailError.value[id] = reason instanceof ApiError ? reason.detail : '写入失败'
+  } finally {
+    speakingBusy.value[id] = false
+  }
+}
+
+async function askSpeaker(id: number) {
+  if (speakingBusy.value[id] || progress.value?.running) return
+  const profileId = selectedSpeaker.value[id]
+  if (!profileId) {
+    detailError.value[id] = '请选择要发言的模型'
+    return
+  }
+  speakingBusy.value[id] = true
+  speakingFor.value = id
+  await beginPolling()
+  detailError.value[id] = ''
+  detailHint.value[id] = ''
+  try {
+    const updated = await api.councilSpeak(id, profileId)
+    replaceSession(updated)
+    detailHint.value[id] = updated.status === 'failed' ? '模型发言失败，详见对话记录' : '模型已完成发言'
+  } catch (reason) {
+    detailError.value[id] = reason instanceof ApiError ? reason.detail : '发言失败'
+  } finally {
+    speakingBusy.value[id] = false
+    speakingFor.value = null
+  }
 }
 
 function digestText(digest: unknown): string {
@@ -151,6 +295,8 @@ function digestText(digest: unknown): string {
   if (Array.isArray(digest)) return digest.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join('；')
   return JSON.stringify(digest, null, 2)
 }
+
+onUnmounted(stopPolling)
 
 onMounted(async () => {
   await loadProfiles()
@@ -168,6 +314,7 @@ onMounted(async () => {
       <p class="lede">系统先做本地证据 + 联网核对，再由多个模型顺序发言，最后一位主席估算下一交易日收盘上涨概率。</p>
     </div>
     <button class="btn btn-ghost" type="button" :disabled="loading" @click="loadSessions">刷新</button>
+    <button class="btn btn-ghost" type="button" @click="reconcileStale">终止遗留会话</button>
   </header>
 
   <p class="hint">这是讨论会估计，不计入综合评分，不是涨停概率，不是买入建议。概率指下一交易日收盘相对评估日收盘上涨的估计。</p>
@@ -210,6 +357,7 @@ onMounted(async () => {
     <div v-if="progress?.running" class="hint">
       进度：{{ progress.stage }}（{{ progress.done }}/{{ progress.total }}）<template v-if="progress.current_model"> · 当前：{{ progress.current_model }}</template>
       <template v-if="progress.last_status"> · {{ progress.last_status }}</template>
+      <span v-if="progress.elapsed_seconds != null"> · 已耗时 {{ Math.round(progress.elapsed_seconds) }} 秒</span>
     </div>
   </section>
 
@@ -230,8 +378,8 @@ onMounted(async () => {
             <td class="right">{{ row.participants.length }}</td>
             <td class="right"><b>{{ row.conclusion?.up_probability == null ? '—' : `${row.conclusion.up_probability.toFixed(1)}%` }}</b></td>
             <td>{{ confidenceLabel(row.conclusion?.confidence) }}</td>
-            <td>{{ row.status === 'done' ? '完成' : row.status === 'running' ? '进行中' : '失败' }}</td>
-            <td class="muted">{{ row.created_at.slice(0, 19).replace('T', ' ') }}</td>
+            <td>{{ statusText(row) }}</td>
+            <td class="muted">{{ displayTime(row.created_at) }}{{ row.timezone ? `（${row.timezone}）` : '' }}</td>
             <td class="right"><button class="btn btn-ghost" type="button" @click.stop="open(row)">{{ expanded === row.id ? '收起' : '详情' }}</button></td>
           </tr>
         </tbody>
@@ -240,6 +388,7 @@ onMounted(async () => {
 
     <div v-for="row in sessions.filter((item) => expanded === item.id)" :key="'detail-' + row.id" class="council-detail">
       <h3>{{ row.stock_name }} {{ row.stock_code }} · {{ row.eval_date }}</h3>
+      <div class="muted">评估时间：{{ displayTime(row.created_at) }}（{{ row.timezone || 'Asia/Shanghai' }}）<template v-if="durationText(row)"> · 耗时：{{ durationText(row) }}</template></div>
       <div v-if="row.error" class="alert">{{ row.error }}</div>
       <template v-if="row.conclusion">
         <p class="hint">下一交易日收盘上涨概率：<b>{{ row.conclusion.up_probability.toFixed(1) }}%</b>，信心：{{ confidenceLabel(row.conclusion.confidence) }}。{{ row.conclusion.disclaimer }}</p>
@@ -253,17 +402,40 @@ onMounted(async () => {
           <div><b>CNE6 因子</b><p>{{ joinList(row.conclusion.cne6_notes) }}</p></div>
         </div>
       </template>
-      <h4>发言记录</h4>
-      <div v-for="statement in row.statements" :key="statement.index" class="statement">
-        <b>{{ statement.speaker }}</b> <span class="muted">{{ statement.model }}</span>
-        <p v-if="statement.error" class="alert">{{ statement.error }}</p>
-        <pre v-else>{{ statement.content }}</pre>
-      </div>
-      <h4>证据包</h4>
+
+      <section class="group-chat" aria-label="多模型群聊">
+        <div class="group-chat-head"><b>{{ row.stock_name }} · 讨论群</b><span>{{ row.participants.length }} 位模型 · 北京时间</span></div>
+        <div class="chat-viewport" :ref="bindChatViewport" @scroll="trackScroll">
+          <p class="chat-notice">展示真实处理状态与可公开分析、依据和疑点，不展示或伪造模型内部思考链。</p>
+          <template v-for="message in chatMessages(row)" :key="message.key">
+            <div v-if="message.kind === 'system'" class="chat-system" role="status">{{ message.content }} <small>{{ displayTime(message.time) }}</small></div>
+            <article v-else class="chat-message" :class="{ mine: message.kind === 'user', chair: message.kind === 'chairman' }">
+              <div class="chat-avatar" aria-hidden="true">{{ message.kind === 'user' ? '我' : message.name.slice(0, 2) }}</div>
+              <div class="chat-message-body"><div class="chat-name">{{ message.name }} <span v-if="message.kind === 'chairman'">· 主持人</span> <small>{{ displayTime(message.time) }}</small></div>
+                <div class="chat-bubble" :class="{ 'chat-error': message.error }">{{ message.error || publicContent(message.content) || '未返回可公开的分析文本' }}</div>
+                <details v-if="message.model || message.elapsed != null" class="chat-meta"><summary>模型 / 耗时</summary>{{ message.model }} · {{ message.elapsed == null ? '未记录耗时' : `${(message.elapsed / 1000).toFixed(1)} 秒` }}</details>
+              </div>
+            </article>
+          </template>
+        </div>
+        <div class="chat-composer">
+          <div class="chat-controls"><label>点名 <select v-model="selectedSpeaker[row.id]" aria-label="选择发言模型"><option disabled value="">选择模型</option><option v-for="p in keyProfiles" :key="p.id" :value="p.id">{{ p.name || p.model }}</option></select></label>
+            <button class="btn btn-ghost" :disabled="speakingBusy[row.id] || !!progress?.running || !selectedSpeaker[row.id]" @click="askSpeaker(row.id)">{{ speakingFor === row.id ? '处理中…' : '请该模型发言 / 续轮' }}</button>
+            <button class="btn btn-ghost" :disabled="speakingBusy[row.id] || !!progress?.running" @click="askChair(row)">请主持人总结</button></div>
+          <label class="sr-only" :for="`opinion-${row.id}`">我的意见</label>
+          <textarea :id="`opinion-${row.id}`" v-model="userInput[row.id]" maxlength="4000" rows="3" placeholder="说说你的意见、补充证据或疑问…（Ctrl / ⌘ + Enter 发送）" @keydown.ctrl.enter.prevent="addUserMessage(row.id)" @keydown.meta.enter.prevent="addUserMessage(row.id)" />
+          <p v-if="progress?.running" class="chat-notice">当前模型正在处理，草稿会保留；完成后可发送意见并续轮。</p>
+          <div class="chat-send-row"><span>{{ (userInput[row.id] || '').length }}/4000 · 意见保存后，后续模型与主持人都能看到</span><button class="btn" :disabled="speakingBusy[row.id] || !!progress?.running || !(userInput[row.id] || '').trim()" @click="addUserMessage(row.id)">发送意见</button></div>
+          <p v-if="detailError[row.id]" class="alert" role="alert">{{ detailError[row.id] }}</p><p v-if="detailHint[row.id]" class="hint">{{ detailHint[row.id] }}</p>
+        </div>
+      </section>
+
+      <h4>证据摘要</h4>
+      <p v-if="evidenceSummary(row.evidence)" class="hint">{{ evidenceSummary(row.evidence) }}</p>
       <div v-if="chartBars(row.evidence).length" class="chart-box">
         <div class="chart-head">
-          <span>近 30 个交易日 K 线</span>
-          <span class="muted">{{ row.evidence.local?.chart?.source || '本地数据' }} · {{ chartBars(row.evidence).length }} 根</span>
+          <span>近 30 个交易日 K 线（合并后）</span>
+          <span class="muted">{{ row.evidence.kline?.chart?.source || '本地数据' }} · {{ chartBars(row.evidence).length }} 根</span>
         </div>
         <KlineChart :bars="chartBars(row.evidence) as any" :height="340" />
       </div>
@@ -273,17 +445,21 @@ onMounted(async () => {
         <h5>{{ categoryLabel(category) }} <span class="muted">{{ items.length }} 源</span></h5>
         <div v-for="(item, itemIndex) in items" :key="itemIndex" class="evidence-item">
           <div class="evidence-item-head">
-            <b>{{ item.source }}</b>
+            <a v-if="/^https?:\/\//i.test(item.url || '')" :href="item.url" target="_blank" rel="noopener noreferrer">{{ item.source }}</a><b v-else>{{ item.source }}</b>
             <span class="status" :class="item.status">{{ statusLabel(item.status) }}</span>
-            <span class="muted">{{ item.fetched_at?.slice(0, 19).replace('T', ' ') || '—' }}</span>
+            <span class="muted">{{ displayTime(item.fetched_at) }}</span>
           </div>
           <div v-if="item.window" class="muted">窗口：{{ item.window.start }} 至 {{ item.window.end }}（{{ item.window.days }} 天）</div>
-          <pre class="evidence">{{ digestText(item.digest) }}</pre>
+          <p v-if="item.summary" class="evidence-summary">{{ item.summary }}</p>
+          <details>
+            <summary>来源原文</summary>
+            <pre class="evidence">{{ digestText(item.digest) }}</pre>
+          </details>
         </div>
       </div>
 
       <details>
-        <summary>完整证据 JSON</summary>
+        <summary>完整证据 JSON（默认折叠）</summary>
         <pre class="evidence">{{ JSON.stringify(row.evidence, null, 2) }}</pre>
       </details>
     </div>
@@ -300,6 +476,12 @@ onMounted(async () => {
 .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 10px 0; }
 .detail-grid p { white-space: pre-wrap; font-size: 13px; }
 .statement { padding: 8px 0; border-bottom: 1px solid rgba(127,127,127,0.18); }
+.conversation-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 8px 0; }
+.conversation-tools .field { min-width: 220px; }
+.transcript-item { padding: 8px 0; border-bottom: 1px solid rgba(127,127,127,0.18); }
+.transcript-item.user { background: rgba(232,184,109,0.06); padding: 8px; border-radius: 4px; }
+.transcript-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.evidence-summary { font-size: 13px; white-space: pre-wrap; margin: 4px 0 0; }
 pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 6px 0 0; }
 .evidence { max-height: 300px; overflow: auto; background: rgba(0,0,0,0.02); padding: 8px; }
 .chart-box { margin: 10px 0; padding: 8px; border: 1px solid rgba(127,127,127,0.25); border-radius: 4px; }
@@ -312,4 +494,18 @@ pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 6p
 .status.ok { background: rgba(34,197,94,0.15); color: #16a34a; }
 .status.empty { background: rgba(234,179,8,0.12); color: #ca8a04; }
 .status.failed { background: rgba(239,68,68,0.12); color: #dc2626; }
+
+.group-chat { border:1px solid rgba(127,127,127,.25); border-radius:12px; overflow:hidden; margin:18px 0; background:var(--bg,#f1f3f2); }
+.group-chat-head { display:flex; justify-content:space-between; gap:12px; padding:16px; border-bottom:1px solid rgba(127,127,127,.2); }
+.group-chat-head span,.chat-name small,.chat-meta,.chat-send-row span { font-size:12px; opacity:.7; }
+.chat-viewport { height:min(58vh,620px); min-height:280px; overflow:auto; padding:18px; overscroll-behavior:contain; }
+.chat-notice,.chat-system { text-align:center; font-size:12px; opacity:.75; margin:14px auto; max-width:86%; }
+.chat-system { background:rgba(127,127,127,.12); border-radius:8px; padding:7px 12px; width:fit-content; }.chat-system small { display:block; font-size:10px; opacity:.7; margin-top:3px; }
+.chat-message { display:flex; gap:10px; margin:20px 0; align-items:flex-start; }.chat-message.mine { flex-direction:row-reverse; }
+.chat-avatar { flex:0 0 36px; width:36px; height:36px; border-radius:10px; display:grid; place-items:center; background:#3f6d9d; color:white; font-size:12px; }.mine .chat-avatar { background:#398455; }.chair .chat-avatar { background:#946f28; }
+.chat-message-body { max-width:82%; min-width:0; }.mine .chat-message-body { text-align:right; }.chat-name { font-size:12px; margin-bottom:6px; opacity:.8; }.chat-name small { margin-left:8px; }
+.chat-bubble { padding:12px 15px; border-radius:3px 12px 12px; background:rgba(127,127,127,.10); white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.7; text-align:left; }.mine .chat-bubble { background:#c4eccd; color:#193b22; border-radius:12px 3px 12px 12px; }.chat-error { border:1px solid #b85050; }.chat-meta { margin-top:6px; text-align:left; }
+.chat-composer { position:sticky; bottom:0; background:var(--bg,#fff); padding:14px; border-top:1px solid rgba(127,127,127,.2); }.chat-controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }.chat-controls select { max-width:220px; }
+.chat-composer textarea { width:100%; resize:vertical; box-sizing:border-box; border:1px solid rgba(127,127,127,.35); border-radius:7px; background:transparent; color:inherit; padding:10px; font:inherit; }.chat-send-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:8px; }.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+@media(max-width:640px) { .chat-viewport { padding:10px; }.chat-message-body { max-width:85%; }.group-chat-head { flex-direction:column; }.chat-send-row span { max-width:65%; } }
 </style>

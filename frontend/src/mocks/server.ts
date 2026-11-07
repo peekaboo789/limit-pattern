@@ -277,29 +277,41 @@ function councilList(): { items: CouncilSession[] } {
 }
 
 function councilRun(body: Record<string, unknown>): { session_id: number; started: boolean; participants: CouncilSession['participants'] } {
+  if (councilProgress.running) throw new ApiError(409, '已有讨论进行中')
   const code = String(body.code ?? '')
   if (!/^\d{6}$/.test(code)) throw new ApiError(422, '股票代码应为 6 位数字')
-  const participants = [{ id: 'm1', name: 'DeepSeek', model: 'deepseek-chat' }, { id: 'm2', name: 'Qwen', model: 'qwen-plus' }]
-  councilProgress = { running: true, phase: 'verifying_web', session_id: 2, stock: code, stage: '联网核对', current_model: '', done: 0, total: 2, last_status: '正在联网核对', error: '' }
-  return { session_id: 2, started: true, participants }
+  const template = councilSessions[0]
+  const row: CouncilSession = { ...structuredClone(template), id: Math.max(...councilSessions.map(item => item.id)) + 1, stock_code: code, eval_date: String(body.date || DATA_DATE), status: 'running', transcript: [], statements: [], conclusion: null, error: '', created_at: new Date().toISOString(), finished_at: null }
+  councilSessions.unshift(row)
+  councilProgress = { running: true, phase: 'verifying_web', session_id: row.id, stock: code, stage: '联网核对（演示数据）', current_model: '', done: 0, total: 2, last_status: '仅为模拟演示，未访问真实网站或模型', error: '' }
+  setTimeout(() => {
+    row.status = 'done'; row.conclusion = structuredClone(template.conclusion); row.finished_at = new Date().toISOString()
+    row.transcript = [{ seq: 1, kind: 'model', speaker: '演示模型', model: 'mock', content: '这是模拟分析，不是真实联网或模型结果。', status: 'done', started_at: row.finished_at }]
+    councilProgress = { ...councilProgress, running: false, phase: 'done', stage: '演示完成', done: 2 }
+  }, 1200)
+  return { session_id: row.id, started: true, participants: row.participants }
 }
 
 function councilDetail(id: number): CouncilSession {
-  if (id === 1) return councilSessions[0]
-  return {
-    id,
-    stock_code: councilProgress.stock ?? '600519',
-    stock_name: '贵州茅台',
-    eval_date: DATA_DATE,
-    status: councilProgress.running ? 'running' : 'done',
-    participants: [{ id: 'm1', name: 'DeepSeek', model: 'deepseek-chat' }, { id: 'm2', name: 'Qwen', model: 'qwen-plus' }],
-    evidence: { local: { code: councilProgress.stock ?? '600519' }, web: [] },
-    statements: [],
-    conclusion: null,
-    error: '',
-    created_at: new Date().toISOString(),
-    finished_at: null,
-  }
+  const row = councilSessions.find(item => item.id === id)
+  if (!row) throw new ApiError(404, '没有这场讨论')
+  return row
+}
+
+function councilConversation(id: number, kind: string, body: Record<string, unknown>): CouncilSession {
+  const row = councilDetail(id)
+  if (row.status === 'running') throw new ApiError(409, '讨论进行中，请稍后补充')
+  const text = String(body.text || '').trim()
+  if (kind === 'user-message' && (!text || text.length > 4000)) throw new ApiError(409, '意见应为1–4000字')
+  const model = row.participants.find(item => item.id === body.profile_id)
+  if (kind === 'speak' && !model) throw new ApiError(409, '请选择已配置模型')
+  row.transcript = [...(row.transcript || []), { seq: (row.transcript?.length || 0) + 1, kind: kind === 'user-message' ? 'user' : 'model', speaker: kind === 'user-message' ? '我' : model!.name, model: model?.model, content: kind === 'user-message' ? text : '模拟模型已阅读此前对话与用户意见；这不是实际模型结果。', status: 'done', started_at: new Date().toISOString() }]
+  if (kind === 'user-message') row.conclusion = null
+  return row
+}
+
+function councilModels(): { items: { id: string; name: string; model: string; api_key_set: boolean; active: boolean }[] } {
+  return { items: [{ id: 'm1', name: 'DeepSeek', model: 'deepseek-chat', api_key_set: true, active: true }, { id: 'm2', name: 'Qwen', model: 'qwen-plus', api_key_set: true, active: false }] }
 }
 
 function handle(method: string, pathname: string, params: URLSearchParams, init?: RequestInit): unknown {
@@ -356,6 +368,8 @@ function handle(method: string, pathname: string, params: URLSearchParams, init?
   if (method === 'GET' && pathname === '/api/council/progress') return { ...councilProgress }
   if (method === 'GET' && pathname === '/api/council/history') return councilList()
   if (method === 'GET' && pathname === '/api/council') return councilList()
+  if (method === 'GET' && pathname === '/api/council/models') return councilModels()
+  if (method === 'POST' && pathname === '/api/council/reconcile-stale') return { terminated: 0 }
   if (method === 'GET' && pathname === '/api/council/profile-order') return { profile_ids: councilOrder }
   if (method === 'PUT' && pathname === '/api/council/profile-order') {
     const body = readBody(init) as { profile_ids?: string[] }
@@ -364,6 +378,8 @@ function handle(method: string, pathname: string, params: URLSearchParams, init?
   }
   const councilDetailMatch = pathname.match(/^\/api\/council\/(\d+)$/)
   if (councilDetailMatch && method === 'GET') return councilDetail(Number(councilDetailMatch[1] ?? 0))
+  const councilSpeakMatch = pathname.match(/^\/api\/council\/(\d+)\/(speak|user-message)$/)
+  if (councilSpeakMatch && method === 'POST') return councilConversation(Number(councilSpeakMatch[1] ?? 0), councilSpeakMatch[2] || '', readBody(init) as Record<string, unknown>)
   throw new ApiError(404, '接口不存在')
 }
 

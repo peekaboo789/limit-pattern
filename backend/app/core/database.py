@@ -127,6 +127,10 @@ def upgrade_existing_tables(engine=None) -> list[str]:
         "daily_quotes": {
             "amount_estimated": "INTEGER" if sqlite else "BOOLEAN",
         },
+        "ai_council_sessions": {
+            "transcript": "TEXT" if sqlite else "JSON",
+            "progress": "TEXT" if sqlite else "JSON",
+        },
     }
     with engine.begin() as conn:
         for table, columns in expected.items():

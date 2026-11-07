@@ -90,6 +90,9 @@ def create_app() -> FastAPI:
 
         with session_scope() as session:
             purge_provisional(session)
+        from backend.app.services.council import service as _council_service
+
+        _council_service.reconcile_stale_sessions()
         start_scheduler()
         bootstrap_if_empty()
         import os as _os

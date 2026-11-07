@@ -707,6 +707,34 @@ export interface CouncilStatement {
   error: string
 }
 
+export interface CouncilTranscriptEntry {
+  seq?: number
+  kind: 'model' | 'chairman' | 'user'
+  profile_id?: string | null
+  speaker?: string
+  model?: string
+  round?: number | null
+  content?: string
+  error?: string
+  status?: 'running' | 'done' | 'failed'
+  started_at?: string | null
+  finished_at?: string | null
+  elapsed_ms?: number | null
+}
+
+export interface CouncilProgressDetail {
+  phase?: string
+  stage?: string
+  current_model?: string
+  done?: number
+  total?: number
+  started_at?: string | null
+  finished_at?: string | null
+  events?: { phase?: string; stage?: string; model?: string; started_at?: string; finished_at?: string | null }[]
+  stage_started_at?: string
+
+}
+
 export interface CouncilSession {
   id: number
   stock_code: string
@@ -716,10 +744,14 @@ export interface CouncilSession {
   participants: CouncilParticipant[]
   evidence: CouncilEvidence
   statements: CouncilStatement[]
+  transcript?: CouncilTranscriptEntry[]
+  progress?: CouncilProgressDetail
   conclusion: CouncilConclusion | null
   error: string
   created_at: string
   finished_at: string | null
+  duration_seconds?: number | null
+  timezone?: string
 }
 
 export interface CouncilProgress {
@@ -733,6 +765,9 @@ export interface CouncilProgress {
   total: number
   last_status: string
   error: string
+  started_at?: string | null
+  finished_at?: string | null
+  elapsed_seconds?: number | null
 }
 
 export interface CouncilBar {
@@ -769,6 +804,15 @@ export interface CouncilLocalEvidence {
 export interface CouncilEvidence {
   local?: CouncilLocalEvidence
   market?: Record<string, unknown>
+  kline?: {
+    local_count: number
+    public_count: number
+    public_source?: string
+    expected_trading_days?: number
+    merged_bars?: CouncilBar[]
+    chart?: CouncilChart
+    missing_reason?: string
+  }
   web?: CouncilWebEvidence[]
   [key: string]: unknown
 }
@@ -781,4 +825,5 @@ export interface CouncilWebEvidence {
   fetched_at?: string
   window?: { start?: string; end?: string; days?: number } | null
   digest?: unknown
+  summary?: string
 }
