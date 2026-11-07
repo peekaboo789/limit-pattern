@@ -5,6 +5,8 @@ import threading
 from datetime import date, datetime
 from pathlib import Path
 
+from sqlalchemy.exc import IntegrityError
+
 from backend.app.core.clock import today
 from backend.app.core.database import session_scope
 from backend.app.models.tables import AiCouncilBatch, AiCouncilBatchItem, AiCouncilSession
@@ -15,6 +17,7 @@ MAX_UPLOAD_BYTES = 128 * 1024
 MAX_LINE_LENGTH = 4096
 MAX_CANDIDATES = 100
 PREVIEW_VERSION = 1
+LOCK_WAIT_SECONDS = 30.0
 _BATCH_THREAD: threading.Thread | None = None
 _BATCH_STOP = threading.Event()
 _BATCH_GUARD = threading.Lock()
@@ -126,7 +129,36 @@ def preview_upload(payload: bytes, source_name: str = "") -> dict:
     return preview_text(_decode_text(payload), source_name)
 
 
+def _live_session_view(session_id: int | None) -> dict:
+    if not session_id:
+        return {}
+    with session_scope() as session:
+        row = session.query(AiCouncilSession).filter(AiCouncilSession.id == session_id).first()
+        if row is None:
+            return {"session_deleted": True}
+        progress = row.progress or {}
+        conclusion = row.conclusion or {}
+        return {
+            "session_deleted": False,
+            "status": row.status,
+            "stage": progress.get("stage") or "",
+            "current_model": progress.get("current_model") or "",
+            "summary": conclusion.get("summary") or "",
+            "probability_status": conclusion.get("probability_status"),
+        }
+
+
 def _item_payload(row: AiCouncilBatchItem) -> dict:
+    live = _live_session_view(row.session_id) if row.status == "running" and row.session_id else {}
+    details = dict(row.details or {})
+    if "session_deleted" in live:
+        details["session_deleted"] = live["session_deleted"]
+    if live.get("current_model"):
+        details["current_model"] = live["current_model"]
+    if live.get("probability_status"):
+        details["probability_status"] = live["probability_status"]
+    stage = live.get("stage") or row.stage
+    summary = live.get("summary") or row.summary or ""
     return {
         "id": row.id,
         "batch_id": row.batch_id,
@@ -134,14 +166,14 @@ def _item_payload(row: AiCouncilBatchItem) -> dict:
         "stock_code": row.stock_code,
         "stock_name": row.stock_name,
         "source_market": row.source_market,
-        "status": row.status,
-        "stage": row.stage,
+        "status": live.get("status") or row.status,
+        "stage": stage,
         "session_id": row.session_id,
         "probability_percent": row.probability_percent,
         "confidence": row.confidence or "",
-        "summary": row.summary or "",
+        "summary": summary,
         "error": row.error or "",
-        "details": row.details or {},
+        "details": details,
         "started_at": row.started_at.isoformat() if row.started_at else None,
         "finished_at": row.finished_at.isoformat() if row.finished_at else None,
     }
@@ -170,8 +202,57 @@ def _batch_payload(row: AiCouncilBatch, items: list[AiCouncilBatchItem]) -> dict
     }
 
 
+def _normalize_selected_items(preview: dict) -> tuple[str | None, list[dict]]:
+    if not isinstance(preview, dict):
+        raise ValueError("preview 必须是对象")
+    source_date = preview.get("source_date")
+    if source_date is not None and not isinstance(source_date, str):
+        raise ValueError("preview.source_date 格式应为 YYYY-MM-DD")
+    if source_date:
+        try:
+            date.fromisoformat(source_date)
+        except ValueError as exc:
+            raise ValueError("preview.source_date 格式应为 YYYY-MM-DD") from exc
+    raw_items = preview.get("items") or []
+    if not isinstance(raw_items, list):
+        raise ValueError("preview.items 必须是数组")
+    selected = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            raise ValueError("preview.items[] 必须是对象")
+        if not item.get("selected", True):
+            continue
+        code = str(item.get("code") or "")
+        name = str(item.get("name") or "")
+        if len(code) != 6 or not code.isdigit():
+            raise ValueError("preview.items[].code 必须是 6 位数字字符串")
+        reason = reject_reason(code)
+        if reason:
+            raise ValueError(reason)
+        if code in seen:
+            raise ValueError("preview.items 里有重复代码")
+        seen.add(code)
+        exchange, board_name = classify(code)
+        selected.append({
+            "code": code,
+            "name": name,
+            "market": exchange,
+            "board": board_name,
+            "board_label": BOARD_LABELS.get(board_name or "", board_name or ""),
+            "line": item.get("line"),
+        })
+    return source_date or None, selected
+
+
 def _idempotency_key(preview: dict, eval_date: str, profile_ids: list[str]) -> str:
-    material = "|".join([preview.get("source_date") or "", eval_date, ",".join(profile_ids), ",".join(item["code"] for item in preview.get("items") or [])])
+    _source_date, items = _normalize_selected_items(preview)
+    material = "|".join([preview.get("source_date") or "", eval_date, ",".join(profile_ids), ",".join(item["code"] for item in items)])
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _idempotency_fingerprint(source_date: str | None, eval_date: str, profile_ids: list[str], items: list[dict]) -> str:
+    material = "|".join([source_date or "", eval_date, ",".join(profile_ids), ",".join(item["code"] for item in items)])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -187,41 +268,54 @@ def create_batch(preview: dict, eval_date: str, profile_ids: list[str], source_n
         raise ValueError("eval_date 格式应为 YYYY-MM-DD") from exc
     if target_day > today():
         raise ValueError("不能用未来的日期")
-    items = [item for item in (preview or {}).get("items") or [] if item.get("selected", True)]
+    source_date, items = _normalize_selected_items(preview or {})
     if not items:
         raise ValueError("没有可启动的有效股票")
-    idempotency_key = idempotency_key or _idempotency_key(preview, eval_date, profile_ids)
+    fingerprint = _idempotency_fingerprint(source_date, eval_date, list(profile_ids), items)
+    idempotency_key = idempotency_key or fingerprint
     with session_scope() as session:
         existing = session.query(AiCouncilBatch).filter(AiCouncilBatch.idempotency_key == idempotency_key).first()
         if existing is not None:
+            if existing.parser_summary.get("idempotency_fingerprint") != fingerprint:
+                raise ValueError("幂等键已被其他批次参数占用")
             rows = session.query(AiCouncilBatchItem).filter(AiCouncilBatchItem.batch_id == existing.id).order_by(AiCouncilBatchItem.position.asc()).all()
             return _batch_payload(existing, rows)
         batch = AiCouncilBatch(
             source_name=source_name or preview.get("source_name") or "",
-            source_date=date.fromisoformat(preview["source_date"]) if preview.get("source_date") else None,
+            source_date=date.fromisoformat(source_date) if source_date else None,
             eval_date=target_day,
             status="pending",
             stage="待开始",
             profile_ids=list(profile_ids),
             profile_order_snapshot=service._public_participants(profiles),
             item_count=len(items),
-            parser_summary={"preview_version": preview.get("preview_version"), "counts": preview.get("counts"), "errors": preview.get("errors")},
+            parser_summary={"preview_version": preview.get("preview_version"), "counts": preview.get("counts"), "errors": preview.get("errors"), "idempotency_fingerprint": fingerprint},
             idempotency_key=idempotency_key,
         )
         session.add(batch)
-        session.commit()
-        for index, item in enumerate(items, start=1):
-            session.add(AiCouncilBatchItem(
-                batch_id=batch.id,
-                position=index,
-                stock_code=item["code"],
-                stock_name=item.get("name") or "",
-                source_market=item.get("market") or "",
-                status="pending",
-                stage="待开始",
-                details={"line": item.get("line"), "board": item.get("board"), "board_label": item.get("board_label")},
-            ))
-        session.commit()
+        try:
+            session.flush()
+            for index, item in enumerate(items, start=1):
+                session.add(AiCouncilBatchItem(
+                    batch_id=batch.id,
+                    position=index,
+                    stock_code=item["code"],
+                    stock_name=item.get("name") or "",
+                    source_market=item.get("market") or "",
+                    status="pending",
+                    stage="待开始",
+                    details={"line": item.get("line"), "board": item.get("board"), "board_label": item.get("board_label")},
+                ))
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            existing = session.query(AiCouncilBatch).filter(AiCouncilBatch.idempotency_key == idempotency_key).first()
+            if existing is None:
+                raise
+            if existing.parser_summary.get("idempotency_fingerprint") != fingerprint:
+                raise ValueError("幂等键已被其他批次参数占用")
+            rows = session.query(AiCouncilBatchItem).filter(AiCouncilBatchItem.batch_id == existing.id).order_by(AiCouncilBatchItem.position.asc()).all()
+            return _batch_payload(existing, rows)
         rows = session.query(AiCouncilBatchItem).filter(AiCouncilBatchItem.batch_id == batch.id).order_by(AiCouncilBatchItem.position.asc()).all()
         return _batch_payload(batch, rows)
 
@@ -328,14 +422,25 @@ def reconcile_stale_batches() -> int:
     return fixed
 
 
+def _wait_for_single_session_slot(seconds: float) -> None:
+    deadline = _now().timestamp() + seconds
+    while service.progress().get("running"):
+        if _now().timestamp() >= deadline:
+            raise RuntimeError(f"单股讨论运行中，等待超过 {seconds:g} 秒")
+        _BATCH_STOP.wait(0.05)
+
+
 def _run_one_item(batch_id: int, item_id: int) -> None:
     with session_scope() as session:
         item = session.query(AiCouncilBatchItem).filter(AiCouncilBatchItem.id == item_id).first()
         batch = session.query(AiCouncilBatch).filter(AiCouncilBatch.id == batch_id).first()
         if item is None or batch is None or item.status != "pending":
             return
+        stock_code = item.stock_code
+        eval_date = batch.eval_date
+        profile_ids = list(batch.profile_ids or [])
         item.status = "running"
-        item.stage = "准备启动"
+        item.stage = "等待单股会话锁"
         item.started_at = _now()
         item.updated_at = _now()
         batch.status = "running"
@@ -344,8 +449,29 @@ def _run_one_item(batch_id: int, item_id: int) -> None:
         batch.updated_at = _now()
         session.commit()
     try:
-        result = service.start_sync(item.stock_code, day=batch.eval_date, profile_ids=list(batch.profile_ids or []))
-        session_id = int(result["session_id"])
+        if not service._START_LOCK.acquire(timeout=LOCK_WAIT_SECONDS):
+            raise RuntimeError(f"单股讨论锁等待超过 {LOCK_WAIT_SECONDS:g} 秒")
+        try:
+            _wait_for_single_session_slot(LOCK_WAIT_SECONDS)
+            code, name, day, profiles, evidence, session_id = service._prepare_start(stock_code, eval_date, profile_ids)
+            with session_scope() as session:
+                item = session.query(AiCouncilBatchItem).filter(AiCouncilBatchItem.id == item_id).first()
+                batch = session.query(AiCouncilBatch).filter(AiCouncilBatch.id == batch_id).first()
+                assert item is not None and batch is not None
+                item.session_id = session_id
+                item.stage = "讨论进行中"
+                item.updated_at = _now()
+                batch.stage = f"正在讨论 {code}"
+                batch.updated_at = _now()
+                session.commit()
+            started_session = service._now_dt()
+            with service._LOCK:
+                service._PROGRESS.update(running=True, phase="collecting_local", session_id=session_id, stock=code, stage="搜集本地证据",
+                                         current_model="", done=0, total=len(profiles), last_status="已开始", error="",
+                                         started_at=service._as_shanghai(started_session), finished_at=None, elapsed_seconds=None)
+            service._run(session_id, code, name, day, profiles, evidence)
+        finally:
+            service._START_LOCK.release()
         row = service.get(session_id)
         conclusion = row.get("conclusion") or {}
         with session_scope() as session:

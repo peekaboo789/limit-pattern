@@ -2,15 +2,32 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+import threading
+import time
 
+import anyio
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from backend.app.core.database import session_scope
 from backend.app.models.tables import AiCouncilBatch, AiCouncilBatchItem, DailyQuote, Stock, TradingDay
 from backend.app.services.council import batch_service, service
 
 
+def _reset_council_progress():
+    with service._LOCK:
+        service._PROGRESS.update(running=False, phase="idle", session_id=None, stock=None, stage="空闲", current_model="", done=0, total=0, last_status="", error="", started_at=None, finished_at=None, elapsed_seconds=None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_council_runtime_state():
+    _reset_council_progress()
+    yield
+    _reset_council_progress()
+
+
 def _seed_quotes(day: date = date(2026, 11, 6)):
+    _reset_council_progress()
     days = []
     cursor = day
     while len(days) < 8:
@@ -143,18 +160,16 @@ def test_batch_worker_uses_single_session_run_and_never_imports_prediction_score
         "items": [{"code": "000001", "name": "平安银行", "prediction_score": 99.9}]
     }, "2026-11-06", profile_ids, "x.txt", "idem-run")
 
-    def fake_start_sync(code_or_name, day=None, profile_ids=None):
-        from backend.app.models.tables import AiCouncilSession
+    def fake_run(session_id, code, name, day, profiles, evidence):
         with session_scope() as session:
-            session.add(AiCouncilSession(stock_code="000001", stock_name="平安银行", eval_date=day, status="done",
-                                         participants=[], evidence={}, statements=[], transcript=[],
-                                         conclusion={"up_probability": None, "confidence": "low", "summary": "证据不足",
-                                                     "probability_status": "insufficient_evidence"}, error=""))
+            row = session.get(service.AiCouncilSession, session_id)
+            assert row is not None
+            row.status = "done"
+            row.conclusion = {"up_probability": None, "confidence": "low", "summary": "证据不足", "probability_status": "insufficient_evidence"}
+            row.error = ""
             session.commit()
-            sid = session.query(AiCouncilSession).order_by(AiCouncilSession.id.desc()).first().id
-        return {"session_id": sid, "started": True, "participants": []}
 
-    monkeypatch.setattr(service, "start_sync", fake_start_sync)
+    monkeypatch.setattr(service, "_run", fake_run)
     batch_service._run_one_item(batch["id"], batch["items"][0]["id"])
     payload = batch_service.get_batch(batch["id"])
     assert payload is not None
@@ -163,16 +178,171 @@ def test_batch_worker_uses_single_session_run_and_never_imports_prediction_score
     assert item["details"]["probability_status"] == "insufficient_evidence"
 
 
-def test_single_session_lock_conflict_surfaces_as_failed_batch_item(client, monkeypatch):
+def test_single_session_lock_wait_timeout_surfaces_as_failed_batch_item(client, monkeypatch):
     _seed_quotes()
     profile_ids = _profiles(client)
     batch = batch_service.create_batch({"source_date": "2026-11-06", "items": [{"code": "000001", "name": "平安银行"}]}, "2026-11-06", profile_ids, "x.txt", "idem-lock")
-    monkeypatch.setattr(service, "start_sync", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("已经有一场讨论在跑，请稍后再试")))
-    batch_service._run_one_item(batch["id"], batch["items"][0]["id"])
+    monkeypatch.setattr(batch_service, "LOCK_WAIT_SECONDS", 0.01)
+    hold = service._START_LOCK.acquire(timeout=0.01)
+    assert hold
+    try:
+        batch_service._run_one_item(batch["id"], batch["items"][0]["id"])
+    finally:
+        service._START_LOCK.release()
     payload = batch_service.get_batch(batch["id"])
     assert payload is not None
     assert payload["items"][0]["status"] == "failed"
-    assert "已经有一场讨论在跑" in payload["items"][0]["error"]
+    assert "等待超过" in payload["items"][0]["error"]
+
+
+def test_batch_preview_http_413_by_content_length(client, monkeypatch):
+    monkeypatch.setattr(batch_service, "MAX_UPLOAD_BYTES", 16)
+    response = client.post("/api/council/batch/preview", content=b"1234567890", headers={"content-length": "17"})
+    assert response.status_code == 413
+    assert "16" in response.json()["detail"]
+
+
+def test_batch_preview_http_422_for_non_utf8(client):
+    response = client.post("/api/council/batch/preview", content=b"\xff\xfe\x00")
+    assert response.status_code == 422
+    assert "UTF-8" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_batch_preview_http_413_for_stream_without_content_length(tmp_path, monkeypatch):
+    monkeypatch.setenv("LP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LP_SCHEDULER", "0")
+    monkeypatch.setenv("LP_WARM", "0")
+    monkeypatch.setenv("LP_AUTO_SYNC", "0")
+    monkeypatch.setenv("LP_STATIC_DIR", str(tmp_path / "missing-static"))
+    from backend.app.core.database import init_db, reset_engine
+    from backend.app.main import create_app
+    from backend.app.services.sync_service import reset_state, set_fetcher
+
+    reset_engine()
+    set_fetcher()
+    reset_state()
+    init_db()
+    monkeypatch.setattr(batch_service, "MAX_UPLOAD_BYTES", 16)
+
+    async def body_stream():
+        yield b"1234567890"
+        yield b"ABCDEFGH"
+
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/api/council/batch/preview", content=body_stream(), headers={"x-file-name": "big.txt"})
+    reset_engine()
+    set_fetcher()
+    assert response.status_code == 413
+    assert "16" in response.json()["detail"]
+
+
+def test_batch_start_http_422_rejects_bad_schema(client):
+    response = client.post("/api/council/batch/start", json={"preview": {"source_date": "2026-11-06", "items": []}, "eval_date": 20261106, "profile_ids": "bad"})
+    assert response.status_code == 422
+
+
+def test_batch_start_rejects_same_key_different_payload(client):
+    _seed_quotes()
+    profile_ids = _profiles(client)
+    first = {"source_date": "2026-11-06", "items": [{"code": "000001", "name": "平安银行", "selected": True}]}
+    second = {"source_date": "2026-11-06", "items": [{"code": "000828", "name": "东莞控股", "selected": True}]}
+    batch_service.create_batch(first, "2026-11-06", profile_ids, "x.txt", "idem-collision")
+    with pytest.raises(ValueError, match="幂等键"):
+        batch_service.create_batch(second, "2026-11-06", profile_ids, "x.txt", "idem-collision")
+
+
+def test_batch_create_concurrent_same_key_returns_one_batch(client):
+    _seed_quotes()
+    profile_ids = _profiles(client)
+    preview = {"source_date": "2026-11-06", "items": [{"code": "000001", "name": "平安银行", "selected": True}]}
+    results = []
+    errors = []
+
+    def worker():
+        try:
+            results.append(batch_service.create_batch(preview, "2026-11-06", profile_ids, "x.txt", "idem-race"))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    assert len(results) == 2
+    assert results[0]["id"] == results[1]["id"]
+    with session_scope() as session:
+        assert session.query(AiCouncilBatch).count() == 1
+        assert session.query(AiCouncilBatchItem).count() == 1
+
+
+def test_batch_running_item_persists_session_id_early(client, monkeypatch):
+    _seed_quotes()
+    profile_ids = _profiles(client)
+    batch = batch_service.create_batch({"source_date": "2026-11-06", "items": [{"code": "000001", "name": "平安银行", "selected": True}]}, "2026-11-06", profile_ids, "x.txt", "idem-live")
+    seen = {}
+
+    def fake_run(session_id, code, name, day, profiles, evidence):
+        seen["session_id"] = session_id
+        with session_scope() as session:
+            row = session.get(service.AiCouncilSession, session_id)
+            assert row is not None
+            row.progress = {"stage": "第 1 位模型发言中", "current_model": "模型1"}
+            session.commit()
+        payload = batch_service.get_batch(batch["id"])
+        assert payload is not None
+        seen["item_session_id"] = payload["items"][0]["session_id"]
+        seen["item_status"] = payload["items"][0]["status"]
+        seen["item_stage"] = payload["items"][0]["stage"]
+        seen["item_current_model"] = payload["items"][0]["details"].get("current_model")
+        with session_scope() as session:
+            row = session.get(service.AiCouncilSession, session_id)
+            assert row is not None
+            row.status = "done"
+            row.conclusion = {"up_probability": 50, "confidence": "medium", "summary": "测试", "probability_status": "estimated"}
+            session.commit()
+        with service._LOCK:
+            service._PROGRESS.update(running=False, phase="done", stage="完成", current_model="", done=len(profiles), total=len(profiles), last_status="", error="", finished_at=None, elapsed_seconds=None)
+
+    monkeypatch.setattr(service, "_run", fake_run)
+    batch_service._run_one_item(batch["id"], batch["items"][0]["id"])
+    assert seen["item_session_id"] == seen["session_id"]
+    assert seen["item_status"] == "running"
+    assert seen["item_stage"] == "第 1 位模型发言中"
+    assert seen["item_current_model"] == "模型1"
+
+
+def test_batch_waits_for_single_session_lock_instead_of_immediate_fail(client, monkeypatch):
+    _seed_quotes()
+    profile_ids = _profiles(client)
+    batch = batch_service.create_batch({"source_date": "2026-11-06", "items": [{"code": "000001", "name": "平安银行", "selected": True}]}, "2026-11-06", profile_ids, "x.txt", "idem-wait")
+    monkeypatch.setattr(batch_service, "LOCK_WAIT_SECONDS", 0.3)
+    hold = service._START_LOCK.acquire(timeout=0.01)
+    assert hold
+
+    def release_later():
+        time.sleep(0.05)
+        service._START_LOCK.release()
+
+    def fake_run(session_id, code, name, day, profiles, evidence):
+        with session_scope() as session:
+            row = session.get(service.AiCouncilSession, session_id)
+            assert row is not None
+            row.status = "done"
+            row.conclusion = {"up_probability": 50, "confidence": "medium", "summary": "测试", "probability_status": "estimated"}
+            session.commit()
+
+    releaser = threading.Thread(target=release_later)
+    releaser.start()
+    monkeypatch.setattr(service, "_run", fake_run)
+    batch_service._run_one_item(batch["id"], batch["items"][0]["id"])
+    releaser.join()
+    payload = batch_service.get_batch(batch["id"])
+    assert payload is not None
+    assert payload["items"][0]["status"] == "done", payload["items"][0]["error"]
 
 
 def test_verify_real_sample_reports_20_codes():

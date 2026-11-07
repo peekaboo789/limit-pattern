@@ -5,8 +5,43 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 router = APIRouter()
+
+
+class CouncilBatchPreviewItemIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    line: int | None = None
+    code: str
+    name: str = ""
+    market: str | None = None
+    board: str | None = None
+    board_label: str | None = None
+    selected: bool = True
+
+
+class CouncilBatchPreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_version: int | None = None
+    source_name: str | None = None
+    source_date: str | None = None
+    default_eval_date: str | None = None
+    counts: dict | None = None
+    errors: list[dict] | None = None
+    items: list[CouncilBatchPreviewItemIn] = Field(default_factory=list)
+
+
+class CouncilBatchStartIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview: CouncilBatchPreviewIn
+    eval_date: str
+    profile_ids: list[str]
+    source_name: str = ""
+    idempotency_key: str | None = None
 
 
 def _parse_day(value: str | None, default_latest: bool) -> date | None:
@@ -53,26 +88,40 @@ def council_reconcile_stale() -> dict:
 async def council_batch_preview(request: Request) -> dict:
     from backend.app.services.council import batch_service
 
-    body = await request.body()
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > batch_service.MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail=f"文件超过 {batch_service.MAX_UPLOAD_BYTES} 字节上限")
+        except ValueError:
+            pass
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > batch_service.MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=f"文件超过 {batch_service.MAX_UPLOAD_BYTES} 字节上限")
+        chunks.append(chunk)
     source_name = request.headers.get("x-file-name", "")
     try:
-        return batch_service.preview_upload(body, source_name)
+        return batch_service.preview_upload(b"".join(chunks), source_name)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/batch/start")
-def council_batch_start(body: dict | None = None) -> dict:
+def council_batch_start(body: CouncilBatchStartIn) -> dict:
     from backend.app.services.council import batch_service
 
-    payload = body or {}
     try:
         return batch_service.create_batch(
-            payload.get("preview") or {},
-            str(payload.get("eval_date") or ""),
-            payload.get("profile_ids") or [],
-            str(payload.get("source_name") or ""),
-            str(payload.get("idempotency_key") or "") or None,
+            body.preview.model_dump(),
+            body.eval_date,
+            body.profile_ids,
+            body.source_name,
+            body.idempotency_key,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

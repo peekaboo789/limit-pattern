@@ -1,6 +1,8 @@
-# Council Batch API（阶段 1）
+# Council Batch API（阶段 2 后端加固）
 
-仅覆盖后端 TXT 解析、批次持久化与串行队列，不含前端界面约束。
+覆盖后端 TXT 解析、批次持久化、串行队列与阶段 2 必要验收加固；不含 iOS 约束。
+
+> 说明：中断批次仍**不会自动恢复并重放付费模型调用**。若前端显示“可查看已有单股会话”，仅表示可打开已经创建的 `session_id`，不表示批次可自动续跑。
 
 基址：`/api/council`
 
@@ -27,10 +29,11 @@
 - `counts { valid, invalid, total }`
 
 失败：
+- `413 detail="文件超过 131072 字节上限"`（HTTP `Content-Length` 已超限时）
 - `422 detail="只支持 UTF-8 / UTF-8 BOM 文本"`
 - `422 detail="未找到数据日期"`
 - `422 detail="未找到包含代码/名称的表头"`
-- `422 detail="文件超过 131072 字节上限"`
+- `422 detail="文件超过 131072 字节上限"`（未声明或绕过 `Content-Length`，由解析层拦截）
 - `422 detail="第 N 行超过 4096 字符上限"`
 
 ## 2. `POST /batch/start`
@@ -48,11 +51,16 @@ JSON：
 ```
 
 语义：
+- 请求体按严格 JSON schema 校验；未知字段与错误类型会直接 `422`
+- `preview.items[]` 只有显式 `selected !== false` 的项会启动
+- 后端会重新校验 `preview.items[].code`：必须为 6 位数字、在允许市场范围内、且所选列表内不得重复
 - `profile_ids` 必须全部是已配置且有密钥的模型
 - 至少两个模型
 - `eval_date` 不能晚于今天
 - 未提供 `idempotency_key` 时，后端基于 `source_date + eval_date + profile_ids + codes` 生成
-- 相同幂等键重复请求时，返回既有批次，不重复创建
+- 相同幂等键且参数指纹相同：返回既有批次，不重复创建
+- 相同幂等键但参数指纹不同：`422 detail="幂等键已被其他批次参数占用"`
+- 批次与 items 在同一事务内创建；并发同 key 请求由唯一键 + 回读既有批次兜底
 
 成功返回完整批次对象。
 
@@ -78,11 +86,13 @@ JSON：
 - `stock_code/stock_name/source_market`
 - `status`：`pending | running | done | failed | cancelled | interrupted`
 - `stage`
-- `session_id`：若已实际调用单股 council，则指向既有 `AiCouncilSession`
+- `session_id`：一旦该 item 已成功创建单股会话，即使仍在 `running`，也会尽早返回既有 `AiCouncilSession` id，供前端打开现有聊天小窗
 - `probability_percent`：仅来自主持模型结论规范化结果；**绝不继承导入 TXT 的预测分**
 - `confidence`
-- `summary`
+- `summary`：若 item 仍在 `running` 且单股 session 已有结构化结论摘要，则优先投影既有 session 的 `conclusion.summary`
 - `error`
+- `details.current_model`：若 item 仍在 `running` 且已有单股 session，则投影既有 session `progress.current_model`
+- `stage`：若 item 仍在 `running` 且已有单股 session，则优先投影既有 session `progress.stage`，否则回退为批次层阶段
 - `details`
 - `started_at/finished_at`
 
@@ -109,8 +119,12 @@ JSON：
 ## 7. 队列与互斥语义
 
 - 批次 worker 为**单线程串行**
-- 每股实际执行复用既有单股 council `start_sync()`
-- 因此天然受现有 `_START_LOCK` 与单会话规则约束
+- 每股实际执行复用既有单股 council 核心逻辑（`_prepare_start()` + `_run()`）
+- 仍受现有 `_START_LOCK` 与单会话规则约束
+- batch 路径会对单股锁做**有界等待**，避免短暂占用即记失败
+- 若锁或单股运行中状态持续超过等待上限，当前 item 才会失败并写明超时原因
+- batch 列表中的运行中 `stage/current_model/summary` 只读投影自既有单股 session；**不会为刷新批次列表而重复请求模型**
+- 若前端需要更细粒度实时 transcript / statements / evidence，以既有 `GET /api/council/{session_id}` 为准
 - 不会 20 并发，不绕过单股锁
 
 ## 8. 重启恢复语义
