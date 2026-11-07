@@ -22,7 +22,7 @@ struct CouncilView: View {
             Section {
                 Text(CouncilCore.conversationDisclaimer).font(.caption).foregroundStyle(.secondary)
                     .listRowBackground(Color.clear)
-                ErrorBanner(message: store.error).listRowBackground(Color.clear)
+                ErrorBanner(message: store.lastError).listRowBackground(Color.clear)
                 if !store.serverSupportsCouncil {
                     Text(CouncilCore.serverUpgradeMessage).font(.callout).foregroundStyle(.orange)
                 }
@@ -46,7 +46,7 @@ struct CouncilView: View {
             }
 
             Section("讨论记录") {
-                if store.sessions.isEmpty && store.error == nil && store.serverSupportsCouncil {
+                if store.sessions.isEmpty && store.lastError == nil && store.serverSupportsCouncil {
                     Text("还没有讨论记录。").font(.caption).foregroundStyle(.secondary)
                 }
                 ForEach(store.sessions, id: \.councilID) { row in
@@ -460,7 +460,7 @@ struct CouncilSourcesView: View {
                     }
                     Button("回滚") { Task { await store.sourceAction("/rollback", method: "POST") } }.disabled(store.sourceBusy || !store.sources["rollback_available"].bool)
                 }
-                ErrorBanner(message: store.error).listRowBackground(Color.clear)
+                ErrorBanner(message: store.lastError).listRowBackground(Color.clear)
             }
             Section("来源") {
                 ForEach(store.sources["items"].array, id: \.councilTextID) { item in

@@ -14,7 +14,7 @@ final class CouncilStore {
     var sessions: [JSON] = []
     var progress: JSON = .null
     var sources: JSON = .null
-    var error: String?
+    var lastError: String?
     var hint: String?
     var detailError: [Int: String] = [:]
     var detailHint: [Int: String] = [:]
@@ -70,10 +70,10 @@ final class CouncilStore {
     func loadAll(serverVersion: String) async {
         serverSupportsCouncil = supportsCouncil(serverVersion: serverVersion)
         if !serverSupportsCouncil {
-            error = CouncilCore.serverUpgradeMessage
+            lastError = CouncilCore.serverUpgradeMessage
             return
         }
-        error = nil
+        lastError = nil
         await loadModels()
         await loadSessions()
     }
@@ -83,8 +83,8 @@ final class CouncilStore {
         do {
             let items = try await api.get("/api/council/models")["items"].array
             guard generation == identityGeneration else { return }
-            models = items; error = nil
-        } catch { error = error.localizedDescription }
+            models = items; lastError = nil
+        } catch { lastError = error.localizedDescription }
         if !order.isEmpty { return }
         do {
             let ids = try await api.get("/api/council/profile-order")["profile_ids"].array.compactMap(\.string)
@@ -99,11 +99,11 @@ final class CouncilStore {
             let response = try await api.get("/api/council/history", ["limit": "100"], timeout: 20)
             guard generation == identityGeneration else { return }
             sessions = response["items"].array
-            error = nil
+            lastError = nil
         } catch let api as APIError where api.status == 404 {
             serverSupportsCouncil = false
-            error = CouncilCore.serverUpgradeMessage
-        } catch { error = error.localizedDescription }
+            lastError = CouncilCore.serverUpgradeMessage
+        } catch { lastError = error.localizedDescription }
     }
 
     func loadSources() async {
@@ -112,10 +112,10 @@ final class CouncilStore {
         do {
             let result = try await api.get("/api/council/sources", timeout: 15)
             guard generation == identityGeneration else { return }
-            sources = result; error = nil
+            sources = result; lastError = nil
         }
-        catch let api as APIError where api.status == 404 { error = CouncilCore.serverUpgradeMessage }
-        catch { error = error.localizedDescription }
+        catch let api as APIError where api.status == 404 { lastError = CouncilCore.serverUpgradeMessage }
+        catch { lastError = error.localizedDescription }
     }
 
     func sourceAction(_ path: String, method: String = "GET", body: [String: Any]? = nil) async {
@@ -130,14 +130,14 @@ final class CouncilStore {
             }
             guard generation == identityGeneration else { return }
             sources = result
-            error = nil
+            lastError = nil
             if path == "/check-update" {
                 if let candidate = sources["candidate_version"].string { hint = "已验证清单 \(candidate)，点击应用生效。" }
                 else { hint = "没有更高版本，保留当前配置。" }
             } else if method != "GET" {
                 hint = "已原子保存，仅影响下一次讨论采集，不改已有会话证据。"
             }
-        } catch { error = "\(error.localizedDescription)；当前清单保留，断网可继续使用内置/上次版本。" }
+        } catch { lastError = "\(error.localizedDescription)；当前清单保留，断网可继续使用内置/上次版本。" }
     }
 
     func saveOrder() async {
@@ -147,13 +147,13 @@ final class CouncilStore {
             guard generation == identityGeneration else { return }
             order = r["profile_ids"].array.compactMap(\.string)
             hint = "已保存默认开会顺序"
-            error = nil
+            lastError = nil
         } catch { hint = error.localizedDescription }
     }
 
     func run(code: String, date: String?) async -> Bool {
         let generation = identityGeneration
-        error = nil
+        lastError = nil
         var body: [String: Any] = ["code": code.trimmingCharacters(in: .whitespacesAndNewlines), "profile_ids": selectedOrder]
         if let date, !date.isEmpty { body["date"] = date }
         busyID = -1
@@ -167,7 +167,7 @@ final class CouncilStore {
             await loadSessions()
             beginPollingIfNeeded()
             return sessionID != nil
-        } catch { error = error.localizedDescription; return false }
+        } catch { lastError = error.localizedDescription; return false }
     }
 
     func loadSession(id: Int) async {
@@ -241,7 +241,7 @@ final class CouncilStore {
             let terminated = r["terminated"].int ?? 0
             await loadSessions()
             hint = terminated > 0 ? "已终止 \(terminated) 场遗留运行中会话" : "没有遗留运行中会话"
-        } catch { error = error.localizedDescription }
+        } catch { lastError = error.localizedDescription }
     }
 
     private func replaceSession(_ r: JSON) {
@@ -280,7 +280,7 @@ final class CouncilStore {
             pollFailures = 0
         } catch {
             pollFailures += 1
-            if pollFailures >= 3 { cancelPoll(); error = "自动刷新失败，请点击刷新/重试" }
+            if pollFailures >= 3 { cancelPoll(); lastError = "自动刷新失败，请点击刷新/重试" }
         }
     }
 }
