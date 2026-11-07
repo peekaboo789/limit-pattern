@@ -39,21 +39,22 @@ private func mockAPI(_ handler: @escaping (URLRequest) -> (Int, Data?)) -> APICl
 
 @MainActor
 final class CouncilStoreTests: XCTestCase {
-    func testServerIdentitySwitchDropsLateResponse() async {
+    func testServerIdentitySwitchDropsLateHistoryResponse() async {
         let api = mockAPI { req in
             if req.url?.path == "/api/council/history" {
                 return (200, Data(#"{"items":[{"id":1,"created_at":"2026-11-06T10:00:00+08:00"}]}"#.utf8))
             }
-            if req.url?.path == "/api/council/models" { return (200, Data(#"{"items":[]}"#.utf8)) }
             return (404, Data(#"{"detail":"missing"}"#.utf8))
         }
+        MockURLProtocol.delay = 0.05
+        defer { MockURLProtocol.delay = 0 }
         let store = CouncilStore()
         store.api = api
         store.rebind(server: "old", account: "old+alice")
-        await store.loadAll(serverVersion: "0.7.18")
-        XCTAssertEqual(store.sessions.count, 1)
+        let lateLoad = Task { await store.loadSessions() }
+        try? await Task.sleep(for: .milliseconds(10))
         store.rebind(server: "new", account: "new+bob")
-        await store.loadAll(serverVersion: "0.7.18")
+        await lateLoad.value
         XCTAssertEqual(store.sessions.count, 0)
     }
 
