@@ -170,6 +170,14 @@ function stopPolling() {
   }
 }
 
+function probabilityText(row: CouncilSession) {
+  const result = row.conclusion
+  if (!result) return '—'
+  if (result.probability_status === 'estimated' && result.probability_unit === 'percent' && result.up_probability != null && Number.isFinite(result.up_probability)) return `约 ${result.up_probability.toFixed(1)}%（主观估计）`
+  if (result.probability_status === 'not_estimable') return '模型未提供估计'
+  return result.probability_status === 'ambiguous_unit' ? '单位不明 · 不可确定' : result.probability_status === 'invalid' ? '输出无效 · 不可估计' : '证据不足 / 不可估计'
+}
+
 function confidenceLabel(value: string | null | undefined) {
   return value ? ({ low: '低', medium: '中', high: '高' } as Record<string, string>)[value] ?? value : '—'
 }
@@ -188,7 +196,7 @@ function categoryLabel(category: string | undefined) {
 }
 
 function statusLabel(status: string) {
-  return status === 'ok' ? '已取到' : status === 'empty' ? '未取到' : '失败'
+  return ({ ok: '已取到', empty: '有效查询无记录', failed: '接口故障', not_applicable: '已核实不适用', unavailable: '公开数据不可得', unverified: '尚未核验' } as Record<string, string>)[status] || status
 }
 
 function groupedWeb(evidence: CouncilEvidence | null | undefined): [string, CouncilWebEvidence[]][] {
@@ -317,7 +325,7 @@ onMounted(async () => {
     <button class="btn btn-ghost" type="button" @click="reconcileStale">终止遗留会话</button>
   </header>
 
-  <p class="hint">这是讨论会估计，不计入综合评分，不是涨停概率，不是买入建议。概率指下一交易日收盘相对评估日收盘上涨的估计。</p>
+  <p class="hint">这是讨论会估计，不计入综合评分，不是涨停概率，不是买入建议。概率指下一交易日收盘相对评估日收盘上涨的主观估计，未经统计校准。单位不明或关键证据不足时不展示数字。</p>
 
   <section class="card">
     <div class="card-head"><h2>发起讨论</h2></div>
@@ -376,7 +384,7 @@ onMounted(async () => {
             <td>{{ row.stock_name }}</td>
             <td>{{ row.eval_date }}</td>
             <td class="right">{{ row.participants.length }}</td>
-            <td class="right"><b>{{ row.conclusion?.up_probability == null ? '—' : `${row.conclusion.up_probability.toFixed(1)}%` }}</b></td>
+            <td class="right"><b>{{ probabilityText(row) }}</b></td>
             <td>{{ confidenceLabel(row.conclusion?.confidence) }}</td>
             <td>{{ statusText(row) }}</td>
             <td class="muted">{{ displayTime(row.created_at) }}{{ row.timezone ? `（${row.timezone}）` : '' }}</td>
@@ -391,7 +399,10 @@ onMounted(async () => {
       <div class="muted">评估时间：{{ displayTime(row.created_at) }}（{{ row.timezone || 'Asia/Shanghai' }}）<template v-if="durationText(row)"> · 耗时：{{ durationText(row) }}</template></div>
       <div v-if="row.error" class="alert">{{ row.error }}</div>
       <template v-if="row.conclusion">
-        <p class="hint">下一交易日收盘上涨概率：<b>{{ row.conclusion.up_probability.toFixed(1) }}%</b>，信心：{{ confidenceLabel(row.conclusion.confidence) }}。{{ row.conclusion.disclaimer }}</p>
+        <p class="hint">下一交易日收盘上涨估计：<b>{{ probabilityText(row) }}</b>，信心：{{ confidenceLabel(row.conclusion.confidence) }}。{{ row.conclusion.disclaimer }}</p>
+        <p class="hint">{{ row.conclusion.probability_notice || '模型主观估计，未经统计校准，不是实测上涨频率。' }}</p>
+        <p v-if="row.conclusion.probability_reason" class="alert">{{ row.conclusion.probability_reason }}</p>
+        <details v-if="row.conclusion.probability_audit"><summary>概率单位 / 原始值与规范化依据（不擅改历史值）</summary><pre>{{ JSON.stringify(row.conclusion.probability_audit, null, 2) }}</pre></details>
         <p class="hint">综述：{{ row.conclusion.summary || '—' }}</p>
         <div class="detail-grid">
           <div><b>支持上涨</b><p>{{ joinList(row.conclusion.bullish) }}</p></div>
@@ -431,6 +442,7 @@ onMounted(async () => {
       </section>
 
       <h4>证据摘要</h4>
+      <div v-if="row.evidence.quality" class="hint">实际取到 {{ row.evidence.quality.successful_source_count }}/{{ row.evidence.quality.source_count }} 个来源；有效空记录 {{ row.evidence.quality.source_status_counts.empty || 0 }}；接口故障 {{ row.evidence.quality.source_status_counts.failed || 0 }}。不是缺失补零，也不代表估计已经校准。<p v-for="missing in row.evidence.quality.critical_missing" :key="missing">缺项：{{ missing }}</p></div>
       <p v-if="evidenceSummary(row.evidence)" class="hint">{{ evidenceSummary(row.evidence) }}</p>
       <div v-if="chartBars(row.evidence).length" class="chart-box">
         <div class="chart-head">
@@ -449,7 +461,11 @@ onMounted(async () => {
             <span class="status" :class="item.status">{{ statusLabel(item.status) }}</span>
             <span class="muted">{{ displayTime(item.fetched_at) }}</span>
           </div>
-          <div v-if="item.window" class="muted">窗口：{{ item.window.start }} 至 {{ item.window.end }}（{{ item.window.days }} 天）</div>
+          <div v-if="item.window?.kind === 'latest_disclosed_report'" class="muted">截至 {{ item.window.as_of }} 最新已披露财报，不限近30天；报告期与披露日见摘要。</div>
+          <div v-else-if="item.window?.kind === 'trading_days'" class="muted">近约 {{ item.window.requested_trading_days || 30 }} 个交易日 · 截至 {{ item.window.end }}</div>
+          <div v-else-if="item.window" class="muted">观察区间：{{ item.window.start }} 至 {{ item.window.end }}（含首尾 {{ item.window.days }} 天）</div>
+          <div v-if="item.observed_interval" class="muted">实际返回：{{ item.observed_interval.start }} 至 {{ item.observed_interval.end }} · {{ item.observed_interval.count }} 条</div>
+          <details v-if="item.http_attempts?.length"><summary>请求诊断 / 有界重试 · {{ item.elapsed_seconds }}秒</summary><div v-for="(attempt, attemptIndex) in item.http_attempts" :key="attemptIndex" class="muted">第{{ attempt.attempt }}次：HTTP {{ attempt.status_code || '未收到响应' }} · {{ attempt.content_type || '无Content-Type' }} · {{ attempt.error || '' }}</div></details>
           <p v-if="item.summary" class="evidence-summary">{{ item.summary }}</p>
           <details>
             <summary>来源原文</summary>

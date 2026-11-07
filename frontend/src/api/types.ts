@@ -685,7 +685,15 @@ export interface CouncilParticipant {
 }
 
 export interface CouncilConclusion {
-  up_probability: number
+  up_probability: number | null
+  probability_unit?: 'percent'
+  probability_contract_version?: number
+  probability_validation_reason?: string
+  probability_status?: 'estimated' | 'ambiguous_unit' | 'invalid' | 'not_estimable' | 'insufficient_evidence'
+  probability_reason?: string
+  probability_notice?: string
+  probability_audit?: Record<string, unknown>
+  evidence_quality?: CouncilEvidenceQuality
   confidence: 'low' | 'medium' | 'high'
   verified: string[]
   conflicts_or_unverified: string[]
@@ -801,7 +809,20 @@ export interface CouncilLocalEvidence {
   [key: string]: unknown
 }
 
+export interface CouncilEvidenceQuality {
+  eligible_for_probability: boolean
+  critical_missing: string[]
+  valid_bar_count: number
+  source_count: number
+  successful_source_count: number
+  source_status_counts: Record<string, number>
+  price_crosscheck: string
+  price_sites: string[]
+  policy: string
+}
+
 export interface CouncilEvidence {
+  quality?: CouncilEvidenceQuality
   local?: CouncilLocalEvidence
   market?: Record<string, unknown>
   kline?: {
@@ -818,12 +839,15 @@ export interface CouncilEvidence {
 }
 
 export interface CouncilWebEvidence {
-  status: 'ok' | 'empty' | 'failed'
+  status: 'ok' | 'empty' | 'failed' | 'not_applicable' | 'unavailable' | 'unverified'
   category?: string
   source: string
   url?: string
   fetched_at?: string
-  window?: { start?: string; end?: string; days?: number } | null
+  window?: { kind?: string; as_of?: string; start?: string | null; end?: string; days?: number | null; requested_trading_days?: number; observed_count?: number; note?: string } | null
+  observed_interval?: { start?: string; end?: string; count?: number }
+  http_attempts?: { url?: string; status_code?: number; content_type?: string; attempt?: number; error?: string }[]
+  elapsed_seconds?: number
   digest?: unknown
   summary?: string
 }

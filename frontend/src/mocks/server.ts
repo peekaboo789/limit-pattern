@@ -252,6 +252,10 @@ const councilSessions: CouncilSession[] = [
     ],
     conclusion: {
       up_probability: 54,
+      probability_unit: 'percent',
+      probability_contract_version: 2,
+      probability_status: 'estimated',
+      probability_notice: '演示数据，未经统计校准，不是投资建议。',
       confidence: 'medium',
       verified: ['收盘价一致'],
       conflicts_or_unverified: [],

@@ -260,7 +260,7 @@ def start_council(arg: str, reply: Reply | None = None):
         risks = conclusion.get("risks") or []
         parts = [
             f"名称/代码：{row['stock_name']} {row['stock_code']}",
-            f"次日上涨概率：{prob}%（信心 {confidence}）",
+            (f"次日上涨主观估计：约 {prob}%（信心 {confidence}，未经统计校准）" if prob is not None else "次日上涨估计：证据不足或单位不明，暂不可估计"),
         ]
         if summary:
             parts.append(f"综述：{summary}")

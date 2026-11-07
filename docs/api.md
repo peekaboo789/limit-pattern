@@ -42,7 +42,7 @@
 - `local`：本地日 K、近 30 个交易日数值序列、指标、相似度、系统综合评分（若有）、历史成功率/上榜表现（若有）、市场环境；`local.chart.bars` 为前端可画的 30 日 K 线数据。
 - `web`：近 30 个自然日的多源结构化证据，每条带 `category`（market/market_intraday/capital/trade/news/announcement/research/financial）、`source`、`url`、`fetched_at`、`window`、`status`（ok/empty/failed）和 `digest`。失败/空源会明确记录原因，不编造缺失字段。
 
-主席结论必含 `up_probability`（0–100，系统钳制）、`confidence`（low/medium/high）、`verified`、`conflicts_or_unverified`、`agreements`、`disagreements`、`bullish`、`bearish`、`risks`、`cne6_notes`、`summary`、`disclaimer`。
+主席结论必含 `up_probability`（规范化百分数或 null，不钳制）与 `probability_unit`（模型原始输出必须明确 percent 或 fraction）、`confidence`（low/medium/high）、`verified`、`conflicts_or_unverified`、`agreements`、`disagreements`、`bullish`、`bearish`、`risks`、`cne6_notes`、`summary`、`disclaimer`。
 
 讨论会概率不计入综合评分，不改变榜单排名；这是估计，不是买入建议。
 
@@ -164,3 +164,12 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 - `POST /api/council/{id}/speak`：`{"profile_id":"已配置模型ID","round":2}`，指定模型续轮；最后一位原参会模型为主持人。调用等待有120秒总上限，客户端等待135秒并同时轮询。并发操作返回409，失败发言保留并可继续重试。
 - `POST /api/council/reconcile-stale`：终止进程重启遗留running记录，不终止本进程正在工作的讨论。
 - `progress.events` 保存阶段/模型与时间；transcript保存公开发言、用户意见、失败原因和耗时。时间返回显式UTC+8。密钥被脱敏，隐藏think段不进入公开发言。补充意见或非主持人续轮会清空旧结论，需再次请主持人总结。
+
+
+### v0.7.13 讨论结论与证据契约
+
+模型原始结论要求显式 `probability_unit: "percent"`（0–100）或 `"fraction"`（0–1）。仅显式 fraction 才乘100；无单位/越界/非有限/布尔/字符串不做猜测或钳制。API统一输出百分数或null，并携带 `probability_contract_version: 2`、`probability_status`、`probability_reason`、`probability_audit`（raw_value/raw_unit/normalized_candidate_percent/normalization）。历史无单位数据只在返回时安全遮蔽，不改写数据库。
+
+`conclusion.evidence_quality`/`evidence.quality` 包含覆盖率、同日跨站价格核对、关键缺项和展示门槛。关键证据不足时 `up_probability: null`、`probability_status: "insufficient_evidence"`；通过也仅是未经校准的主观意见，不是可交易的精确统计概率。
+
+`evidence.web[]` 保留 `http_attempts`（HTTP状态、Content-Type、URL、attempt、error）、`elapsed_seconds`、来源、抓取时刻及观察区间。empty仅表示有效查询无记录，failed表示接口/业务失败，unverified表示日期等信息不能确认；缺失不补零、不据此推断资格。财报窗口 `kind: "latest_disclosed_report"` 不限近30天，latest.report_date与publish_date分开；日K `kind: "trading_days"` 请求30交易日，资讯/交易为含首尾30自然日。至多两次瞬态重试、四并发、32秒采集预算保留已完成部分。

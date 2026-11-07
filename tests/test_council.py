@@ -1,4 +1,4 @@
-"""多模型讨论验证：发言顺序、失败降级、概率钳制、密钥不落盘、指令解析。不连外网、不打真实模型。"""
+"""多模型讨论验证：发言顺序、失败降级、概率单位验证、密钥不落盘、指令解析。不连外网、不打真实模型。"""
 
 from __future__ import annotations
 
@@ -118,6 +118,7 @@ def test_failed_web_still_uses_local(client, monkeypatch):
 
 
 def test_speaker_order_and_chair_gets_all_prior(client, monkeypatch):
+    monkeypatch.setattr(web_evidence, "collect", lambda *args: [])
     _seed_quotes()
     from backend.app.services.council import service as council_service
 
@@ -145,6 +146,7 @@ def test_speaker_order_and_chair_gets_all_prior(client, monkeypatch):
 
 
 def test_middle_failure_continues(client, monkeypatch):
+    monkeypatch.setattr(web_evidence, "collect", lambda *args: [])
     _seed_quotes()
     from backend.app.services.council import service as council_service
 
@@ -172,10 +174,12 @@ def test_middle_failure_continues(client, monkeypatch):
         assert row.status == "done"
         assert len(row.statements) == 3
         assert row.statements[1]["error"] and "HTTP 401" in row.statements[1]["error"]
-        assert row.conclusion["up_probability"] == 50
+        assert row.conclusion["up_probability"] is None
+        assert row.conclusion["probability_audit"]["raw_value"] == 50
 
 
 def test_chair_failure_saves_statements(client, monkeypatch):
+    monkeypatch.setattr(web_evidence, "collect", lambda *args: [])
     _seed_quotes()
     from backend.app.services.council import service as council_service
 
@@ -197,25 +201,10 @@ def test_chair_failure_saves_statements(client, monkeypatch):
         assert "主席" in row.statements[1]["error"]
 
 
-def test_probability_clamped(client, monkeypatch):
-    _seed_quotes()
-    from backend.app.services.council import service as council_service
-
-    profiles = [{"id": "a", "name": "甲", "model": "m-a"}, {"id": "b", "name": "主席", "model": "m-b"}]
-    def fake_chat(system, prompt):
-        if "第 2/2 位" in prompt:
-            return '{"up_probability": 1234,"confidence":"crazy","verified":[],"conflicts_or_unverified":[],"agreements":[],"disagreements":[],"bullish":[],"bearish":[],"risks":[],"cne6_notes":[],"summary":"测试","disclaimer":"测试"}'
-        return "甲"
-    monkeypatch.setattr(council_service, "_chat_for", lambda profile: fake_chat)
-    day = _seed_quotes()
-    sid = _row_id(day)
-    with session_scope() as session:
-        ev = council_service.build_evidence(session, "600519", "贵州茅台", day)
-    council_service._run(sid, "600519", "贵州茅台", day, profiles, ev)
-    with session_scope() as session:
-        row = session.query(AiCouncilSession).order_by(AiCouncilSession.id.desc()).first()
-        assert row.conclusion["up_probability"] == 100
-        assert row.conclusion["confidence"] == "low"
+def test_probability_is_strict_not_clamped():
+    assert service.normalize_conclusion({"up_probability": 150, "probability_unit": "percent"})["probability_status"] == "invalid"
+    assert service.normalize_conclusion({"up_probability": -10, "probability_unit": "percent"})["up_probability"] is None
+    assert service.normalize_conclusion({"up_probability": 50, "probability_unit": "percent"})["up_probability"] == 50
 
 
 def test_no_api_key_stored(client, monkeypatch):
@@ -273,7 +262,7 @@ class _SingleResponseClient:
 
 
 def test_collect_category_coverage_and_fallback(monkeypatch):
-    """17 类任务都应被调用，且包含新浪独立站点核对；单个源失败或空结果不影响其它类别。"""
+    """22 类任务都应被调用，且包含新浪独立站点核对；单个源失败或空结果不影响其它类别。"""
     calls = []
 
     def fake_client(*args, **kwargs):
@@ -313,7 +302,7 @@ def test_collect_category_coverage_and_fallback(monkeypatch):
 
     monkeypatch.setattr(web_evidence.httpx, "Client", fake_client)
     items = web_evidence.collect("600519", date(2026, 11, 6))
-    assert len(items) == 17
+    assert len(items) == 22
     statuses = [item["status"] for item in items]
     assert statuses.count("ok") >= 3
     assert "empty" in statuses
@@ -348,11 +337,11 @@ def test_news_filters_out_of_window_and_future(monkeypatch):
 def test_financial_main_picks_only_disclosed_before_end(monkeypatch):
     """财报只选评估日前已披露的最新报告，不能泄露未来披露。"""
     rows = [
-        {"REPORT_DATE": "2026-09-30", "NOTICE_DATE": "2026-11-20", "TOTALOPERATEREVE": 999},
-        {"REPORT_DATE": "2026-06-30", "NOTICE_DATE": "2026-08-25", "TOTALOPERATEREVE": 123},
+        {"REPORT_DATE": "2026-09-30", "NOTICE_DATE": "2026-11-20", "TOTAL_OPERATE_INCOME": 999},
+        {"REPORT_DATE": "2026-06-30", "NOTICE_DATE": "2026-08-25", "TOTAL_OPERATE_INCOME": 123},
     ]
 
-    monkeypatch.setattr(web_evidence.httpx, "Client", lambda *args, **kwargs: _SingleResponseClient(_fake_response_json({"jbmx": rows})))
+    monkeypatch.setattr(web_evidence.httpx, "Client", lambda *args, **kwargs: _SingleResponseClient(_fake_response_json({"success": True, "result": {"data": rows}})))
     out = web_evidence.fetch_financial_main("600519", date(2026, 11, 6))
     assert out["status"] == "ok"
     assert out["digest"]["latest"]["report_date"] == "2026-06-30"
@@ -383,9 +372,9 @@ def test_collect_date_windows(monkeypatch):
     items = web_evidence.collect("600519", date(2026, 11, 6))
     window = items[1]["window"]
     assert window is not None
-    assert window["start"] == "2026-10-07"
+    assert window["start"] == "2026-10-08"
     assert window["end"] == "2026-11-06"
-    assert window["days"] == 31
+    assert window["days"] == 30
     assert any("kline" in url for url in captured)
 
 
