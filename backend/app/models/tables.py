@@ -359,6 +359,66 @@ class AiCouncilSession(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class AiCouncilBatch(Base):
+    """批量讨论导入与执行。每股实际讨论仍落到 AiCouncilSession。"""
+
+    __tablename__ = "ai_council_batches"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_council_batch_idempotency"),
+        Index("ix_council_batch_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_name: Mapped[str] = mapped_column(String(120), default="")
+    source_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    eval_date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    stage: Mapped[str] = mapped_column(String(40), default="待开始")
+    profile_ids: Mapped[list] = mapped_column(JSON, default=list)
+    profile_order_snapshot: Mapped[list] = mapped_column(JSON, default=list)
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    done_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    cancelled_count: Mapped[int] = mapped_column(Integer, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(128), default="")
+    parser_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AiCouncilBatchItem(Base):
+    """批次中的单股任务状态。"""
+
+    __tablename__ = "ai_council_batch_items"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "stock_code", name="uq_council_batch_stock"),
+        Index("ix_council_batch_item_batch", "batch_id", "position"),
+        Index("ix_council_batch_item_session", "session_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[int] = mapped_column(Integer, index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    stock_code: Mapped[str] = mapped_column(String(6), index=True)
+    stock_name: Mapped[str] = mapped_column(String(64), default="")
+    source_market: Mapped[str] = mapped_column(String(24), default="")
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    stage: Mapped[str] = mapped_column(String(40), default="待开始")
+    session_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    probability_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence: Mapped[str] = mapped_column(String(16), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
 class SignalShadowStatus(Base):
     """信号上线状态：影子 / 达标 / 上线 / 降权 / 停用。审计轨迹只增不改。"""
 

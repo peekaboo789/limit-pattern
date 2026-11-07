@@ -131,6 +131,21 @@ def upgrade_existing_tables(engine=None) -> list[str]:
             "transcript": "TEXT" if sqlite else "JSON",
             "progress": "TEXT" if sqlite else "JSON",
         },
+        "ai_council_batches": {
+            "parser_summary": "TEXT" if sqlite else "JSON",
+            "error": "TEXT",
+            "started_at": "DATETIME",
+            "finished_at": "DATETIME",
+            "updated_at": "DATETIME",
+        },
+        "ai_council_batch_items": {
+            "details": "TEXT" if sqlite else "JSON",
+            "summary": "TEXT",
+            "error": "TEXT",
+            "started_at": "DATETIME",
+            "finished_at": "DATETIME",
+            "updated_at": "DATETIME",
+        },
     }
     with engine.begin() as conn:
         for table, columns in expected.items():

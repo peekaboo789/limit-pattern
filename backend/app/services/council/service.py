@@ -1115,61 +1115,81 @@ def _run(session_id: int, code: str, name: str, day: date, profiles: list[dict],
         _unmark_active(session_id)
 
 
+def _prepare_start(code_or_name: str, day: date | None = None, profile_ids: list[str] | None = None) -> tuple[str, str, date, list[dict], dict, int]:
+    code = _parse_code_or_name(code_or_name)
+    _reject_out_of_scope(code)
+    profiles = _valid_profiles(profile_ids)
+    if len(profiles) < 2:
+        raise ValueError("至少需要两个已填密钥的模型才能开会，请到 设置 → AI 模型 配置")
+    if day is None:
+        with session_scope() as session:
+            from backend.app.services.retention import quote_dates
+
+            days = quote_dates(session)
+            if not days:
+                raise LookupError("还没有行情")
+            day = days[-1]
+    if day > today():
+        raise ValueError("不能用未来的日期")
+    with session_scope() as session:
+        stale = session.query(AiCouncilSession).filter(AiCouncilSession.status == "running").all()
+        for row in stale:
+            row.status = "failed"
+            row.error = "已有新讨论启动，前一场未完成会话已终止"
+            row.finished_at = _now_dt()
+        session.commit()
+    started_session = _now_dt()
+    with session_scope() as session:
+        name = _stock_name(session, code)
+        evidence = build_evidence(session, code, name, day)
+        session.add(AiCouncilSession(
+            stock_code=code,
+            stock_name=name,
+            eval_date=day,
+            status="running",
+            participants=_public_participants(profiles),
+            evidence=evidence,
+            statements=[],
+            transcript=[],
+            conclusion=None,
+            error="",
+            progress={},
+        ))
+        session.commit()
+        session_id = session.query(AiCouncilSession).order_by(AiCouncilSession.id.desc()).first().id
+    return code, name, day, profiles, evidence, session_id
+
+
+def start_sync(code_or_name: str, day: date | None = None, profile_ids: list[str] | None = None) -> dict:
+    if not _START_LOCK.acquire(blocking=False):
+        raise RuntimeError("已经有一场讨论在跑，请稍后再试")
+    try:
+        if progress().get("running"):
+            raise RuntimeError("已经有一场讨论在跑，请稍后再试")
+        code, name, day, profiles, evidence, session_id = _prepare_start(code_or_name, day, profile_ids)
+        started_session = _now_dt()
+        with _LOCK:
+            _PROGRESS.update(running=True, phase="collecting_local", session_id=session_id, stock=code, stage="搜集本地证据",
+                             current_model="", done=0, total=len(profiles), last_status="已开始", error="",
+                             started_at=_as_shanghai(started_session), finished_at=None, elapsed_seconds=None)
+        _run(session_id, code, name, day, profiles, evidence)
+        return {"session_id": session_id, "started": True, "participants": _public_participants(profiles)}
+    finally:
+        _START_LOCK.release()
+
+
 def start(code_or_name: str, day: date | None = None, profile_ids: list[str] | None = None) -> dict:
     if not _START_LOCK.acquire(blocking=False):
         raise RuntimeError("已经有一场讨论在跑，请稍后再试")
     try:
         if progress().get("running"):
             raise RuntimeError("已经有一场讨论在跑，请稍后再试")
-        code = _parse_code_or_name(code_or_name)
-        _reject_out_of_scope(code)
-        profiles = _valid_profiles(profile_ids)
-        if len(profiles) < 2:
-            raise ValueError("至少需要两个已填密钥的模型才能开会，请到 设置 → AI 模型 配置")
-        if day is None:
-            with session_scope() as session:
-                from backend.app.services.retention import quote_dates
-
-                days = quote_dates(session)
-                if not days:
-                    raise LookupError("还没有行情")
-                day = days[-1]
-        if day > today():
-            raise ValueError("不能用未来的日期")
-        # 防止同进程内、或上一进程遗留的 running 记录造成重复开会。
-        with session_scope() as session:
-            stale = session.query(AiCouncilSession).filter(AiCouncilSession.status == "running").all()
-            for row in stale:
-                row.status = "failed"
-                row.error = "已有新讨论启动，前一场未完成会话已终止"
-                row.finished_at = _now_dt()
-            session.commit()
-
+        code, name, day, profiles, evidence, session_id = _prepare_start(code_or_name, day, profile_ids)
         started_session = _now_dt()
-        with session_scope() as session:
-            name = _stock_name(session, code)
-            evidence = build_evidence(session, code, name, day)
-            session.add(AiCouncilSession(
-                stock_code=code,
-                stock_name=name,
-                eval_date=day,
-                status="running",
-                participants=_public_participants(profiles),
-                evidence=evidence,
-                statements=[],
-                transcript=[],
-                conclusion=None,
-                error="",
-                progress={},
-            ))
-            session.commit()
-            session_id = session.query(AiCouncilSession).order_by(AiCouncilSession.id.desc()).first().id
-
         with _LOCK:
             _PROGRESS.update(running=True, phase="collecting_local", session_id=session_id, stock=code, stage="搜集本地证据",
                              current_model="", done=0, total=len(profiles), last_status="已开始", error="",
                              started_at=_as_shanghai(started_session), finished_at=None, elapsed_seconds=None)
-
         thread = threading.Thread(target=_run, args=(session_id, code, name, day, profiles, evidence), daemon=True)
         thread.start()
         return {"session_id": session_id, "started": True, "participants": _public_participants(profiles)}

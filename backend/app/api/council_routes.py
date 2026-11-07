@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 
 router = APIRouter()
 
@@ -47,6 +47,74 @@ def council_reconcile_stale() -> dict:
     from backend.app.services.council import service
 
     return {"terminated": service.reconcile_stale_sessions()}
+
+
+@router.post("/batch/preview")
+async def council_batch_preview(request: Request) -> dict:
+    from backend.app.services.council import batch_service
+
+    body = await request.body()
+    source_name = request.headers.get("x-file-name", "")
+    try:
+        return batch_service.preview_upload(body, source_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/batch/start")
+def council_batch_start(body: dict | None = None) -> dict:
+    from backend.app.services.council import batch_service
+
+    payload = body or {}
+    try:
+        return batch_service.create_batch(
+            payload.get("preview") or {},
+            str(payload.get("eval_date") or ""),
+            payload.get("profile_ids") or [],
+            str(payload.get("source_name") or ""),
+            str(payload.get("idempotency_key") or "") or None,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/batch")
+def council_batch_list(limit: int = Query(50, ge=1, le=200)) -> dict:
+    from backend.app.services.council import batch_service
+
+    return {"items": batch_service.list_batches(limit=limit)}
+
+
+@router.get("/batch/{batch_id}")
+def council_batch_get(batch_id: int) -> dict:
+    from backend.app.services.council import batch_service
+
+    row = batch_service.get_batch(batch_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="没有这个批次")
+    return row
+
+
+@router.post("/batch/{batch_id}/cancel")
+def council_batch_cancel(batch_id: int) -> dict:
+    from backend.app.services.council import batch_service
+
+    try:
+        return batch_service.cancel_batch(batch_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/batch/{batch_id}/retry-failed")
+def council_batch_retry_failed(batch_id: int) -> dict:
+    from backend.app.services.council import batch_service
+
+    try:
+        return batch_service.retry_failed(batch_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("")

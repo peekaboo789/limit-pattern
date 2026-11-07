@@ -91,8 +91,11 @@ def create_app() -> FastAPI:
         with session_scope() as session:
             purge_provisional(session)
         from backend.app.services.council import service as _council_service
+        from backend.app.services.council import batch_service as _council_batch_service
 
         _council_service.reconcile_stale_sessions()
+        _council_batch_service.reconcile_stale_batches()
+        _council_batch_service.ensure_worker()
         start_scheduler()
         bootstrap_if_empty()
         import os as _os
@@ -102,6 +105,7 @@ def create_app() -> FastAPI:
 
             warm_cache()  # 后台线程，不阻塞启动
         yield
+        _council_batch_service.stop_worker()
         stop_scheduler()
 
     app = FastAPI(title="三日涨停形态统计", version=__version__, lifespan=lifespan)
