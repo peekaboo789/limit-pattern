@@ -5,7 +5,7 @@ final class CouncilCoreTests: XCTestCase {
     func testPublicContentStripsThink() {
         XCTAssertEqual(CouncilCore.publicContent("<think>secret\nchain</think>\n公开分析"), "公开分析")
         XCTAssertEqual(CouncilCore.publicContent("<THINK>x</THINK>y"), "y")
-        XCTAssertEqual(CouncilCore.publicContent("<think>unclosed"), "unclosed")
+        XCTAssertEqual(CouncilCore.publicContent("<think>unclosed"), "")
         XCTAssertEqual(CouncilCore.publicContent("plain"), "plain")
     }
 
