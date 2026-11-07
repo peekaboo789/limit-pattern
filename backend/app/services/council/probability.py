@@ -51,9 +51,9 @@ def normalize_probability(raw: dict) -> dict:
 
 def _site(item):
     host = (urlparse(str(item.get("url") or "")).hostname or "").lower()
-    for domain in ("eastmoney.com", "sina.cn", "sina.com.cn", "sinajs.cn", "gtimg.cn", "qq.com"):
+    for domain in ("eastmoney.com", "sina.cn", "sina.com.cn", "sinajs.cn", "gtimg.cn", "qq.com", "10jqka.com.cn"):
         if host == domain or host.endswith("." + domain):
-            return "sina" if "sina" in domain else "tencent" if domain in {"gtimg.cn", "qq.com"} else "eastmoney"
+            return "ths" if domain == "10jqka.com.cn" else "sina" if "sina" in domain else "tencent" if domain in {"gtimg.cn", "qq.com"} else "eastmoney"
     return host or str(item.get("source") or "unknown")
 
 

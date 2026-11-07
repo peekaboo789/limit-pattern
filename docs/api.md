@@ -173,3 +173,14 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 `conclusion.evidence_quality`/`evidence.quality` 包含覆盖率、同日跨站价格核对、关键缺项和展示门槛。关键证据不足时 `up_probability: null`、`probability_status: "insufficient_evidence"`；通过也仅是未经校准的主观意见，不是可交易的精确统计概率。
 
 `evidence.web[]` 保留 `http_attempts`（HTTP状态、Content-Type、URL、attempt、error）、`elapsed_seconds`、来源、抓取时刻及观察区间。empty仅表示有效查询无记录，failed表示接口/业务失败，unverified表示日期等信息不能确认；缺失不补零、不据此推断资格。财报窗口 `kind: "latest_disclosed_report"` 不限近30天，latest.report_date与publish_date分开；日K `kind: "trading_days"` 请求30交易日，资讯/交易为含首尾30自然日。至多两次瞬态重试、四并发、32秒采集预算保留已完成部分。
+
+
+### v0.7.14 讨论来源管理（仅/council）
+
+- `GET /api/council/sources`：当前/内置清单版本、校验摘要、已知解析器任务、个人启用/排序、渠道、最近健康（股票/评估日/抓取时刻/耗时/原因/熔断）、候选与回滚能力。
+- `PUT /api/council/sources/{id}`：仅 `{"enabled":true,"priority":1}`（可只提供一项）；严格布尔/整数1–100，拒绝其它字段，不修改历史会话。
+- `POST /api/council/sources/check-update`：只从产品固定自家repo HTTPS地址读取<=64KiB JSON，墙钟10秒；不支持自定义URL、认证、重定向或代码。检查只生成10分钟候选，不自动应用。
+- `POST /api/council/sources/apply-update`：再次校验兼容性与完整性后原子应用候选，保留上一清单；个人启用/排序设置优先。
+- `POST /api/council/sources/rollback`：显式原子回滚上一清单。断网/不兼容/坏校验/写入失败保留现有配置；本地坏状态回退内置。
+
+`evidence.web[].registry`含清单版本/parser/provider/parser_version；`cache.hit/age_seconds`保留原抓取时间，不冒充新数据。健康只表示最后一次真实采集，不是持续监控保证。默认27任务启用/28任务可管理/7渠道组（上交所未验证默认关闭）；同站多个接口不是独立来源。模板变化或新解析器需正常软件更新。协议与GitHub研究详见council-data-sources.md。

@@ -94,6 +94,46 @@ def council_profile_order_put(body: dict) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.get("/sources")
+def council_sources():
+    from backend.app.services.council.source_registry import get_registry
+    return get_registry().view()
+
+
+@router.put("/sources/{source_id}")
+def council_configure_source(source_id: str, body: dict):
+    from backend.app.services.council.source_registry import get_registry
+    try:
+        return get_registry().configure(source_id, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _source_action(action):
+    from backend.app.services.council.source_registry import get_registry
+    try:
+        return getattr(get_registry(), action)()
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"来源清单请求失败（保留当前配置）：{type(exc).__name__}") from exc
+
+
+@router.post("/sources/check-update")
+def council_sources_check():
+    return _source_action("check_update")
+
+
+@router.post("/sources/apply-update")
+def council_sources_apply():
+    return _source_action("apply_update")
+
+
+@router.post("/sources/rollback")
+def council_sources_rollback():
+    return _source_action("rollback")
+
+
 @router.get("/{session_id}")
 def council_get(session_id: int) -> dict:
     from backend.app.services.council import service

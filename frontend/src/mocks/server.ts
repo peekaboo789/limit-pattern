@@ -276,6 +276,16 @@ const councilSessions: CouncilSession[] = [
 let councilProgress: CouncilProgress = { running: false, phase: 'idle', session_id: null, stock: null, stage: '空闲', current_model: '', done: 0, total: 0, last_status: '', error: '' }
 let councilOrder: string[] = ['m1', 'm2']
 
+const councilSourceDemo = {
+  version: '1.0.0', builtin_version: '1.0.0', schema_version: 1,
+  origin: 'https://github.com/peekaboo789/limit-pattern', content_sha256: '演示清单，不是真实SHA256校验结果',
+  rollback_available: false, candidate_version: null as string | null, load_error: '',
+  policy: '模拟来源管理；未访问网站或GitHub，不代表实际健康或更新成功。',
+  items: ['cninfo', 'sina', 'ths'].map((provider, index) => ({ id: provider + '_demo', provider_name: provider + '（演示）',
+    provider, category: 'market', enabled: true, priority: 10 + index, cache_ttl: 300, timeout_seconds: 4, min_interval: 2,
+    health: { status: 'unverified', reason: '仅模拟交互，未实际验证来源' } })),
+}
+
 function councilList(): { items: CouncilSession[] } {
   return { items: councilSessions }
 }
@@ -319,6 +329,23 @@ function councilModels(): { items: { id: string; name: string; model: string; ap
 }
 
 function handle(method: string, pathname: string, params: URLSearchParams, init?: RequestInit): unknown {
+  if (pathname === '/api/council/sources' && method === 'GET') return structuredClone(councilSourceDemo)
+  if (pathname.startsWith('/api/council/sources/') && method === 'PUT') {
+    const row = councilSourceDemo.items.find(item => item.id === pathname.split('/').pop())
+    const body = (readBody(init) || {}) as Record<string, unknown>
+    if (!row || Object.keys(body).some(key => !['enabled', 'priority'].includes(key))) throw new ApiError(422, '未知来源/参数')
+    if (body.enabled !== undefined) { if (typeof body.enabled !== 'boolean') throw new ApiError(422, '启用应为布尔'); row.enabled = body.enabled }
+    if (body.priority !== undefined) { if (typeof body.priority !== 'number' || !Number.isInteger(body.priority) || body.priority < 1 || body.priority > 100) throw new ApiError(422, '优先级范围1–100'); row.priority = body.priority }
+    return structuredClone(councilSourceDemo)
+  }
+  if (pathname.startsWith('/api/council/sources/') && method === 'POST') {
+    const action = pathname.split('/').pop()
+    if (action === 'check-update') councilSourceDemo.candidate_version = '1.0.1'
+    else if (action === 'apply-update' && councilSourceDemo.candidate_version) { councilSourceDemo.version = '1.0.1'; councilSourceDemo.rollback_available = true; councilSourceDemo.candidate_version = null }
+    else if (action === 'rollback' && councilSourceDemo.rollback_available) { councilSourceDemo.version = '1.0.0'; councilSourceDemo.rollback_available = false }
+    else throw new ApiError(422, '没有可应用/回滚的模拟清单')
+    return structuredClone(councilSourceDemo)
+  }
   if (method === 'GET' && pathname === '/api/health') return { ...health }
   if (method === 'GET' && pathname === '/api/settings') return cloneSettings()
   if (method === 'PUT' && pathname === '/api/settings') return updateSettings(readBody(init))

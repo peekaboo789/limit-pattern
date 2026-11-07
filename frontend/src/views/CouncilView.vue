@@ -2,6 +2,7 @@
 import { api, ApiError } from '@/api/client'
 import type { CouncilBar, CouncilEvidence, CouncilSession, CouncilProgress, CouncilTranscriptEntry, CouncilWebEvidence } from '@/api/types'
 import KlineChart from '@/components/KlineChart.vue'
+import CouncilSourcesPanel from '@/components/CouncilSourcesPanel.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 interface Prof { id: string; name: string; model: string; api_key_set: boolean; active: boolean }
@@ -324,6 +325,7 @@ onMounted(async () => {
     <button class="btn btn-ghost" type="button" :disabled="loading" @click="loadSessions">刷新</button>
     <button class="btn btn-ghost" type="button" @click="reconcileStale">终止遗留会话</button>
   </header>
+  <CouncilSourcesPanel />
 
   <p class="hint">这是讨论会估计，不计入综合评分，不是涨停概率，不是买入建议。概率指下一交易日收盘相对评估日收盘上涨的主观估计，未经统计校准。单位不明或关键证据不足时不展示数字。</p>
 
@@ -454,13 +456,14 @@ onMounted(async () => {
       <div v-else class="hint">没有可展示的 K 线数值序列。</div>
 
       <div v-for="[category, items] in groupedWeb(row.evidence)" :key="category" class="evidence-group">
-        <h5>{{ categoryLabel(category) }} <span class="muted">{{ items.length }} 源</span></h5>
+        <h5>{{ categoryLabel(category) }} <span class="muted">{{ items.length }} 采集项</span></h5>
         <div v-for="(item, itemIndex) in items" :key="itemIndex" class="evidence-item">
           <div class="evidence-item-head">
             <a v-if="/^https?:\/\//i.test(item.url || '')" :href="item.url" target="_blank" rel="noopener noreferrer">{{ item.source }}</a><b v-else>{{ item.source }}</b>
             <span class="status" :class="item.status">{{ statusLabel(item.status) }}</span>
             <span class="muted">{{ displayTime(item.fetched_at) }}</span>
           </div>
+          <div v-if="item.registry" class="muted">清单 {{ item.registry.version }} · 解析器 {{ item.registry.parser_version }} · 渠道 {{ item.registry.provider }} <span v-if="item.cache?.hit">· 缓存命中（{{ item.cache.age_seconds }}秒前，保留原抓取时间）</span></div>
           <div v-if="item.window?.kind === 'latest_disclosed_report'" class="muted">截至 {{ item.window.as_of }} 最新已披露财报，不限近30天；报告期与披露日见摘要。</div>
           <div v-else-if="item.window?.kind === 'trading_days'" class="muted">近约 {{ item.window.requested_trading_days || 30 }} 个交易日 · 截至 {{ item.window.end }}</div>
           <div v-else-if="item.window" class="muted">观察区间：{{ item.window.start }} 至 {{ item.window.end }}（含首尾 {{ item.window.days }} 天）</div>

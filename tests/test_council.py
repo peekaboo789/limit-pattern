@@ -261,8 +261,11 @@ class _SingleResponseClient:
         return self.response
 
 
-def test_collect_category_coverage_and_fallback(monkeypatch):
-    """22 类任务都应被调用，且包含新浪独立站点核对；单个源失败或空结果不影响其它类别。"""
+def test_collect_category_coverage_and_fallback(monkeypatch, tmp_path):
+    from backend.app.services.council import source_registry
+    registry = source_registry.SourceRegistry(tmp_path)
+    monkeypatch.setattr(source_registry, "get_registry", lambda: registry)
+    """28 类任务都应被调用，且包含新浪独立站点核对；单个源失败或空结果不影响其它类别。"""
     calls = []
 
     def fake_client(*args, **kwargs):
@@ -302,7 +305,7 @@ def test_collect_category_coverage_and_fallback(monkeypatch):
 
     monkeypatch.setattr(web_evidence.httpx, "Client", fake_client)
     items = web_evidence.collect("600519", date(2026, 11, 6))
-    assert len(items) == 22
+    assert len(items) == 27
     statuses = [item["status"] for item in items]
     assert statuses.count("ok") >= 3
     assert "empty" in statuses
@@ -348,7 +351,10 @@ def test_financial_main_picks_only_disclosed_before_end(monkeypatch):
     assert out["digest"]["latest"]["revenue"] == 123
 
 
-def test_collect_date_windows(monkeypatch):
+def test_collect_date_windows(monkeypatch, tmp_path):
+    from backend.app.services.council import source_registry
+    registry = source_registry.SourceRegistry(tmp_path)
+    monkeypatch.setattr(source_registry, "get_registry", lambda: registry)
     """end 参数应落到近 30 个自然日窗口。"""
     captured = {}
 
@@ -370,7 +376,7 @@ def test_collect_date_windows(monkeypatch):
 
     monkeypatch.setattr(web_evidence.httpx, "Client", fake_client)
     items = web_evidence.collect("600519", date(2026, 11, 6))
-    window = items[1]["window"]
+    window = next(item["window"] for item in items if item["source"] == "sina_spot")
     assert window is not None
     assert window["start"] == "2026-10-08"
     assert window["end"] == "2026-11-06"

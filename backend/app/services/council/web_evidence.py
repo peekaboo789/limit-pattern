@@ -19,7 +19,7 @@ import threading
 import time
 from functools import wraps
 import re
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import wait
 from datetime import date, datetime, timedelta
 
 import httpx
@@ -51,9 +51,9 @@ CATEGORY_LABELS = {
 def _client():
     # 每类调用使用自己的短连接；超时收紧到秒级，防止一次开会卡死。
     return httpx.Client(
-        timeout=httpx.Timeout(connect=3.0, read=4.0, write=3.0, pool=3.0),
+        timeout=httpx.Timeout(connect=3.0, read=float(getattr(_AUDIT, "request_timeout", 4)), write=3.0, pool=3.0),
         headers=USER_AGENT,
-        follow_redirects=True,
+        follow_redirects=False,
     )
 
 
@@ -66,6 +66,8 @@ class UpstreamError(RuntimeError):
 
 def _get(client, url, **kwargs):
     """Two attempts at most; never retry auth/anti-bot responses or bypass TLS."""
+    from .source_registry import safe_url
+    safe_url(url)
     history = getattr(_AUDIT, "history", [])
     _AUDIT.history = history
     for attempt in (1, 2):
@@ -840,24 +842,6 @@ for _name, _function in list(globals().items()):
 
 
 def collect(code: str, end: date | None = None) -> list[dict]:
-    """Keep partial results at the global deadline; no 10-minute fallback chain."""
-    sources = [fetch_spot, fetch_sina_spot, fetch_kline, fetch_tencent_kline, fetch_intraday,
-               fetch_capital_flow, fetch_sina_capital, fetch_lhb, fetch_margin,
-               fetch_northbound, fetch_block_trade, fetch_repurchase, fetch_holder_change,
-               fetch_unlock, fetch_news, fetch_announcements, fetch_research,
-               fetch_financial_main, fetch_financial_zy, fetch_sina_financial,
-               fetch_financial_balance, fetch_financial_cashflow]
-    executor = ThreadPoolExecutor(max_workers=4)
-    futures = {executor.submit(source, code, end): index for index, source in enumerate(sources)}
-    done, pending = wait(futures, timeout=32.0)
-    results = {}
-    for future in done:
-        try:
-            results[futures[future]] = future.result()
-        except Exception as exc:
-            results[futures[future]] = _fail("collection", sources[futures[future]].__name__, "", f"{type(exc).__name__}: {exc}", _now())
-    for future in pending:
-        future.cancel()
-        results[futures[future]] = _fail("collection", sources[futures[future]].__name__, "", "采集总预算32秒到期，保留其它已完成来源", _now())
-    executor.shutdown(wait=False, cancel_futures=True)
-    return [results[index] for index in range(len(sources))]
+    """Source settings/health/cache and updates are confined to the council module."""
+    from .source_registry import get_registry
+    return get_registry().collect(code, end)

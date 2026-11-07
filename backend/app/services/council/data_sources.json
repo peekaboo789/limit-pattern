@@ -1,0 +1,262 @@
+{
+  "format": "limit-pattern-council-sources",
+  "schema_version": 1,
+  "version": "1.0.0",
+  "min_app_version": "0.7.14",
+  "repository": "https://github.com/peekaboo789/limit-pattern",
+  "sources": [
+    {
+      "id": "eastmoney_spot",
+      "enabled": true,
+      "priority": 15,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "sina_spot",
+      "enabled": true,
+      "priority": 15,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_kline",
+      "enabled": true,
+      "priority": 15,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "tencent_kline",
+      "enabled": true,
+      "priority": 15,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_trends",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_capital_flow",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "sina_capital_flow",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_lhb",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_margin",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_northbound",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_block_trade",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_repurchase",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_holder_change",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_unlock",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_news",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_announcements",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_research",
+      "enabled": true,
+      "priority": 30,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_financial_main",
+      "enabled": true,
+      "priority": 15,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_financial_zy",
+      "enabled": true,
+      "priority": 15,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "sina_financial",
+      "enabled": true,
+      "priority": 15,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_financial_balance",
+      "enabled": true,
+      "priority": 15,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "eastmoney_financial_cashflow",
+      "enabled": true,
+      "priority": 15,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 1,
+      "endpoint": "primary"
+    },
+    {
+      "id": "sina_kline",
+      "enabled": true,
+      "priority": 10,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 2,
+      "endpoint": "primary"
+    },
+    {
+      "id": "ths_kline",
+      "enabled": true,
+      "priority": 10,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 2,
+      "endpoint": "primary"
+    },
+    {
+      "id": "cninfo_announcements",
+      "enabled": true,
+      "priority": 10,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 2,
+      "endpoint": "primary"
+    },
+    {
+      "id": "cninfo_reports",
+      "enabled": true,
+      "priority": 10,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 2,
+      "endpoint": "primary"
+    },
+    {
+      "id": "sse_announcements",
+      "enabled": false,
+      "priority": 20,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 2,
+      "endpoint": "primary"
+    },
+    {
+      "id": "szse_announcements",
+      "enabled": true,
+      "priority": 10,
+      "timeout_seconds": 4,
+      "cache_ttl": 300,
+      "min_interval": 2,
+      "endpoint": "primary"
+    }
+  ],
+  "content_sha256": "24ccfe08c3b1ebc4b1f212a3c942ff13f341d836c24acd170944e09d029ec4d2"
+}

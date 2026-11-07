@@ -839,6 +839,8 @@ export interface CouncilEvidence {
 }
 
 export interface CouncilWebEvidence {
+  registry?: { version: string; parser: string; parser_version: number; provider: string }
+  cache?: { hit: boolean; age_seconds?: number }
   status: 'ok' | 'empty' | 'failed' | 'not_applicable' | 'unavailable' | 'unverified'
   category?: string
   source: string

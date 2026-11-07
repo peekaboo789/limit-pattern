@@ -407,14 +407,14 @@ def _rank_item(payload: dict, code: str) -> dict | None:
 def _public_kline_bars(web: list[dict], day: date, limit: int = DEFAULT_KLINE_LIMIT) -> list[dict]:
     candidates = []
     for item in web or []:
-        if item.get("source") not in {"eastmoney_kline", "tencent_kline"} or item.get("status") != "ok":
+        if item.get("source") not in {"eastmoney_kline", "tencent_kline", "sina_kline", "ths_kline"} or item.get("status") != "ok":
             continue
         bars = (item.get("digest") or {}).get("bars") or []
         usable = [{**bar, "evidence_source": item["source"]} for bar in bars
                   if bar.get("date") and str(bar["date"]) <= day.isoformat()]
         if usable:
             candidates.append(usable[-limit:])
-    return max(candidates, key=len, default=[])
+    return max(candidates, key=lambda rows: (len(rows), sum(bar.get(key) is not None for bar in rows for key in ("amount", "pct_chg", "turnover_rate"))), default=[])
 
 
 def _merge_kline(day: date, local_bars: list[dict], public_bars: list[dict], expected_trading_days: int) -> dict:
@@ -469,7 +469,7 @@ def _web_summary(item: dict) -> str:
         actual = (digest or {}).get("actual_date")
         price = (digest or {}).get("price")
         return f"新浪现价 {price if price is not None else '—'}，快照日期 {actual or '未标注'}；实时快照不可回溯。"
-    if item.get("source") in {"eastmoney_kline", "tencent_kline"}:
+    if item.get("source") in {"eastmoney_kline", "tencent_kline", "sina_kline", "ths_kline"}:
         count = (digest or {}).get("count") or 0
         bars = (digest or {}).get("bars") or []
         last = bars[-1] if bars else {}
@@ -484,6 +484,9 @@ def _web_summary(item: dict) -> str:
         title = first.get("title") or first.get("titleText") or ""
         day_text = first.get("date") or first.get("notice_date") or first.get("publishDate") or ""
         return f"{count} 条，最新 {str(day_text)[:10] or '—'} {title}。"
+    if category == "financial" and digest.get("items"):
+        first = digest["items"][0]
+        return f"第一方财报披露索引 {digest.get('count')} 条；最新披露 {first.get('date')} {first.get('title')}。原文链接见证据，不代表已解析完整PDF指标。"
     if category == "financial":
         latest = (digest or {}).get("latest") or {}
         report = latest.get("report_date") or ""

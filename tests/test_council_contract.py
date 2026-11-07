@@ -179,12 +179,17 @@ def test_event_no_future_outcome_leakage(monkeypatch):
     assert 'D5_' not in json.dumps(result['digest'])
 
 
-def test_deadline_keeps_completed_sources(monkeypatch):
+def test_deadline_keeps_completed_sources(monkeypatch, tmp_path):
+    from backend.app.services.council import source_registry
     release = threading.Event()
-    for name in list(vars(web)):
-        if name.startswith('fetch_'):
-            monkeypatch.setattr(web, name, lambda *args: release.wait(.25) or {})
-    monkeypatch.setattr(web, 'fetch_spot', lambda *args: {'status':'ok','source':'finished'})
+    registry = source_registry.SourceRegistry(tmp_path)
+    registry.active['sources'] = [row for row in registry.active['sources'] if row['id'] in {'eastmoney_spot','sina_spot'}]
+    monkeypatch.setattr(source_registry, 'get_registry', lambda:registry)
+    monkeypatch.setattr(web, 'fetch_spot', lambda *args: {'status':'ok','source':'finished','digest':{}})
+    def slow(*args):
+        release.wait(.3)
+        return {'status':'ok','source':'slow','digest':{}}
+    monkeypatch.setattr(web, 'fetch_sina_spot', slow)
     def fake_wait(futures, timeout):
         assert timeout == 32
         first = next(iter(futures))
@@ -194,8 +199,8 @@ def test_deadline_keeps_completed_sources(monkeypatch):
     try:
         result = web.collect('600759', date(2026,11,6))
         assert result[0]['source'] == 'finished'
-        assert all(item['status'] == 'failed' for item in result[1:])
-        assert '32秒' in result[1]['digest']['reason']
+        assert result[1]['status'] == 'unavailable'
+        assert '32秒' in result[1]['digest']['note']
     finally:
         release.set()
 
