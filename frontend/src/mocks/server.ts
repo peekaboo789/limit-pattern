@@ -273,6 +273,8 @@ const councilSessions: CouncilSession[] = [
     finished_at: new Date().toISOString(),
   },
 ]
+const councilTemplate = structuredClone(councilSessions[0]!)
+let nextCouncilId = Math.max(...councilSessions.map(item => item.id)) + 1
 let councilProgress: CouncilProgress = { running: false, phase: 'idle', session_id: null, stock: null, stage: '空闲', current_model: '', done: 0, total: 0, last_status: '', error: '' }
 let councilOrder: string[] = ['m1', 'm2']
 
@@ -287,15 +289,15 @@ const councilSourceDemo = {
 }
 
 function councilList(): { items: CouncilSession[] } {
-  return { items: councilSessions }
+  return { items: structuredClone(councilSessions) }
 }
 
 function councilRun(body: Record<string, unknown>): { session_id: number; started: boolean; participants: CouncilSession['participants'] } {
   if (councilProgress.running) throw new ApiError(409, '已有讨论进行中')
   const code = String(body.code ?? '')
   if (!/^\d{6}$/.test(code)) throw new ApiError(422, '股票代码应为 6 位数字')
-  const template = councilSessions[0]
-  const row: CouncilSession = { ...structuredClone(template), id: Math.max(...councilSessions.map(item => item.id)) + 1, stock_code: code, eval_date: String(body.date || DATA_DATE), status: 'running', transcript: [], statements: [], conclusion: null, error: '', created_at: new Date().toISOString(), finished_at: null }
+  const template = councilTemplate
+  const row: CouncilSession = { ...structuredClone(template), id: nextCouncilId++, stock_code: code, eval_date: String(body.date || DATA_DATE), status: 'running', transcript: [], statements: [], conclusion: null, error: '', created_at: new Date().toISOString(), finished_at: null }
   councilSessions.unshift(row)
   councilProgress = { running: true, phase: 'verifying_web', session_id: row.id, stock: code, stage: '联网核对（演示数据）', current_model: '', done: 0, total: 2, last_status: '仅为模拟演示，未访问真实网站或模型', error: '' }
   setTimeout(() => {
@@ -408,7 +410,15 @@ function handle(method: string, pathname: string, params: URLSearchParams, init?
     return { profile_ids: councilOrder }
   }
   const councilDetailMatch = pathname.match(/^\/api\/council\/(\d+)$/)
-  if (councilDetailMatch && method === 'GET') return councilDetail(Number(councilDetailMatch[1] ?? 0))
+  if (councilDetailMatch && method === 'DELETE') {
+    const id = Number(councilDetailMatch[1])
+    const row = councilDetail(id)
+    if (row.status === 'running') throw new ApiError(409, '运行中的讨论不能删除，请等待结束')
+    councilSessions.splice(councilSessions.findIndex(item => item.id === id), 1)
+    if (councilProgress.session_id === id) councilProgress = { ...councilProgress, session_id: null, running: false, phase: 'idle' }
+    return { deleted: true, session_id: id }
+  }
+  if (councilDetailMatch && method === 'GET') return structuredClone(councilDetail(Number(councilDetailMatch[1] ?? 0)))
   const councilSpeakMatch = pathname.match(/^\/api\/council\/(\d+)\/(speak|user-message)$/)
   if (councilSpeakMatch && method === 'POST') return councilConversation(Number(councilSpeakMatch[1] ?? 0), councilSpeakMatch[2] || '', readBody(init) as Record<string, unknown>)
   throw new ApiError(404, '接口不存在')

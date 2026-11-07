@@ -74,11 +74,11 @@ def _now_utc_iso() -> str:
     return _now_dt().isoformat(timespec="seconds") + "Z"
 
 
-def _as_shanghai(value: datetime | None) -> str | None:
+def _as_shanghai(value: datetime | None, timespec: str = "milliseconds") -> str | None:
     if value is None:
         return None
     moment = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-    return moment.astimezone(SHANGHAI).isoformat(timespec="milliseconds")
+    return moment.astimezone(SHANGHAI).isoformat(timespec=timespec)
 
 
 def _configured_secrets() -> list[str]:
@@ -901,7 +901,7 @@ def _session_payload(row: AiCouncilSession) -> dict:
         "progress": row.progress or {},
         "conclusion": conclusion,
         "error": _scrub(row.error or ""),
-        "created_at": _as_shanghai(created),
+        "created_at": _as_shanghai(created, "microseconds"),
         "finished_at": _as_shanghai(finished),
         "duration_seconds": duration,
         "timezone": "Asia/Shanghai",
@@ -929,6 +929,43 @@ def history(code: str | None = None, day: date | None = None, limit: int = 100) 
             query = query.filter(AiCouncilSession.eval_date == day)
         rows = query.order_by(AiCouncilSession.id.desc()).limit(min(limit, 500)).all()
         return [_session_payload(row) for row in rows]
+
+
+def delete_session(session_id: int) -> dict:
+    """Single-process council operations share the start gate; never delete a live writer."""
+    if not _START_LOCK.acquire(blocking=False):
+        raise RuntimeError("已有讨论操作进行中，请稍后再试")
+    lock = _session_lock(session_id)
+    acquired = False
+    try:
+        acquired = lock.acquire(blocking=False)
+        if not acquired or _is_active(session_id):
+            raise RuntimeError("运行中的讨论不能删除，请等待结束")
+        with session_scope() as session:
+            row = session.query(AiCouncilSession).filter(AiCouncilSession.id == session_id).first()
+            if row is None:
+                raise LookupError("没有这场讨论，可能已经删除")
+            if row.status == "running":
+                raise RuntimeError("运行中的讨论不能删除，请等待结束")
+            # Include status in the DELETE itself, not just an earlier ORM snapshot:
+            # a writer in another process may have moved the row to running.
+            removed = session.query(AiCouncilSession).filter(
+                AiCouncilSession.id == session_id,
+                AiCouncilSession.status.in_(("done", "failed")),
+            ).delete(synchronize_session=False)
+            if not removed:
+                raise RuntimeError("讨论状态已改变，未删除，请刷新后重试")
+            session.commit()
+        with _LOCK:
+            if _PROGRESS.get("session_id") == session_id:
+                _PROGRESS.update(running=False, session_id=None, phase="idle", stage="空闲", current_model="",
+                                 stock=None, done=0, total=0, last_status="", error="",
+                                 started_at=None, finished_at=None, elapsed_seconds=None)
+        return {"deleted": True, "session_id": session_id}
+    finally:
+        if acquired:
+            lock.release()
+        _START_LOCK.release()
 
 
 def _run_speaker(profile: dict, system: str, prompt: str) -> str:

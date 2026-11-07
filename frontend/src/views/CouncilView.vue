@@ -3,28 +3,61 @@ import { api, ApiError } from '@/api/client'
 import type { CouncilBar, CouncilEvidence, CouncilSession, CouncilProgress, CouncilTranscriptEntry, CouncilWebEvidence } from '@/api/types'
 import KlineChart from '@/components/KlineChart.vue'
 import CouncilSourcesPanel from '@/components/CouncilSourcesPanel.vue'
+import { useCouncilHistory, createCouncilPoll } from '@/composables/useCouncilHistory'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 interface Prof { id: string; name: string; model: string; api_key_set: boolean; active: boolean }
 
 const stock = ref('')
 const date = ref('')
-const sessions = ref<CouncilSession[]>([])
 const profiles = ref<Prof[]>([])
 const order = ref<string[]>([])
-const loading = ref(false)
 const starting = ref(false)
-const error = ref('')
 const hint = ref('')
 const progress = ref<CouncilProgress | null>(null)
-const expanded = ref<number | null>(null)
-const polling = ref<number | null>(null)
 const speakingFor = ref<number | null>(null)
 const selectedSpeaker = ref<Record<number, string>>({})
 const userInput = ref<Record<number, string>>({})
 const speakingBusy = ref<Record<number, boolean>>({})
-const detailError = ref<Record<number, string>>({})
 const detailHint = ref<Record<number, string>>({})
+
+const history = useCouncilHistory(api)
+const { sessions, expanded, loading, error, detailError, detailLoading, deleting, deleteError, loadSessions, loadSession, replaceSession } = history
+let alive = true
+let pollFailures = 0
+const poller = createCouncilPoll(async (current) => {
+  try {
+    const next = await api.councilProgress()
+    if (!current() || !alive) return false
+    progress.value = next.session_id && history.isDeleted(next.session_id) ? null : next
+    pollFailures = 0
+    const ids = new Set([expanded.value, next.session_id])
+    for (const id of ids) if (id && current() && !history.isDeleted(id)) await loadSession(id)
+    return !!next.running || speakingFor.value !== null
+  } catch (reason) {
+    if (!current() || !alive) return false
+    error.value = reason instanceof ApiError ? reason.detail : '自动刷新失败，请点击刷新/重试'
+    return ++pollFailures < 3
+  }
+})
+function beginPolling() { if (!alive) return; pollFailures = 0; poller.start() }
+function stopPolling() { poller.stop() }
+async function refresh() { await loadSessions(); if (!alive) return; if (expanded.value) await loadSession(expanded.value); beginPolling() }
+async function open(row: CouncilSession) {
+  await history.open(row)
+  if (alive && expanded.value === row.id && (row.status === 'running' || progress.value?.running)) beginPolling()
+}
+async function retryDetail(id: number) { await loadSession(id); if (alive) beginPolling() }
+async function removeSession(row: CouncilSession) {
+  if (speakingBusy.value[row.id] || row.status === 'running') return
+  const removed = await history.deleteSession(row.id, () => window.confirm(`确定永久删除 ${row.stock_name} ${row.stock_code}（${row.eval_date}）的讨论 #${row.id}？对话与证据不可恢复。`))
+  if (removed) {
+    delete userInput.value[row.id]; delete selectedSpeaker.value[row.id]
+    delete detailHint.value[row.id]; delete speakingBusy.value[row.id]
+    if (progress.value?.session_id === row.id) progress.value = null
+    stopPolling(); beginPolling()
+  }
+}
 
 const keyProfiles = computed(() => profiles.value.filter((p) => p.api_key_set))
 const selected = computed(() => order.value.filter((id) => keyProfiles.value.some((p) => p.id === id)))
@@ -65,35 +98,12 @@ async function askChair(row: CouncilSession) { const chair = row.participants[ro
 
 async function loadProfiles() {
   const data = await api.councilModels()
-  profiles.value = data.items
+  if (alive) profiles.value = data.items
 }
 
 async function loadOrder() {
   const data = await api.councilProfileOrder()
-  order.value = data.profile_ids.filter((id) => keyProfiles.value.some((p) => p.id === id))
-}
-
-async function loadSessions() {
-  loading.value = true
-  try {
-    const data = await api.councilHistory({ limit: 100 })
-    sessions.value = data.items
-  } catch (reason) {
-    error.value = reason instanceof ApiError ? reason.detail : '讨论记录加载失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadSession(id: number) {
-  try {
-    const data = await api.councilGet(id)
-    const index = sessions.value.findIndex((row) => row.id === id)
-    if (index >= 0) sessions.value[index] = data
-    else sessions.value.unshift(data)
-  } catch (reason) {
-    detailError.value[id] = reason instanceof ApiError ? reason.detail : '会话刷新失败'
-  }
+  if (alive) order.value = data.profile_ids.filter((id) => keyProfiles.value.some((p) => p.id === id))
 }
 
 function toggleProfile(id: string) {
@@ -129,9 +139,15 @@ async function start() {
   hint.value = ''
   try {
     const result = await api.councilRun({ code: stock.value.trim(), date: date.value.trim() || undefined, profile_ids: order.value })
+    if (!alive) return
+    stopPolling()
+    history.acceptNewSession(result.session_id)
     hint.value = `已开始讨论 #${result.session_id}，正在联网核对`
-    await beginPolling()
     await loadSessions()
+    if (!alive) return
+    expanded.value = result.session_id
+    await loadSession(result.session_id)
+    beginPolling()
   } catch (reason) {
     error.value = reason instanceof ApiError ? reason.detail : '开始失败'
   } finally {
@@ -139,35 +155,13 @@ async function start() {
   }
 }
 
-async function beginPolling() {
-  if (polling.value !== null) return
-  polling.value = window.setInterval(async () => {
-    try {
-      progress.value = await api.councilProgress()
-      if (progress.value?.session_id) await loadSession(progress.value.session_id)
-      if (progress.value && !progress.value.running && speakingFor.value === null) {
-        stopPolling()
-        await loadSessions()
-      }
-    } catch {
-      /* 忽略轮询错误 */
-    }
-  }, 1500)
-}
-
 async function reconcileStale() {
   try {
     const result = await api.councilReconcileStale()
+    await refresh()
     hint.value = result.terminated ? `已终止 ${result.terminated} 场遗留运行中会话` : '没有遗留运行中会话'
   } catch (reason) {
     error.value = reason instanceof ApiError ? reason.detail : '终止遗留会话失败'
-  }
-}
-
-function stopPolling() {
-  if (polling.value !== null) {
-    window.clearInterval(polling.value)
-    polling.value = null
   }
 }
 
@@ -181,11 +175,6 @@ function probabilityText(row: CouncilSession) {
 
 function confidenceLabel(value: string | null | undefined) {
   return value ? ({ low: '低', medium: '中', high: '高' } as Record<string, string>)[value] ?? value : '—'
-}
-
-function open(row: CouncilSession) {
-  expanded.value = expanded.value === row.id ? null : row.id
-  if (expanded.value === row.id && row.status === 'running') loadSession(row.id)
 }
 
 function joinList(values: string[] | undefined) {
@@ -242,12 +231,6 @@ function statusText(row: CouncilSession): string {
   return '进行中'
 }
 
-function replaceSession(updated: CouncilSession) {
-  const index = sessions.value.findIndex((row) => row.id === updated.id)
-  if (index >= 0) sessions.value[index] = updated
-  else sessions.value.unshift(updated)
-}
-
 async function addUserMessage(id: number) {
   if (speakingBusy.value[id] || progress.value?.running) return
   const text = userInput.value[id]?.trim()
@@ -264,13 +247,14 @@ async function addUserMessage(id: number) {
   detailHint.value[id] = ''
   try {
     const updated = await api.councilUserMessage(id, text)
+    if (!alive) return
     replaceSession(updated)
     userInput.value[id] = ''
     detailHint.value[id] = '用户意见已写入对话'
   } catch (reason) {
-    detailError.value[id] = reason instanceof ApiError ? reason.detail : '写入失败'
+    if (alive) detailError.value[id] = reason instanceof ApiError ? reason.detail : '写入失败'
   } finally {
-    speakingBusy.value[id] = false
+    if (alive) speakingBusy.value[id] = false
   }
 }
 
@@ -288,13 +272,15 @@ async function askSpeaker(id: number) {
   detailHint.value[id] = ''
   try {
     const updated = await api.councilSpeak(id, profileId)
+    if (!alive) return
     replaceSession(updated)
+    await loadSession(id)
+    if (!alive) return
     detailHint.value[id] = updated.status === 'failed' ? '模型发言失败，详见对话记录' : '模型已完成发言'
   } catch (reason) {
-    detailError.value[id] = reason instanceof ApiError ? reason.detail : '发言失败'
+    if (alive) detailError.value[id] = reason instanceof ApiError ? reason.detail : '发言失败'
   } finally {
-    speakingBusy.value[id] = false
-    speakingFor.value = null
+    if (alive) { speakingBusy.value[id] = false; speakingFor.value = null; beginPolling() }
   }
 }
 
@@ -305,15 +291,17 @@ function digestText(digest: unknown): string {
   return JSON.stringify(digest, null, 2)
 }
 
-onUnmounted(stopPolling)
+onUnmounted(() => { alive = false; stopPolling(); history.dispose() })
 
 onMounted(async () => {
-  await loadProfiles()
-  await loadOrder()
-  await loadSessions()
-  progress.value = await api.councilProgress().catch(() => null)
-  if (progress.value?.running) await beginPolling()
+  await Promise.allSettled([
+    loadProfiles().then(() => { if (alive) return loadOrder() }).catch(() => { if (alive) hint.value = '模型配置加载失败，可重试；历史仍可浏览' }),
+    loadSessions(),
+  ])
+  if (!alive) return
+  beginPolling() // Initial progress AND selected detail are fetched immediately, not after an interval.
 })
+
 </script>
 
 <template>
@@ -322,7 +310,7 @@ onMounted(async () => {
       <h1>多模型讨论验证</h1>
       <p class="lede">系统先做本地证据 + 联网核对，再由多个模型顺序发言，最后一位主席估算下一交易日收盘上涨概率。</p>
     </div>
-    <button class="btn btn-ghost" type="button" :disabled="loading" @click="loadSessions">刷新</button>
+    <button class="btn btn-ghost" type="button" :disabled="loading" @click="refresh">刷新</button>
     <button class="btn btn-ghost" type="button" @click="reconcileStale">终止遗留会话</button>
   </header>
   <CouncilSourcesPanel />
@@ -373,7 +361,7 @@ onMounted(async () => {
 
   <section class="card">
     <div class="card-head"><h2>讨论记录</h2><span class="muted">{{ sessions.length }} 场</span></div>
-    <div v-if="loading" class="skeleton" />
+    <div v-if="loading && !sessions.length" class="skeleton" />
     <div v-else-if="!sessions.length" class="empty">还没有讨论记录</div>
     <div v-else class="table-wrap">
       <table>
@@ -390,13 +378,17 @@ onMounted(async () => {
             <td>{{ confidenceLabel(row.conclusion?.confidence) }}</td>
             <td>{{ statusText(row) }}</td>
             <td class="muted">{{ displayTime(row.created_at) }}{{ row.timezone ? `（${row.timezone}）` : '' }}</td>
-            <td class="right"><button class="btn btn-ghost" type="button" @click.stop="open(row)">{{ expanded === row.id ? '收起' : '详情' }}</button></td>
+            <td class="right"><button class="btn btn-ghost" type="button" @click.stop="open(row)" @keydown.enter.stop>{{ expanded === row.id ? '收起' : '详情' }}</button>
+              <button class="btn btn-ghost" type="button" :disabled="deleting[row.id] || row.status === 'running' || speakingBusy[row.id]" :title="row.status === 'running' ? '运行中的讨论不能删除' : '永久删除本场讨论'" @click.stop="removeSession(row)" @keydown.enter.stop>{{ deleting[row.id] ? '删除中…' : '删除' }}</button>
+              <span v-if="deleteError[row.id]" class="alert" role="alert">{{ deleteError[row.id] }}</span></td>
           </tr>
         </tbody>
       </table>
     </div>
 
     <div v-for="row in sessions.filter((item) => expanded === item.id)" :key="'detail-' + row.id" class="council-detail">
+      <p v-if="detailLoading[row.id]" class="hint" role="status">正在加载最新对话…</p>
+      <p v-if="detailError[row.id]" class="alert" role="alert">{{ detailError[row.id] }} <button class="btn btn-ghost" @click="retryDetail(row.id)">重试加载</button></p>
       <h3>{{ row.stock_name }} {{ row.stock_code }} · {{ row.eval_date }}</h3>
       <div class="muted">评估时间：{{ displayTime(row.created_at) }}（{{ row.timezone || 'Asia/Shanghai' }}）<template v-if="durationText(row)"> · 耗时：{{ durationText(row) }}</template></div>
       <div v-if="row.error" class="alert">{{ row.error }}</div>

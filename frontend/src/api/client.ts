@@ -142,6 +142,8 @@ export const api = {
 
   councilLatest: () => request<{ items: CouncilSession[] }>('/api/council'),
 
+  councilDelete: (id: number) => request<{ deleted: boolean; session_id: number }>(`/api/council/${id}`, { method: 'DELETE' }),
+
   councilGet: (id: number) => request<CouncilSession>(`/api/council/${id}`),
 
   councilProfileOrder: () => request<{ profile_ids: string[] }>('/api/council/profile-order'),

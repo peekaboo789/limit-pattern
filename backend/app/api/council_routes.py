@@ -169,3 +169,14 @@ def council_speak(session_id: int = Path(...), body: dict | None = None) -> dict
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.delete("/{session_id}")
+def council_delete(session_id: int = Path(..., ge=1)) -> dict:
+    from backend.app.services.council import service
+    try:
+        return service.delete_session(session_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

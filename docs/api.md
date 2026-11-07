@@ -184,3 +184,6 @@ AI 排名每批 20 只、最多 3 批并发，进度见 `GET /api/ai-ranking/pro
 - `POST /api/council/sources/rollback`：显式原子回滚上一清单。断网/不兼容/坏校验/写入失败保留现有配置；本地坏状态回退内置。
 
 `evidence.web[].registry`含清单版本/parser/provider/parser_version；`cache.hit/age_seconds`保留原抓取时间，不冒充新数据。健康只表示最后一次真实采集，不是持续监控保证。默认27任务启用/28任务可管理/7渠道组（上交所未验证默认关闭）；同站多个接口不是独立来源。模板变化或新解析器需正常软件更新。协议与GitHub研究详见council-data-sources.md。
+
+### 讨论历史删除（v0.7.15）
+`DELETE /api/council/{session_id}`：200返回`{deleted:true,session_id}`；不存在404，运行中/活动写入/操作门禁409。单条永久删除对话和证据；前端需明确确认，取消不请求。失败保留历史，不提供批量删除或隐式停止。

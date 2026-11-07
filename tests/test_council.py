@@ -644,7 +644,7 @@ def test_phase_events_persist_and_survive_refresh(client):
 def test_group_chat_ui_contract():
     from pathlib import Path
     text = Path("frontend/src/views/CouncilView.vue").read_text()
-    for feature in ("group-chat", "chat-avatar", "chat-bubble", "chat-composer", "chat-system", "发送意见", "请主持人总结", "followChat", "await loadSession(progress.value.session_id)"):
+    for feature in ("group-chat", "chat-avatar", "chat-bubble", "chat-composer", "chat-system", "发送意见", "请主持人总结", "followChat", "await loadSession(id)"):
         assert feature in text
     assert 'position:sticky' in text
     assert '<summary>完整证据 JSON（默认折叠）</summary>' in text
