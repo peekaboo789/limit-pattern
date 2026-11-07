@@ -42,15 +42,22 @@ enum CouncilTranscriptKind {
 extension CouncilCore {
     static func publicContent(_ text: String?) -> String {
         guard let text, !text.isEmpty else { return "" }
-        let ns = text as NSString
-        let open = ns.range(of: "<think>", options: .caseInsensitive)
-        guard open.location != NSNotFound else { return text }
-        let tail = ns.substring(from: open.location + open.length) as NSString
-        let end = tail.range(of: "</think>", options: .caseInsensitive)
-        if end.location != NSNotFound {
-            return tail.substring(to: end.location).trimmingCharacters(in: .whitespacesAndNewlines)
+        var remaining = text as NSString
+        var output = ""
+        while true {
+            let open = remaining.range(of: "<think>", options: .caseInsensitive)
+            guard open.location != NSNotFound else {
+                output += remaining as String
+                break
+            }
+            output += remaining.substring(to: open.location)
+            let tailStart = open.location + open.length
+            let tail = remaining.substring(from: tailStart) as NSString
+            let close = tail.range(of: "</think>", options: .caseInsensitive)
+            if close.location == NSNotFound { break }
+            remaining = tail.substring(from: close.location + close.length) as NSString
         }
-        return (tail as String).trimmingCharacters(in: .whitespacesAndNewlines)
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func parsedInstant(_ value: String?) -> Date? {
