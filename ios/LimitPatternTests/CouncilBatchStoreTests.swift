@@ -1,6 +1,13 @@
 import XCTest
 @testable import LimitPattern
 
+private final class BatchTestKeychain: KeychainStoring {
+    private(set) var values: [String: String] = [:]
+    func set(_ value: String?, for key: String) { values[key] = value }
+    func get(_ key: String) -> String? { values[key] }
+    func remove(_ key: String) { values[key] = nil }
+}
+
 private final class BatchMockURLProtocol: URLProtocol {
     static var handler: ((URLRequest) -> (Int, Data?))?
     static var delay: TimeInterval = 0
@@ -29,7 +36,7 @@ private final class BatchMockURLProtocol: URLProtocol {
 private func batchMockAPI(_ handler: @escaping (URLRequest) -> (Int, Data?)) -> APIClient {
     let config = URLSessionConfiguration.ephemeral
     config.protocolClasses = [BatchMockURLProtocol.self]
-    let api = APIClient(storage: .shared, keychain: CouncilTestKeychain(), session: URLSession(configuration: config))
+    let api = APIClient(storage: .shared, keychain: BatchTestKeychain(), session: URLSession(configuration: config))
     api.baseURL = URL(string: "https://server.example")
     BatchMockURLProtocol.handler = handler
     BatchMockURLProtocol.seenRequests = []
@@ -127,7 +134,7 @@ final class CouncilBatchStoreTests: XCTestCase {
     }
 
     func testPollCancellationStopsWithoutLeak() async {
-        let api = batchMockAPI { _ in (200, try! JSONSerialization.data(withJSONObject: ["items": [sampleBatch().any]].any)) }
+        let api = batchMockAPI { _ in (200, try! JSONSerialization.data(withJSONObject: ["items": [sampleBatch().any]])) }
         let store = CouncilBatchStore()
         store.api = api
         store.rebind(server: "s", account: "s+alice")
