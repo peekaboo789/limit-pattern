@@ -232,3 +232,23 @@ def test_sse_ownership_must_match_requested_stock(monkeypatch):
     assert public.fetch_sse_announcements('600759',date(2026,11,6))['status']=='unverified'
     rows[0]['SECURITY_CODE']='600759'
     assert public.fetch_sse_announcements('600759',date(2026,11,6))['digest']['count']==1
+
+
+def test_trusted_manifest_live_on_public_ci(tmp_path, capsys):
+    """Real product transport on the normal CI network; never relax private-DNS guards."""
+    import os
+    if not (os.getenv('GITHUB_ACTIONS') == 'true' and os.getenv('GITHUB_EVENT_NAME') == 'push'
+            and os.getenv('GITHUB_REPOSITORY') == 'peekaboo789/limit-pattern'):
+        pytest.skip('real public-manifest acceptance runs only on this repository push CI')
+    r=mod.SourceRegistry(tmp_path/'live-manifest')
+    first=r.check_update()
+    payload=r.candidate[0] if r.candidate else r.active
+    remote_version=payload['version'];remote_sha=payload['content_sha256']
+    # Isolated simulated older local state; do not claim it was a released version.
+    r.active=mod.seal({**r.active,'version':'0.0.0'})
+    assert r.check_update()['candidate_version']==remote_version
+    assert r.apply_update()['version']==remote_version
+    assert r.rollback()['version']=='0.0.0'
+    assert mod.SourceRegistry(r.directory).view()['version']=='0.0.0'
+    with capsys.disabled():
+        print(f'REAL_PUBLIC_MANIFEST_ACCEPTANCE version={remote_version} sha256={remote_sha}; actual HTTPS/schema/apply/rollback/restart passed on CI; older state simulated')
