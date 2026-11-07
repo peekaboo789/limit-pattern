@@ -261,8 +261,19 @@ def _fake_response_json(payload, status_code: int = 200):
     return Response(payload, status_code)
 
 
+class _SingleResponseClient:
+    def __init__(self, response):
+        self.response = response
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        return False
+    def get(self, url, params=None):
+        return self.response
+
+
 def test_collect_category_coverage_and_fallback(monkeypatch):
-    """16 类任务都应被调用；单个源失败或空结果不影响其它类别。"""
+    """17 类任务都应被调用，且包含新浪独立站点核对；单个源失败或空结果不影响其它类别。"""
     calls = []
 
     def fake_client(*args, **kwargs):
@@ -272,12 +283,20 @@ def test_collect_category_coverage_and_fallback(monkeypatch):
     class _FakeClientWithDispatch:
         def __init__(self):
             self.calls = 0
+            self.headers = {}
         def __enter__(self):
             return self
         def __exit__(self, *args):
             return False
         def get(self, url, params=None):
             self.calls += 1
+            if "hq.sinajs.cn" in url:
+                class SinaResponse:
+                    status_code = 200
+                    text = 'var hq_str_sh600519="贵州茅台,1,2,3,4,5,0,0,8,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2026-11-06";'
+                    def json(self):
+                        raise ValueError("not json")
+                return SinaResponse()
             if "fflow" in url:
                 return _fake_response_json({"data": {"klines": ["2026-11-06,1,2,3,4,5,6,7,8,9,10,11"]}})
             if "datacenter-web" in url:
@@ -294,14 +313,50 @@ def test_collect_category_coverage_and_fallback(monkeypatch):
 
     monkeypatch.setattr(web_evidence.httpx, "Client", fake_client)
     items = web_evidence.collect("600519", date(2026, 11, 6))
-    assert len(items) == 16
+    assert len(items) == 17
     statuses = [item["status"] for item in items]
     assert statuses.count("ok") >= 3
     assert "empty" in statuses
     assert "failed" in statuses
+    assert any(item.get("source") == "sina_spot" and item.get("status") == "ok" for item in items)
     assert any(item.get("category") == "market" for item in items)
     assert any(item.get("category") == "capital" for item in items)
     assert any(item.get("category") == "financial" for item in items)
+
+
+def test_news_filters_out_of_window_and_future(monkeypatch):
+    """资讯只保留 [评估日-30 天, 评估日]，未来和窗口外日期不得进证据。"""
+    payload = 'jQuery({"result":{"cmsArticleWebOld":[' \
+              '{"title":"窗口内","date":"2026-10-08","url":"https://x/1"},' \
+              '{"title":"窗口外","date":"2026-09-01","url":"https://x/2"},' \
+              '{"title":"未来","date":"2026-11-08","url":"https://x/3"}' \
+              ']}})'
+
+    class FakeResponse:
+        status_code = 200
+        text = payload
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(web_evidence.httpx, "Client", lambda *args, **kwargs: _SingleResponseClient(FakeResponse()))
+    out = web_evidence.fetch_news("600519", date(2026, 11, 6))
+    assert out["status"] == "ok"
+    titles = [item["title"] for item in out["digest"]["items"]]
+    assert titles == ["窗口内"]
+
+
+def test_financial_main_picks_only_disclosed_before_end(monkeypatch):
+    """财报只选评估日前已披露的最新报告，不能泄露未来披露。"""
+    rows = [
+        {"REPORT_DATE": "2026-09-30", "NOTICE_DATE": "2026-11-20", "TOTALOPERATEREVE": 999},
+        {"REPORT_DATE": "2026-06-30", "NOTICE_DATE": "2026-08-25", "TOTALOPERATEREVE": 123},
+    ]
+
+    monkeypatch.setattr(web_evidence.httpx, "Client", lambda *args, **kwargs: _SingleResponseClient(_fake_response_json({"jbmx": rows})))
+    out = web_evidence.fetch_financial_main("600519", date(2026, 11, 6))
+    assert out["status"] == "ok"
+    assert out["digest"]["latest"]["report_date"] == "2026-06-30"
+    assert out["digest"]["latest"]["revenue"] == 123
 
 
 def test_collect_date_windows(monkeypatch):
