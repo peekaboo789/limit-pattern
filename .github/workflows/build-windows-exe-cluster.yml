@@ -1,0 +1,95 @@
+name: Build Windows EXE (Cluster)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-cluster-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      LP_WITH_CLUSTER: "1"
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        if: hashFiles('frontend/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            desktop/requirements.txt
+            desktop/requirements-dev.txt
+            desktop/requirements-build.txt
+            requirements-cluster.txt
+
+      - name: 打包绿色版
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1
+
+      - name: 上传 LimitPattern-cluster-win64.zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: LimitPattern-cluster-win64.zip
+          path: desktop/dist/LimitPattern-cluster-win64.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    # 每个新版本号第一次在分支上打包成功后，自动建 GitHub Release（v<版本>），附 zip 和 sha256，供程序内「在线更新」使用。
+    needs: package
+    if: github.event_name == 'push' && github.ref == 'refs/heads/cursor/limit-pattern-system-8abb'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: LimitPattern-cluster-win64.zip
+          path: dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build Docker in-app update package
+        run: |
+          cd frontend && npm ci --no-audit --no-fund && npm run build && cd ..
+          python3 scripts/build_app_package.py dist
+          ls -la dist
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V=$(python3 -c "import re;print(re.search(r'__version__ = \"(.+?)\"', open('backend/app/__init__.py').read()).group(1))")
+          if gh release view "v$V" >/dev/null 2>&1; then echo "v$V already released"; exit 0; fi
+          cd dist
+          sha256sum LimitPattern-cluster-win64.zip > LimitPattern-cluster-win64.zip.sha256
+          cat LimitPattern-cluster-win64.zip.sha256
+          cd ..
+          python3 - "$V" > notes.md <<'PY'
+          import re, sys
+          v = sys.argv[1]
+          text = open("README.md", encoding="utf-8").read()
+          m = re.search(rf"^## v{re.escape(v)}[^\n]*\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+          print((m.group(1).strip() if m else f"v{v}") + "\n\n数据目录不在程序目录里，更新不会动数据；更新前程序会自动备份到 数据目录/backups/。\nDocker：`docker compose pull && docker compose up -d`")
+          PY
+          gh release create "v$V" dist/LimitPattern-cluster-win64.zip dist/LimitPattern-cluster-win64.zip.sha256 \
+            "dist/limit-pattern-app-$V.tar.gz" "dist/limit-pattern-app-$V.tar.gz.sha256" \
+            --target "$GITHUB_SHA" --title "v$V" --notes-file notes.md

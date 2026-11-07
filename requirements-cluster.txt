@@ -1,0 +1,2 @@
+# 聚类分析的可选依赖。EXE 不打包它；本地源码运行时安装：pip install -r requirements-cluster.txt
+scikit-learn==1.6.0

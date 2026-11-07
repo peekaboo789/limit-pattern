@@ -1,0 +1,8 @@
+build/
+build-onefile/
+dist/
+dist-onefile/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+smoke-data/

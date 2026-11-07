@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>三日涨停形态统计</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: #0b0f14;
+      color: #e7edf5;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 48px 24px 64px;
+    }
+    h1 { font-size: 28px; font-weight: 650; margin: 0 0 8px; }
+    .sub { color: #93a1b5; margin: 0 0 28px; }
+    .card {
+      background: #141b24;
+      border: 1px solid #243140;
+      border-radius: 14px;
+      padding: 18px 20px;
+      margin-bottom: 16px;
+    }
+    .label { color: #8ea0b8; font-size: 13px; margin-bottom: 8px; }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: Consolas, "Sarasa Mono SC", monospace;
+      font-size: 14px;
+    }
+    .warn { color: #f0c674; }
+    .ok { color: #7dcca0; }
+    .bad { color: #f08a8a; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>三日涨停形态统计</h1>
+    <p class="sub">打包占位页。正式前端构建产物出现在 frontend/dist 后会替换本页。</p>
+    <section class="card">
+      <div class="label">免责声明</div>
+      <div>相似度不是涨停概率。本程序只做行情形态对照，不预测涨跌。</div>
+    </section>
+    <section class="card">
+      <div class="label">GET /api/health</div>
+      <pre id="health">正在检查…</pre>
+    </section>
+  </main>
+  <script>
+    const node = document.getElementById("health");
+    fetch("/api/health")
+      .then(function (response) {
+        return response.json().then(function (body) {
+          node.textContent = JSON.stringify(body, null, 2);
+          node.className = response.ok && body.status === "ok" ? "ok" : "bad";
+        });
+      })
+      .catch(function (error) {
+        node.textContent = String(error);
+        node.className = "bad";
+      });
+  </script>
+</body>
+</html>

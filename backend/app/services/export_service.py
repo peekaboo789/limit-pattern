@@ -1,0 +1,294 @@
+"""把排行、涨停池和每日总结导出成记事本能打开的 UTF-8 TXT。"""
+
+from __future__ import annotations
+
+import json
+from datetime import date, datetime
+from urllib.parse import quote
+
+from backend.app.core.clock import SHANGHAI
+from backend.app.core.config import exports_dir, public_settings
+from backend.app.models.tables import DailyQuote, Stock
+from backend.app.providers.markets import classify, is_in_scope
+from backend.app.services.similarity_service import DISCLAIMER, pool_dates, scan_market, similar_to
+from backend.app.services.summary_service import _streak, get_summary
+
+COLUMNS = ["排名", "代码", "名称", "最高相似度", "平均相似度", "样本数", "高度相似数", "最相似涨停股", "涨停日期"]
+
+
+def _cell(value) -> str:
+    if value is None:
+        return ""
+    return str(value).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
+def _header(day: date, pool: list[str], pool_size: int) -> list[str]:
+    settings = public_settings()
+    source = settings.get("active_source") or settings.get("data_source") or ""
+    now = datetime.now(SHANGHAI).isoformat(timespec="seconds")
+    return [
+        f"生成时间\t{now}",
+        f"数据日期\t{day.isoformat()}",
+        f"对比池日期\t{','.join(pool)}",
+        f"对比池数量\t{pool_size}",
+        f"数据源\t{source}",
+        f"免责声明\t{DISCLAIMER}",
+        "",
+    ]
+
+
+def _table(rows: list[list]) -> str:
+    lines = ["\t".join(COLUMNS)]
+    for row in rows:
+        lines.append("\t".join(_cell(item) for item in row))
+    return "\n".join(lines)
+
+
+def _scan_rows(payload: dict) -> list[list]:
+    rows = []
+    for index, item in enumerate(payload.get("items") or [], start=1):
+        match = item.get("best_match") or {}
+        best = match.get("code") or ""
+        if match.get("name"):
+            best = f"{best} {match['name']}".strip()
+        rows.append(
+            [
+                index,
+                item.get("code"),
+                item.get("name"),
+                item.get("score"),
+                item.get("avg_similarity"),
+                item.get("sample_count"),
+                item.get("high_similarity_count"),
+                best,
+                match.get("limit_date"),
+            ]
+        )
+    return rows
+
+
+def _similarity_rows(payload: dict) -> list[list]:
+    rows = []
+    for index, item in enumerate(payload.get("matches") or [], start=1):
+        rows.append(
+            [
+                index,
+                item.get("code"),
+                item.get("name"),
+                item.get("score"),
+                item.get("avg_similarity"),
+                item.get("sample_count"),
+                item.get("high_similarity_count"),
+                f"{item.get('code') or ''} {item.get('name') or ''}".strip(),
+                item.get("limit_date"),
+            ]
+        )
+    return rows
+
+
+def _pool_rows(session, day: date) -> tuple[list[str], list[list]]:
+    dates = pool_dates(session, day)
+    names = {row.code: row.name for row in session.query(Stock)}
+    rows: list[list] = []
+    rank = 1
+    for limit_day in dates:
+        quotes = (
+            session.query(DailyQuote)
+            .filter(DailyQuote.trade_date == limit_day, DailyQuote.is_limit_up.is_(True))
+            .order_by(DailyQuote.stock_code)
+            .all()
+        )
+        for quote in quotes:
+            if not is_in_scope(quote.stock_code):
+                continue
+            exchange, _board = classify(quote.stock_code)
+            rows.append(
+                [
+                    rank,
+                    quote.stock_code,
+                    names.get(quote.stock_code, ""),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    limit_day.isoformat(),
+                    "SH" if exchange == "SSE" else "SZ",
+                    quote.close,
+                    quote.change_percent,
+                    _streak(session, quote.stock_code, limit_day),
+                ]
+            )
+            rank += 1
+    return [item.isoformat() for item in dates], rows
+
+
+def render_export(session, kind: str, day: date, code: str | None, top: int) -> tuple[str, str]:
+    pool: list[str] = []
+    pool_size = 0
+    body: list[str] = []
+    suffix = ""
+    if kind == "scan":
+        payload = scan_market(session, day, top, 0)
+        pool = payload.get("pool_dates") or []
+        pool_size = int(payload.get("pool_size") or 0)
+        body = _header(day, pool, pool_size)
+        body.append(_table(_scan_rows(payload)))
+        if payload.get("skipped"):
+            body.append("")
+            body.append("未参加打分")
+            for item in payload["skipped"]:
+                body.append(f"{item.get('code')}\t{item.get('name')}\t{item.get('limit_date')}\t{item.get('reason')}")
+    elif kind == "similarity":
+        if not code:
+            raise ValueError("导出相似度需要股票代码")
+        payload = similar_to(session, code, day, top)
+        pool = payload.get("pool_dates") or []
+        pool_size = int(payload.get("pool_size") or 0)
+        body = _header(day, pool, pool_size)
+        target = payload.get("target") or {}
+        body.append(f"查询股票\t{target.get('code') or code}\t{target.get('name') or ''}")
+        body.append("")
+        body.append(_table(_similarity_rows(payload)))
+        suffix = f"_{code}"
+    elif kind == "pool":
+        pool, rows = _pool_rows(session, day)
+        pool_size = len(rows)
+        body = _header(day, pool, pool_size)
+        columns = COLUMNS + ["板块", "收盘价", "涨跌幅", "连板"]
+        lines = ["\t".join(columns)]
+        for row in rows:
+            lines.append("\t".join(_cell(item) for item in row))
+        body.append("\n".join(lines))
+    elif kind == "summary":
+        payload = get_summary(session, day)
+        if payload is None:
+            raise LookupError("这一天还没有总结")
+        body = _header(day, [], int(payload.get("limitup_count") or 0))
+        body.append(f"标题\t{payload.get('headline') or ''}")
+        body.append(f"来源\t{payload.get('source') or ''}")
+        if payload.get("model"):
+            body.append(f"模型\t{payload.get('model')}")
+        review = payload.get("market_review") or {}
+        if review:
+            body.append("市场复盘")
+            for key, label in (("sentiment", "情绪"), ("height", "高度"), ("broken", "炸板"), ("leaders", "龙头形态")):
+                if review.get(key):
+                    body.append(f"{label}\t{review[key]}")
+        body.append("要点")
+        for point in payload.get("key_points") or []:
+            body.append(f"- {point}")
+        if payload.get("ai_error"):
+            body.append(f"AI\t{payload.get('ai_error')}")
+        body.append("")
+        body.append("板块")
+        for item in payload.get("sectors") or []:
+            body.append(f"{item.get('name')}\t{item.get('count')}")
+        body.append("")
+        body.append("连板")
+        for item in payload.get("ladder") or []:
+            body.append(f"{item.get('height')}\t{item.get('count')}\t{','.join(item.get('codes') or [])}")
+        body.append("")
+        body.append("原始JSON")
+        body.append(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif kind == "ai_ranking":
+        from backend.app.services.ranking_service import get_ranking
+
+        payload = get_ranking(session, day)
+        if payload is None:
+            raise LookupError("这一天还没有 AI 榜单")
+        pool = payload.get("pool_dates") or []
+        pool_size = int(payload.get("pool_size") or 0)
+        body = _header(day, pool, pool_size)
+        body.append(f"生成时间\t{payload.get('run_at') or ''}")
+        if payload.get("model"):
+            body.append(f"模型\t{payload.get('model')}")
+        body.append(f"候选数\t{payload.get('candidate_count')}")
+        market = payload.get("market") or {}
+        if market:
+            body.append(
+                f"市场环境\t涨 {market.get('up')} 跌 {market.get('down')} 涨停 {market.get('limit_up')} 跌停 {market.get('limit_down')} "
+                f"炸板 {market.get('broken')} 炸板率 {market.get('broken_rate')}% 最高连板 {market.get('max_height')}"
+            )
+        body.append("")
+        dims = [(d["key"], d["label"]) for d in payload.get("dimensions") or []]
+        columns = ["排名", "代码", "名称", "板块", "综合评分", "等级", *[label for _k, label in dims], "风险扣分", "模型分", "偏差", "预测分", "标签", "最高相似度", "平均相似度", "样本数", "最相似样本", "模型依据", "风险提示"]
+        lines = ["\t".join(columns)]
+        for item in payload.get("items") or []:
+            match = item.get("best_match") or {}
+            cells = [
+                item.get("rank"), item.get("code"), item.get("name"), item.get("board_name"),
+                item.get("composite_score", item.get("ai_score")), item.get("level"),
+                *[(item.get("contributions") or {}).get(key) for key, _label in dims],
+                item.get("risk_penalty"), item.get("model_score"), item.get("model_gap"), item.get("prediction_score"),
+                "、".join(item.get("tags") or []),
+                item.get("max_similarity", item.get("similarity")), item.get("avg_similarity"), item.get("sample_count"),
+                f"{match.get('code', '')} {match.get('limit_date', '')}".strip(), item.get("reason"), item.get("risk"),
+            ]
+            lines.append("\t".join(_cell(cell) for cell in cells))
+        body.append("\n".join(lines))
+    elif kind == "next_day_pool":
+        from backend.app.services.backtest_service import next_day_pool
+
+        payload = next_day_pool(session, day, top)
+        pool = payload.get("pool_dates") or []
+        body = _header(day, pool, len(payload["items"]))
+        body.append(payload["disclaimer"])
+        body.append("")
+        lines = ["\t".join(["排名", "代码", "名称", "相似度", "分档", "分档样本", "分档历史涨停率%", "分档历史冲3%率%"])]
+        for index, item in enumerate(payload["items"], start=1):
+            cells = [index, item["code"], item["name"], item["score"], item["band"], item["band_samples"], item["band_limit_up_rate"], item["band_up3_rate"]]
+            lines.append("\t".join(_cell(cell) for cell in cells))
+        body.append("\n".join(lines))
+    elif kind == "backtest":
+        from backend.app.services.backtest_service import ranking_backtest, similarity_backtest
+
+        sim = similarity_backtest(session, top)
+        ai = ranking_backtest(session)
+        body = _header(day, [], 0)
+        body.append(sim["disclaimer"])
+        body.append("")
+        body.append("相似度分档（评估日扫描前 %s，看下一交易日）" % top)
+        lines = ["\t".join(["分档", "样本", "涨停", "涨停率%", "冲3%率%", "次日平均涨幅%"])]
+        for band in sim["bands"]:
+            lines.append("\t".join(_cell(band[key]) for key in ("band", "count", "limit_up", "limit_up_rate", "up3_rate", "avg_next_pct")))
+        body.append("\n".join(lines))
+        body.append("")
+        body.append("AI 前 20 榜单（看下一交易日）")
+        lines = ["\t".join(["榜单日", "次日", "样本", "涨停", "涨停率%", "冲3%率%", "次日平均涨幅%", "涨停代码"])]
+        for row in ai["days"]:
+            cells = [row["date"], row["next_date"], row["count"], row["limit_up"], row["limit_up_rate"], row["up3_rate"], row["avg_next_pct"], ",".join(row["hits"])]
+            lines.append("\t".join(_cell(cell) for cell in cells))
+        body.append("\n".join(lines))
+    elif kind == "cluster":
+        from backend.app.services.cluster_service import get_cluster
+
+        payload = get_cluster(day)
+        if payload is None:
+            raise LookupError("这一天还没有聚类结果")
+        body = _header(day, payload.get("pool_dates") or [], int(payload.get("sample_count") or 0))
+        body.append(f"方法\t{payload.get('method')}\tk\t{payload.get('k')}\t轮廓系数\t{payload.get('silhouette')}")
+        body.append(payload.get("disclaimer") or "")
+        for cluster in payload.get("clusters") or []:
+            body.append("")
+            body.append(f"组{cluster['id'] + 1}\t{cluster['name']}\t{cluster['size']} 只\t三日涨幅均值 {cluster.get('return_3d')}")
+            for member in cluster["members"]:
+                body.append(f"\t{member['code']}\t{member.get('name', '')}\t{member.get('limit_date', '')}")
+    else:
+        raise ValueError("导出类型只能是 scan、similarity、pool、summary、ai_ranking、next_day_pool、backtest、cluster")
+    filename = f"{kind}_{day.isoformat()}{suffix}.txt"
+    return "\n".join(body) + "\n", filename
+
+
+def save_copy(filename: str, content: bytes) -> None:
+    path = exports_dir() / filename
+    path.write_bytes(content)
+
+
+def content_disposition(filename: str) -> str:
+    encoded = quote(filename, safe="")
+    # filename= 只能放 ASCII（HTTP 头是 latin-1），中文名放在 filename* 里
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii").strip("_") or "export"
+    if ascii_name.startswith("."):
+        ascii_name = "export" + ascii_name
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
