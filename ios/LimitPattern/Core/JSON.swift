@@ -1,7 +1,7 @@
 import Foundation
 
 /// 动态 JSON：服务器字段多且随版本增加，用它避免严格解码失败。
-enum JSON: Equatable, Codable {
+enum JSON: Equatable, Codable, Hashable {
     case null, bool(Bool), number(Double), string(String), array([JSON]), object([String: JSON])
 
     init(from decoder: Decoder) throws {
@@ -63,4 +63,12 @@ enum JSON: Equatable, Codable {
         if let data = try? JSONSerialization.data(withJSONObject: ["v": any]), let j = try? JSON.parse(data) { return j["v"] }
         return .null
     }
+
+    /// SwiftUI ForEach 的稳定标识，避免用带下标的 key path。
+    var councilID: Int { self["id"].int ?? 0 }
+    var councilTextID: String { self["id"].string ?? self["id"].text }
+}
+
+extension JSON: Identifiable {
+    public var id: String { self["id"].string ?? self["id"].text }
 }

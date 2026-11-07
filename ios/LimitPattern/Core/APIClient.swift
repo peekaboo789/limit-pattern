@@ -19,15 +19,19 @@ final class APIClient: @unchecked Sendable {
     let session: URLSession
     private let keychain: KeychainStoring
 
-    init(storage: HTTPCookieStorage = .shared, keychain: KeychainStoring = KeychainStore.shared) {
-        let cfg = URLSessionConfiguration.default
-        cfg.httpCookieStorage = storage
-        cfg.httpCookieAcceptPolicy = .always
-        cfg.httpShouldSetCookies = true
-        cfg.timeoutIntervalForRequest = 60
-        cfg.timeoutIntervalForResource = 900
+    init(storage: HTTPCookieStorage = .shared, keychain: KeychainStoring = KeychainStore.shared, session: URLSession? = nil) {
+        if let session {
+            self.session = session
+        } else {
+            let cfg = URLSessionConfiguration.default
+            cfg.httpCookieStorage = storage
+            cfg.httpCookieAcceptPolicy = .always
+            cfg.httpShouldSetCookies = true
+            cfg.timeoutIntervalForRequest = 60
+            cfg.timeoutIntervalForResource = 900
+            self.session = URLSession(configuration: cfg)
+        }
         self.keychain = keychain
-        session = URLSession(configuration: cfg)
     }
 
     static func normalize(_ raw: String) -> URL? {
@@ -150,6 +154,8 @@ final class APIClient: @unchecked Sendable {
     }
     func get(_ path: String, _ query: [String: String?] = [:], timeout: TimeInterval = 60) async throws -> JSON { try await json("GET", path, query: query, timeout: timeout) }
     func post(_ path: String, _ body: Any? = [String: Any](), timeout: TimeInterval = 60) async throws -> JSON { try await json("POST", path, body: body, timeout: timeout) }
+    func put(_ path: String, _ body: Any? = [String: Any](), timeout: TimeInterval = 60) async throws -> JSON { try await json("PUT", path, body: body, timeout: timeout) }
+    func delete(_ path: String, timeout: TimeInterval = 60) async throws -> JSON { try await json("DELETE", path, timeout: timeout) }
 
     /// 下载导出文件存到临时目录，返回可分享的文件 URL。
     func download(_ path: String, query: [String: String?] = [:], fallbackName: String) async throws -> URL {

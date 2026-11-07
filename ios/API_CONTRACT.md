@@ -35,3 +35,24 @@ App 把 cookie 存在系统 `HTTPCookieStorage`，并把值备份到钥匙串；
 `/api/ai-input?format=txt|md[&snapshot=manual][&date=]`、`/api/export?type=ai_ranking|scan|similarity|next_day_pool|pool|backtest|cluster|summary`、`/api/watchlist/export?format=txt|csv`、`/api/daily-summary/export?start&end&format=txt|md|json|csv`。
 
 设置配置（0.5.2）：`GET /api/config/export?secrets=false|true&watchlist=false|true` → JSON 附件（App 里有「包含密钥」「包含自选股」两个开关）。导入（`POST /api/config/import/preview {file}`、`POST /api/config/import {file, watchlist?, account?}`）在内嵌设置网页里做。404 时 App 提示升级服务器。App 要求服务器 ≥ 0.5.2。
+
+## 多模型讨论验证（服务器 ≥ 0.7.18，已对照 backend/app/api/council_routes.py）
+
+| 方法 | 路径 | App 的用法 |
+| --- | --- | --- |
+| POST | `/api/council/run` | `{code, date?, profile_ids?}` → `{session_id, started, participants}` |
+| GET | `/api/council/progress` | `{running, phase, session_id, stock, stage, current_model, done, total, last_status, error, started_at?, finished_at?, elapsed_seconds?}` |
+| POST | `/api/council/reconcile-stale` | `{terminated}` |
+| GET | `/api/council` | `{items:[最近一场]}` |
+| GET | `/api/council/history?code=&date=&limit=` | `{items:[CouncilSession]}` |
+| GET | `/api/council/models` | `{items:[{id,name,model,api_key_set,active}]}` |
+| GET/PUT | `/api/council/profile-order` | PUT body `{profile_ids}` |
+| GET | `/api/council/sources` | 版本化清单；App 只调用服务端 API，不下载执行代码 |
+| PUT | `/api/council/sources/{source_id}` | body 仅 `{enabled?, priority?}` |
+| POST | `/api/council/sources/check-update`、`/apply-update`、`/rollback` | 手动检查/应用/回滚清单 |
+| GET | `/api/council/{session_id}` | 单个会话详情 |
+| POST | `/api/council/{session_id}/user-message` | `{text}`；404/409 |
+| POST | `/api/council/{session_id}/speak` | `{profile_id, round?}` |
+| DELETE | `/api/council/{session_id}` | `{deleted, session_id}`；运行中 409，不存在 404 |
+
+App 只展示公开 `transcript` 与 `conclusion`，移除 `<think>` 内部推理。`up_probability` 必须带明确 `probability_unit`；无单位、无效或证据不足时显示不可估计，不做盲乘或钳制。缺少 council 路由时提示“服务端需升级到支持讨论的版本”。

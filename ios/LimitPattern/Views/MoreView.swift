@@ -16,6 +16,7 @@ struct MoreView: View {
                 NavigationLink { ModelListView() } label: { Label("AI 模型（一键切换）", systemImage: "cpu") }
             }
             Section("原生页面") {
+                NavigationLink { CouncilView() } label: { Label("多模型讨论验证", systemImage: "person.3") }
                 NavigationLink { SimilarityView() } label: { Label("个股相似度 / 前 100", systemImage: "magnifyingglass") }
                 NavigationLink { NextDayPoolView() } label: { Label("次日观察池", systemImage: "binoculars") }
                 NavigationLink { SummaryListView() } label: { Label("每日总结", systemImage: "doc.text") }
